@@ -65,7 +65,7 @@ export async function getRecentLogs(
   const sql = `
     SELECT
       toString(e.id) as id,
-      formatDateTime(e.timestamp, '%Y-%m-%d %H:%M:%S') as timestamp,
+      formatDateTime(e.timestamp, '%Y-%m-%d %H:%i:%S') as timestamp,
       e.level,
       e.message_template,
       e.message,
@@ -88,7 +88,7 @@ export async function getServiceStats(): Promise<ServiceStats[]> {
       e.source as source,
       count(*) as total_count,
       countIf(e.level IN ('Error', 'Fatal')) as error_count,
-      formatDateTime(max(e.timestamp), '%Y-%m-%d %H:%M:%S') as last_log
+      formatDateTime(max(e.timestamp), '%Y-%m-%d %H:%i:%S') as last_log
     FROM logs.events e
     WHERE e.timestamp > now() - INTERVAL 24 HOUR
     GROUP BY e.source
@@ -101,7 +101,7 @@ export async function getServiceStats(): Promise<ServiceStats[]> {
 export async function getTimeSeries(minutes: number = 60): Promise<TimeSeriesPoint[]> {
   const sql = `
     SELECT
-      formatDateTime(toStartOfMinute(e.timestamp), '%Y-%m-%d %H:%M:%S') as minute,
+      formatDateTime(toStartOfMinute(e.timestamp), '%Y-%m-%d %H:%i:%S') as minute,
       count(*) as count,
       countIf(e.level IN ('Error', 'Fatal')) as errors
     FROM logs.events e
@@ -143,7 +143,7 @@ export async function getAPIKeys(): Promise<APIKey[]> {
       toString(key_id) as key_id,
       api_key,
       name,
-      formatDateTime(created_at, '%Y-%m-%d %H:%M:%S') as created_at,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
       enabled
     FROM logs.api_keys
     ORDER BY created_at DESC
