@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="#0A0A0B"/>
+
+  <!-- Cannon barrel -->
+  <rect x="96" y="192" width="192" height="128" rx="24" fill="#FF4D2A"/>
+
+  <!-- Cannon base/wheel -->
+  <circle cx="160" cy="320" r="56" fill="#141416" stroke="#FF4D2A" stroke-width="16"/>
+  <circle cx="160" cy="320" r="16" fill="#FF4D2A"/>
+
+  <!-- Data stream lines (logs firing) -->
+  <rect x="320" y="208" width="112" height="32" rx="16" fill="#FF4D2A"/>
+  <rect x="352" y="256" width="96" height="32" rx="16" fill="#FF6B47"/>
+  <rect x="320" y="304" width="80" height="32" rx="16" fill="#FF8A65"/>
+
+  <!-- Muzzle flash -->
+  <circle cx="288" cy="256" r="24" fill="#FF4D2A" opacity="0.6"/>
+</svg>

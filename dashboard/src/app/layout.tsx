@@ -1,5 +1,5 @@
-import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import type { Metadata, Viewport } from 'next'
+import { Inter, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 import Link from 'next/link'
 import {
@@ -10,12 +10,40 @@ import {
   SignedOut,
   UserButton,
 } from '@clerk/nextjs'
+import { MobileNav } from '@/components/MobileNav'
+import { Navigation } from '@/components/Navigation'
 
-const inter = Inter({ subsets: ['latin'] })
+const inter = Inter({
+  subsets: ['latin'],
+  variable: '--font-inter',
+})
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-jetbrains',
+})
 
 export const metadata: Metadata = {
-  title: 'Log Dashboard',
-  description: 'Self-hosted log aggregation dashboard',
+  title: 'Log Cannon',
+  description: 'Self-hosted log aggregation and analysis - Seq alternative',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Log Cannon',
+  },
+  icons: {
+    icon: '/icons/icon.svg',
+    apple: '/icons/icon.svg',
+  },
+}
+
+export const viewport: Viewport = {
+  themeColor: '#FF4D2A',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 }
 
 export default function RootLayout({
@@ -25,56 +53,26 @@ export default function RootLayout({
 }) {
   return (
     <ClerkProvider>
-      <html lang="en">
-        <body className={inter.className}>
-          <div className="min-h-screen bg-gray-900">
-            <nav className="bg-gray-800 border-b border-gray-700">
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <div className="flex items-center justify-between h-16">
-                  <div className="flex items-center">
-                    <span className="text-white font-bold text-xl">Log Dashboard</span>
-                    <div className="ml-10 flex items-baseline space-x-4">
-                      <Link href="/" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                        Log Explorer
-                      </Link>
-                      <Link href="/services" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                        Services
-                      </Link>
-                      <Link href="/live" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                        Live Tail
-                      </Link>
-                      <Link href="/keys" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                        API Keys
-                      </Link>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-4">
-                    <SignedOut>
-                      <SignInButton mode="modal">
-                        <button className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
-                          Sign In
-                        </button>
-                      </SignInButton>
-                      <SignUpButton mode="modal">
-                        <button className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-md text-sm font-medium">
-                          Sign Up
-                        </button>
-                      </SignUpButton>
-                    </SignedOut>
-                    <SignedIn>
-                      <UserButton
-                        appearance={{
-                          elements: {
-                            avatarBox: 'w-8 h-8'
-                          }
-                        }}
-                      />
-                    </SignedIn>
-                  </div>
-                </div>
-              </div>
-            </nav>
-            <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+      <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+        <head>
+          <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+          <meta name="apple-mobile-web-app-capable" content="yes" />
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `
+                if ('serviceWorker' in navigator) {
+                  window.addEventListener('load', () => {
+                    navigator.serviceWorker.register('/sw.js');
+                  });
+                }
+              `,
+            }}
+          />
+        </head>
+        <body className="font-sans antialiased">
+          <div className="min-h-screen bg-cannon-black">
+            <Navigation />
+            <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 pt-20">
               {children}
             </main>
           </div>

@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter, useSearchParams } from 'next/navigation'
-import { X } from 'lucide-react'
+import { X, Filter } from 'lucide-react'
 
 interface PropertyFilter {
   key: string
@@ -54,37 +54,48 @@ export function FilterBar() {
   }
 
   return (
-    <div className="mb-4 flex items-center gap-2 flex-wrap">
-      <span className="text-gray-400 text-sm">Filters:</span>
-      {filters.map((filter, idx) => (
-        <span
-          key={`${filter.key}-${filter.value}-${idx}`}
-          className={`inline-flex items-center gap-1 px-2 py-1 rounded text-sm ${
-            filter.exclude
-              ? 'bg-red-900/50 text-red-300 border border-red-700'
-              : 'bg-blue-900/50 text-blue-300 border border-blue-700'
-          }`}
-        >
-          <span className="font-medium">{filter.key}</span>
-          <span className="text-gray-400">{filter.exclude ? '!=' : '='}</span>
-          <span>{filter.value}</span>
+    <div className="mb-4 p-3 bg-cannon-charcoal rounded-lg border border-cannon-graphite">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2 text-text-secondary text-sm">
+          <Filter size={14} />
+          <span>Active Filters:</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {filters.map((filter, idx) => (
+            <span
+              key={`${filter.key}-${filter.value}-${idx}`}
+              className={`
+                inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-mono
+                transition-all duration-200 group
+                ${filter.exclude
+                  ? 'bg-cannon-critical/20 text-cannon-critical border border-cannon-critical/30 hover:border-cannon-critical/50'
+                  : 'bg-cannon-fire/20 text-cannon-ember border border-cannon-fire/30 hover:border-cannon-fire/50'
+                }
+              `}
+            >
+              <span className="font-semibold">{filter.key}</span>
+              <span className="text-text-muted">{filter.exclude ? '!=' : '='}</span>
+              <span className="text-text-code">{filter.value}</span>
+              <button
+                onClick={() => removeFilter(filter)}
+                className="ml-1 p-0.5 rounded hover:bg-white/10 transition-colors"
+                title="Remove filter"
+              >
+                <X size={14} />
+              </button>
+            </span>
+          ))}
+        </div>
+        {filters.length > 1 && (
           <button
-            onClick={() => removeFilter(filter)}
-            className="ml-1 hover:text-white"
-            title="Remove filter"
+            onClick={clearAllFilters}
+            className="text-text-muted hover:text-cannon-fire text-sm font-medium transition-colors flex items-center gap-1"
           >
             <X size={14} />
+            Clear all
           </button>
-        </span>
-      ))}
-      {filters.length > 1 && (
-        <button
-          onClick={clearAllFilters}
-          className="text-gray-400 hover:text-white text-sm underline"
-        >
-          Clear all
-        </button>
-      )}
+        )}
+      </div>
     </div>
   )
 }

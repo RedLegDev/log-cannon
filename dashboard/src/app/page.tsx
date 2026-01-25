@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { getRecentLogs, getSources, LogEvent, PropertyFilter } from '@/lib/clickhouse'
 import { LogList } from '@/components/LogList'
 import { FilterBar } from '@/components/FilterBar'
+import { Search, ChevronDown, AlertCircle } from 'lucide-react'
 
 interface SearchParams {
   source?: string
@@ -55,62 +56,101 @@ export default async function LogExplorer({
   const levels = ['Debug', 'Information', 'Warning', 'Error', 'Fatal']
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-white mb-6">Log Explorer</h1>
+    <div className="animate-fade-in">
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-text-primary font-mono">
+          Log <span className="text-cannon-fire">Explorer</span>
+        </h1>
+        <p className="text-text-secondary text-sm mt-1">
+          Search and filter logs from the last 24 hours
+        </p>
+      </div>
 
-      <form className="mb-6 flex gap-4 flex-wrap">
-        <select
-          name="source"
-          defaultValue={searchParams.source || ''}
-          className="bg-gray-800 border border-gray-600 text-white rounded px-3 py-2"
-        >
-          <option value="">All Sources</option>
-          {sources.map(s => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
+      {/* Search Form */}
+      <form className="mb-6">
+        <div className="card-cannon p-4">
+          <div className="flex flex-col md:flex-row gap-3">
+            {/* Source Select */}
+            <div className="relative md:w-48">
+              <select
+                name="source"
+                defaultValue={searchParams.source || ''}
+                className="select-cannon w-full appearance-none pr-10"
+              >
+                <option value="">All Sources</option>
+                {sources.map(s => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" />
+            </div>
 
-        <select
-          name="level"
-          defaultValue={searchParams.level || ''}
-          className="bg-gray-800 border border-gray-600 text-white rounded px-3 py-2"
-        >
-          <option value="">All Levels</option>
-          {levels.map(l => (
-            <option key={l} value={l}>{l}</option>
-          ))}
-        </select>
+            {/* Level Select */}
+            <div className="relative md:w-44">
+              <select
+                name="level"
+                defaultValue={searchParams.level || ''}
+                className="select-cannon w-full appearance-none pr-10"
+              >
+                <option value="">All Levels</option>
+                {levels.map(l => (
+                  <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" />
+            </div>
 
-        <input
-          type="text"
-          name="search"
-          placeholder="Search messages..."
-          defaultValue={searchParams.search || ''}
-          className="bg-gray-800 border border-gray-600 text-white rounded px-3 py-2 flex-grow"
-        />
+            {/* Search Input */}
+            <div className="relative flex-grow">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+              <input
+                type="text"
+                name="search"
+                placeholder="Search messages..."
+                defaultValue={searchParams.search || ''}
+                className="input-cannon pl-10 w-full"
+              />
+            </div>
 
-        <button
-          type="submit"
-          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
-        >
-          Search
-        </button>
+            {/* Submit Button */}
+            <button
+              type="submit"
+              className="btn-cannon whitespace-nowrap"
+            >
+              <Search className="w-4 h-4 md:hidden" />
+              <span className="hidden md:inline">Search Logs</span>
+            </button>
+          </div>
+        </div>
       </form>
 
+      {/* Active Filters */}
       <Suspense fallback={null}>
         <FilterBar />
       </Suspense>
 
+      {/* Results */}
       {error ? (
-        <div className="bg-red-900 border border-red-700 text-red-200 px-4 py-3 rounded">
-          {error}
-        </div>
-      ) : logs.length === 0 ? (
-        <div className="text-gray-400 text-center py-8">
-          No logs found. Logs from the last 24 hours will appear here.
+        <div className="card-cannon border-cannon-critical/50 bg-cannon-critical/10 p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-cannon-critical flex-shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-medium text-cannon-critical">Error loading logs</h3>
+              <p className="text-text-secondary text-sm mt-1">{error}</p>
+            </div>
+          </div>
         </div>
       ) : (
-        <LogList logs={logs} />
+        <>
+          {/* Results count */}
+          {logs.length > 0 && (
+            <div className="mb-4 text-text-secondary text-sm">
+              Showing <span className="text-text-primary font-medium">{logs.length}</span> logs
+            </div>
+          )}
+          <LogList logs={logs} />
+        </>
       )}
     </div>
   )

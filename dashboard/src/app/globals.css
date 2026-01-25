@@ -2,24 +2,245 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== LOG CANNON DESIGN SYSTEM ===== */
+
 :root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 17, 24, 39;
-  --background-end-rgb: 17, 24, 39;
+  /* Core palette */
+  --cannon-black: #0A0A0B;
+  --cannon-charcoal: #141416;
+  --cannon-steel: #1E1E22;
+  --cannon-graphite: #2A2A2F;
+  --cannon-slate: #3A3A42;
+
+  /* Brand accents */
+  --cannon-fire: #FF4D2A;
+  --cannon-ember: #FF6B47;
+  --cannon-glow: #FF8A65;
+  --cannon-tracer: #00D4AA;
+  --cannon-warning: #FFB020;
+  --cannon-critical: #FF3366;
+
+  /* Text colors */
+  --text-primary: #F9FAFB;
+  --text-secondary: #9CA3AF;
+  --text-muted: #6B7280;
+  --text-code: #E5E7EB;
+
+  /* Log levels */
+  --log-debug: #6B7280;
+  --log-info: #3B82F6;
+  --log-warning: #F59E0B;
+  --log-error: #EF4444;
+  --log-fatal: #DC2626;
+
+  /* Spacing */
+  --nav-height: 3.5rem;
 }
+
+/* ===== BASE STYLES ===== */
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  color: var(--text-primary);
+  background: var(--cannon-black);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-.log-level-debug { color: #9ca3af; }
-.log-level-information { color: #60a5fa; }
-.log-level-warning { color: #fbbf24; }
-.log-level-error { color: #f87171; }
-.log-level-fatal { color: #ef4444; font-weight: bold; }
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Prevent zoom on input focus (iOS) */
+@media screen and (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Touch optimizations */
+@media (hover: none) {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* ===== LOG LEVEL STYLES ===== */
+
+.log-level-debug {
+  color: var(--log-debug);
+}
+
+.log-level-information {
+  color: var(--log-info);
+}
+
+.log-level-warning {
+  color: var(--log-warning);
+}
+
+.log-level-error {
+  color: var(--log-error);
+}
+
+.log-level-fatal {
+  color: var(--log-fatal);
+  font-weight: bold;
+}
+
+/* Log level border indicators */
+.log-border-debug { border-left-color: var(--log-debug); }
+.log-border-information { border-left-color: var(--log-info); }
+.log-border-warning { border-left-color: var(--log-warning); }
+.log-border-error { border-left-color: var(--log-error); }
+.log-border-fatal { border-left-color: var(--log-fatal); }
+
+/* Log level backgrounds (subtle) */
+.log-bg-debug { background-color: rgba(107, 114, 128, 0.1); }
+.log-bg-information { background-color: rgba(59, 130, 246, 0.1); }
+.log-bg-warning { background-color: rgba(245, 158, 11, 0.1); }
+.log-bg-error { background-color: rgba(239, 68, 68, 0.1); }
+.log-bg-fatal { background-color: rgba(220, 38, 38, 0.15); }
+
+/* ===== CUSTOM COMPONENTS ===== */
+
+/* Cannon button styles */
+.btn-cannon {
+  @apply px-4 py-2 rounded-md font-medium transition-all duration-200;
+  @apply bg-cannon-fire text-white;
+  @apply hover:bg-cannon-ember hover:shadow-fire;
+  @apply active:scale-[0.98];
+  @apply focus:outline-none focus:ring-2 focus:ring-cannon-glow focus:ring-offset-2 focus:ring-offset-cannon-black;
+}
+
+.btn-cannon-secondary {
+  @apply px-4 py-2 rounded-md font-medium transition-all duration-200;
+  @apply bg-cannon-steel text-text-primary border border-cannon-graphite;
+  @apply hover:bg-cannon-graphite hover:border-cannon-slate;
+  @apply active:scale-[0.98];
+  @apply focus:outline-none focus:ring-2 focus:ring-cannon-fire/50 focus:ring-offset-2 focus:ring-offset-cannon-black;
+}
+
+.btn-cannon-ghost {
+  @apply px-4 py-2 rounded-md font-medium transition-all duration-200;
+  @apply bg-transparent text-text-secondary;
+  @apply hover:bg-cannon-steel hover:text-text-primary;
+  @apply active:scale-[0.98];
+}
+
+/* Input styles */
+.input-cannon {
+  @apply w-full px-4 py-2.5 rounded-md font-mono text-sm;
+  @apply bg-cannon-charcoal text-text-primary;
+  @apply border border-cannon-graphite;
+  @apply placeholder:text-text-muted;
+  @apply focus:outline-none focus:border-cannon-fire focus:ring-1 focus:ring-cannon-fire/50;
+  @apply transition-all duration-200;
+}
+
+.select-cannon {
+  @apply w-full px-4 py-2.5 rounded-md text-sm;
+  @apply bg-cannon-charcoal text-text-primary;
+  @apply border border-cannon-graphite;
+  @apply focus:outline-none focus:border-cannon-fire focus:ring-1 focus:ring-cannon-fire/50;
+  @apply transition-all duration-200;
+  @apply cursor-pointer;
+}
+
+/* Card styles */
+.card-cannon {
+  @apply bg-cannon-charcoal rounded-lg border border-cannon-graphite;
+  @apply transition-all duration-200;
+}
+
+.card-cannon-hover {
+  @apply card-cannon;
+  @apply hover:border-cannon-slate hover:shadow-cannon;
+}
+
+/* ===== SCROLLBAR STYLING ===== */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--cannon-charcoal);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cannon-graphite);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cannon-slate);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cannon-graphite) var(--cannon-charcoal);
+}
+
+/* ===== UTILITY CLASSES ===== */
+
+/* Live indicator pulse */
+.live-pulse {
+  @apply relative;
+}
+
+.live-pulse::before {
+  content: '';
+  @apply absolute inset-0 rounded-full bg-cannon-tracer;
+  animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* Glow effects */
+.glow-fire {
+  box-shadow: 0 0 20px rgba(255, 77, 42, 0.3);
+}
+
+.glow-tracer {
+  box-shadow: 0 0 20px rgba(0, 212, 170, 0.3);
+}
+
+/* Text gradient */
+.text-gradient-fire {
+  @apply bg-gradient-to-r from-cannon-fire to-cannon-ember bg-clip-text text-transparent;
+}
+
+/* Backdrop blur for nav */
+.nav-blur {
+  @apply backdrop-blur-md bg-cannon-black/90;
+}
+
+/* Touch-friendly targets */
+.touch-target {
+  @apply min-h-[44px] min-w-[44px];
+}
+
+/* ===== RESPONSIVE HELPERS ===== */
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* Safe area padding for PWA */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+}
