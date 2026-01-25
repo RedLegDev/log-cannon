@@ -1,7 +1,9 @@
 'use client'
 
+import { useState, useRef, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ChevronRight, ChevronDown, Check, X, AlertTriangle } from 'lucide-react'
+import { ChevronRight, ChevronDown, Check, X, AlertTriangle, Columns, MoreVertical } from 'lucide-react'
+import { ColumnConfig } from '@/hooks/useColumns'
 
 interface LogRowProps {
   log: {
@@ -16,6 +18,9 @@ interface LogRowProps {
   isExpanded: boolean
   onToggle: () => void
   isNew?: boolean
+  columns?: ColumnConfig[]
+  onToggleColumn?: (property: string) => void
+  hasColumn?: (property: string) => boolean
 }
 
 function getLevelClass(level: string): string {
@@ -131,7 +136,108 @@ function isFilterableValue(value: unknown): boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
 }
 
-export function LogRow({ log, isExpanded, onToggle, isNew }: LogRowProps) {
+function formatColumnValue(value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'string') {
+    if (value.length > 15) return value.slice(0, 15) + '…'
+    return value
+  }
+  if (typeof value === 'number') return value.toLocaleString()
+  if (typeof value === 'boolean') return value.toString()
+  return '—'
+}
+
+function getColumnTooltip(property: string, value: unknown): string {
+  if (value === null || value === undefined) return `${property}: (no value)`
+  return `${property}: ${String(value)}`
+}
+
+interface PropertyMenuProps {
+  property: string
+  value: unknown
+  isColumn: boolean
+  onToggleColumn: () => void
+  onFilter: (exclude: boolean) => void
+  isFilterable: boolean
+}
+
+function PropertyMenu({ property, value, isColumn, onToggleColumn, onFilter, isFilterable }: PropertyMenuProps) {
+  const [isOpen, setIsOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isOpen])
+
+  return (
+    <div className="relative" ref={menuRef}>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          setIsOpen(!isOpen)
+        }}
+        className="p-1.5 text-text-muted hover:text-text-secondary hover:bg-cannon-steel rounded transition-colors"
+        title="Property actions"
+      >
+        <MoreVertical size={14} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 top-full mt-1 w-48 bg-cannon-charcoal border border-cannon-graphite rounded-lg shadow-cannon z-50 overflow-hidden animate-slide-down">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleColumn()
+              setIsOpen(false)
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-cannon-steel transition-colors"
+          >
+            <Columns size={14} />
+            {isColumn ? 'Remove column' : 'Show as column'}
+          </button>
+
+          {isFilterable && (
+            <>
+              <div className="border-t border-cannon-graphite" />
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onFilter(false)
+                  setIsOpen(false)
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-cannon-steel transition-colors"
+              >
+                <Check size={14} className="text-cannon-tracer" />
+                Find this value
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onFilter(true)
+                  setIsOpen(false)
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-cannon-steel transition-colors"
+              >
+                <X size={14} className="text-cannon-critical" />
+                Exclude this value
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggleColumn, hasColumn }: LogRowProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const properties = parseProperties(log.properties)
@@ -186,6 +292,29 @@ export function LogRow({ log, isExpanded, onToggle, isNew }: LogRowProps) {
               <span className="text-text-secondary text-xs md:text-sm px-2 py-0.5 bg-cannon-steel rounded">
                 {log.source}
               </span>
+              {/* Dynamic columns */}
+              {columns.map((col) => {
+                const value = properties?.[col.property]
+                const displayValue = formatColumnValue(value)
+                const tooltip = getColumnTooltip(col.property, value)
+                const isMissing = value === null || value === undefined
+
+                return (
+                  <span
+                    key={col.property}
+                    title={tooltip}
+                    className={`
+                      hidden md:inline-block text-xs px-2 py-0.5 rounded font-mono truncate max-w-[120px]
+                      ${isMissing
+                        ? 'bg-cannon-graphite/50 text-text-muted italic'
+                        : 'bg-cannon-steel text-text-code'
+                      }
+                    `}
+                  >
+                    {displayValue}
+                  </span>
+                )
+              })}
             </div>
             <div className="text-text-primary font-mono text-sm leading-relaxed line-clamp-2 md:line-clamp-1">
               {log.message}
@@ -218,42 +347,38 @@ export function LogRow({ log, isExpanded, onToggle, isNew }: LogRowProps) {
                   <tbody>
                     {Object.entries(properties)
                       .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([key, value]) => (
-                        <tr key={key} className="border-b border-cannon-graphite/50 last:border-0 group">
-                          <td className="py-2.5 pr-2 w-16 align-top">
-                            {isFilterableValue(value) && (
-                              <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleFilter(key, value, false)
-                                  }}
-                                  className="p-1.5 text-text-muted hover:text-cannon-tracer hover:bg-cannon-steel rounded transition-colors touch-target"
-                                  title={`Filter where ${key} = ${value}`}
-                                >
-                                  <Check size={14} />
-                                </button>
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    handleFilter(key, value, true)
-                                  }}
-                                  className="p-1.5 text-text-muted hover:text-cannon-critical hover:bg-cannon-steel rounded transition-colors touch-target"
-                                  title={`Filter where ${key} != ${value}`}
-                                >
-                                  <X size={14} />
-                                </button>
+                      .map(([key, value]) => {
+                        const isColumn = hasColumn?.(key) ?? false
+                        return (
+                          <tr key={key} className="border-b border-cannon-graphite/50 last:border-0 group">
+                            <td className="py-2.5 pr-2 w-10 align-top">
+                              <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                                <PropertyMenu
+                                  property={key}
+                                  value={value}
+                                  isColumn={isColumn}
+                                  onToggleColumn={() => onToggleColumn?.(key)}
+                                  onFilter={(exclude) => handleFilter(key, value, exclude)}
+                                  isFilterable={isFilterableValue(value)}
+                                />
                               </div>
-                            )}
-                          </td>
-                          <td className="py-2.5 pr-4 text-cannon-warning font-medium font-mono whitespace-nowrap align-top">
-                            {key}
-                          </td>
-                          <td className="py-2.5 break-all align-top">
-                            {formatValue(value)}
-                          </td>
-                        </tr>
-                      ))}
+                            </td>
+                            <td className="py-2.5 pr-4 text-cannon-warning font-medium font-mono whitespace-nowrap align-top">
+                              <span className="flex items-center gap-2">
+                                {key}
+                                {isColumn && (
+                                  <span title="Shown as column">
+                                    <Columns size={12} className="text-text-muted" />
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                            <td className="py-2.5 break-all align-top">
+                              {formatValue(value)}
+                            </td>
+                          </tr>
+                        )
+                      })}
                   </tbody>
                 </table>
               </div>

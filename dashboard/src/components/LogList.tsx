@@ -1,7 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { LogRow } from './LogRow'
+import { ColumnPicker } from './ColumnPicker'
+import { useColumns } from '@/hooks/useColumns'
 import { FileText } from 'lucide-react'
 
 interface Log {
@@ -18,8 +20,31 @@ interface LogListProps {
   logs: Log[]
 }
 
+function extractPropertiesFromLogs(logs: Log[]): string[] {
+  const propertySet = new Set<string>()
+
+  for (const log of logs.slice(0, 100)) { // Limit to first 100 for performance
+    try {
+      const props = JSON.parse(log.properties)
+      if (props && typeof props === 'object') {
+        for (const key of Object.keys(props)) {
+          propertySet.add(key)
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  return Array.from(propertySet).sort()
+}
+
 export function LogList({ logs }: LogListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const { columns, addColumn, removeColumn, toggleColumn, hasColumn, canAddMore, maxColumns } = useColumns()
+
+  // Extract unique property names from logs for autocomplete
+  const recentProperties = useMemo(() => extractPropertiesFromLogs(logs), [logs])
 
   const toggleExpanded = (id: string) => {
     setExpandedId(current => current === id ? null : id)
@@ -40,15 +65,36 @@ export function LogList({ logs }: LogListProps) {
   }
 
   return (
-    <div className="space-y-2">
-      {logs.map(log => (
-        <LogRow
-          key={log.id}
-          log={log}
-          isExpanded={expandedId === log.id}
-          onToggle={() => toggleExpanded(log.id)}
+    <div>
+      {/* Header with column picker */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-text-muted text-xs uppercase tracking-wide">
+          Log Events
+        </div>
+        <ColumnPicker
+          columns={columns}
+          onRemove={removeColumn}
+          onAdd={addColumn}
+          recentProperties={recentProperties}
+          canAddMore={canAddMore}
+          maxColumns={maxColumns}
         />
-      ))}
+      </div>
+
+      {/* Log entries */}
+      <div className="space-y-2">
+        {logs.map(log => (
+          <LogRow
+            key={log.id}
+            log={log}
+            isExpanded={expandedId === log.id}
+            onToggle={() => toggleExpanded(log.id)}
+            columns={columns}
+            onToggleColumn={toggleColumn}
+            hasColumn={hasColumn}
+          />
+        ))}
+      </div>
     </div>
   )
 }
