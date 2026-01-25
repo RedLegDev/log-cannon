@@ -216,9 +216,18 @@ After implementing, verify logs appear in Log-Cannon:
 
 For logging from React components and client-side code, you need a browser-compatible logger that batches events and sends them reliably.
 
-### 1. Proxy API Route (Required)
+### Choosing an Approach: Proxy vs Direct
 
-Log-Cannon runs on a separate domain (e.g., `logs.redleg.dev`), so you must proxy client-side log requests through your own API route. This also keeps your API key server-side:
+| Approach | API Key Exposure | CORS Required | Best For |
+|----------|------------------|---------------|----------|
+| **Proxy route** | Hidden server-side | No | Production apps, sensitive data |
+| **Direct to Log-Cannon** | Exposed in browser | Yes (add to ingest API) | Internal tools, dev/staging, public analytics |
+
+**Recommendation:** Use the proxy route for production applications. Direct access is simpler but exposes your API key in browser dev tools.
+
+### Option A: Proxy API Route (Recommended for Production)
+
+Routes client logs through your own API, keeping the API key server-side:
 
 ```typescript
 // app/api/logs/route.ts
@@ -239,6 +248,46 @@ export async function POST(request: Request) {
   return new Response(null, { status: response.status });
 }
 ```
+
+### Option B: Direct Browser Access (Simpler, but exposes API key)
+
+For internal tools or non-sensitive logs, you can skip the proxy. This requires adding CORS headers to your Log-Cannon ingest API.
+
+**Step 1:** Add CORS to Log-Cannon's ingest API (in `ingest-api/main.go`):
+```go
+// Add CORS headers to handleIngest
+w.Header().Set("Access-Control-Allow-Origin", "*") // Or specific origins
+w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Seq-ApiKey")
+```
+
+**Step 2:** Configure the client logger to hit Log-Cannon directly:
+```typescript
+// lib/client-logger.ts
+export const logger = new ClientLogger({
+  endpoint: 'https://logs.redleg.dev/ingest/clef',
+  // API key will be visible in browser - only use for non-sensitive contexts
+});
+
+// Override flush to include the API key header
+// See full ClientLogger implementation below and modify fetch() call:
+// headers: {
+//   'Content-Type': 'application/vnd.serilog.clef',
+//   'X-Seq-ApiKey': 'your-public-api-key',
+// },
+```
+
+**When this is acceptable:**
+- Internal admin tools
+- Development/staging environments
+- Public analytics where log data isn't sensitive
+- Logs with a dedicated, rate-limited API key
+
+**When to avoid:**
+- Production user-facing apps
+- Logs containing PII or sensitive business data
+- When API key abuse could cause problems
+
+---
 
 ### 2. Browser Logger Utility
 
@@ -560,7 +609,7 @@ export function initializeSession(userId?: string) {
 
 ### Client-Side Best Practices
 
-1. **Always use the proxy route**: Log-Cannon is on a separate domain, so direct browser requests won't work
+1. **Use proxy for production**: Keeps API key secret; use direct access only for internal/dev tools
 2. **Batch aggressively**: Client-side logging should batch more (10+ events) to reduce requests
 3. **Use `sendBeacon`**: For page unload, `sendBeacon` is more reliable than `fetch`
 4. **Add `keepalive: true`**: Allows fetch requests to complete even if the page is closing
@@ -576,5 +625,5 @@ export function initializeSession(userId?: string) {
 - **401/403 errors**: Verify `X-Seq-ApiKey` header is set correctly
 - **Logs delayed**: This is normal - `waitUntil` runs after response
 - **Missing properties**: Ensure properties are JSON-serializable (no circular references)
-- **Client logs blocked by CORS**: Use a proxy API route instead of calling Log-Cannon directly
+- **Client logs blocked by CORS**: Either use a proxy route, or add CORS headers to Log-Cannon's ingest API
 - **Logs lost on page close**: Ensure `sendBeacon` fallback is working; check browser dev tools

@@ -415,9 +415,18 @@ export default {
 
 If your Worker serves a frontend application (SPA, SSR hydration, etc.), you'll want client-side logging from React components and browser JavaScript.
 
-### 1. Proxy Endpoint in Your Worker (Required)
+### Choosing an Approach: Proxy vs Direct
 
-Log-Cannon runs on a separate domain (e.g., `logs.redleg.dev`), so you must proxy client-side log requests through your Worker. This keeps the API key server-side and handles CORS:
+| Approach | API Key Exposure | CORS Required | Best For |
+|----------|------------------|---------------|----------|
+| **Proxy endpoint** | Hidden server-side | No | Production apps, sensitive data |
+| **Direct to Log-Cannon** | Exposed in browser | Yes (add to ingest API) | Internal tools, dev/staging, public analytics |
+
+**Recommendation:** Use the proxy endpoint for production applications. Direct access is simpler but exposes your API key in browser dev tools.
+
+### Option A: Proxy Endpoint in Your Worker (Recommended)
+
+Routes client logs through your Worker, keeping the API key server-side:
 
 ```typescript
 // Add to your Worker's fetch handler
@@ -452,6 +461,38 @@ if (url.pathname === '/api/logs' && request.method === 'OPTIONS') {
   });
 }
 ```
+
+### Option B: Direct Browser Access (Simpler, but exposes API key)
+
+For internal tools or non-sensitive logs, you can skip the proxy. This requires adding CORS headers to your Log-Cannon ingest API.
+
+**Step 1:** Add CORS to Log-Cannon's ingest API (in `ingest-api/main.go`):
+```go
+// Add CORS headers to handleIngest
+w.Header().Set("Access-Control-Allow-Origin", "*") // Or specific origins
+w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Seq-ApiKey")
+```
+
+**Step 2:** Configure the client logger to hit Log-Cannon directly:
+```typescript
+export const logger = new ClientLogger({
+  endpoint: 'https://logs.redleg.dev/ingest/clef',
+});
+
+// Modify the flush() method to include the API key header
+// (visible in browser - only use for non-sensitive contexts)
+```
+
+**When this is acceptable:**
+- Internal admin tools
+- Development/staging environments
+- Public analytics where log data isn't sensitive
+
+**When to avoid:**
+- Production user-facing apps
+- Logs containing PII or sensitive business data
+
+---
 
 ### 2. Browser Logger Utility
 
@@ -747,7 +788,7 @@ export function setupPerformanceLogging() {
 
 ### Client-Side Best Practices
 
-1. **Always use the proxy endpoint**: Log-Cannon is on a separate domain, so direct browser requests won't work
+1. **Use proxy for production**: Keeps API key secret; use direct access only for internal/dev tools
 2. **Batch logs**: Accumulate 10+ events before sending to reduce network overhead
 3. **Use `sendBeacon`**: More reliable than `fetch` during page unload
 4. **Add `keepalive: true`**: Keeps fetch alive even if page closes
@@ -764,5 +805,5 @@ export function setupPerformanceLogging() {
 - **Logs truncated**: Each line must be valid JSON; check for unescaped characters
 - **High latency**: `waitUntil` runs after response, so user-facing latency shouldn't be affected
 - **Missing env vars**: Ensure secrets are set via `wrangler secret put`
-- **Client logs failing**: Check browser Network tab for `/api/logs` requests; verify CORS headers
+- **Client logs failing**: Check browser Network tab; if using direct access, ensure CORS is enabled on Log-Cannon
 - **Logs lost on navigation**: Ensure `sendBeacon` handler is registered before user can navigate
