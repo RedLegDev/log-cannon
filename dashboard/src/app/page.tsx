@@ -1,5 +1,5 @@
 import { Suspense } from 'react'
-import { getRecentLogs, getSources, LogEvent, PropertyFilter } from '@/lib/clickhouse'
+import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue } from '@/lib/clickhouse'
 import { LogList } from '@/components/LogList'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
@@ -17,12 +17,20 @@ function parsePropertyFilters(searchParams: SearchParams): PropertyFilter[] {
 
   for (const [key, value] of Object.entries(searchParams)) {
     if (key.startsWith('prop.') && value) {
-      const exclude = key.endsWith('!')
-      const propKey = exclude
+      // Handle legacy exclude format: prop.key!
+      const isLegacyExclude = key.endsWith('!')
+      const propKey = isLegacyExclude
         ? key.slice(5, -1)  // Remove 'prop.' and '!'
         : key.slice(5)      // Remove 'prop.'
 
-      filters.push({ key: propKey, value, exclude })
+      if (isLegacyExclude) {
+        // Legacy format: prop.key! with value
+        filters.push({ key: propKey, value, operator: '!=' })
+      } else {
+        // New format: parse operator from value (e.g., ">5", ">=10", "!=foo")
+        const { operator, value: parsedValue } = parseOperatorFromValue(value)
+        filters.push({ key: propKey, value: parsedValue, operator })
+      }
     }
   }
 
@@ -32,20 +40,21 @@ function parsePropertyFilters(searchParams: SearchParams): PropertyFilter[] {
 export default async function LogExplorer({
   searchParams,
 }: {
-  searchParams: SearchParams
+  searchParams: Promise<SearchParams>
 }) {
   let logs: LogEvent[] = []
   let sources: string[] = []
   let error: string | null = null
 
-  const propertyFilters = parsePropertyFilters(searchParams)
+  const resolvedParams = await searchParams
+  const propertyFilters = parsePropertyFilters(resolvedParams)
 
   try {
     [logs, sources] = await Promise.all([
       getRecentLogs(
-        searchParams.source,
-        searchParams.level,
-        searchParams.search,
+        resolvedParams.source,
+        resolvedParams.level,
+        resolvedParams.search,
         propertyFilters
       ),
       getSources()
@@ -69,14 +78,14 @@ export default async function LogExplorer({
       </div>
 
       {/* Search Form */}
-      <form className="mb-6" key={`${searchParams.source || ''}-${searchParams.level || ''}-${searchParams.search || ''}`}>
+      <form className="mb-6" key={`${resolvedParams.source || ''}-${resolvedParams.level || ''}-${resolvedParams.search || ''}`}>
         <div className="card-cannon p-4">
           <div className="flex flex-col md:flex-row gap-3">
             {/* Source Select */}
             <div className="relative md:w-48">
               <select
                 name="source"
-                defaultValue={searchParams.source || ''}
+                defaultValue={resolvedParams.source || ''}
                 className="select-cannon w-full appearance-none pr-10"
               >
                 <option value="">All Sources</option>
@@ -91,7 +100,7 @@ export default async function LogExplorer({
             <div className="relative md:w-44">
               <select
                 name="level"
-                defaultValue={searchParams.level || ''}
+                defaultValue={resolvedParams.level || ''}
                 className="select-cannon w-full appearance-none pr-10"
               >
                 <option value="">All Levels</option>
@@ -109,7 +118,7 @@ export default async function LogExplorer({
                 type="text"
                 name="search"
                 placeholder="Search messages..."
-                defaultValue={searchParams.search || ''}
+                defaultValue={resolvedParams.search || ''}
                 className="input-cannon pl-10 w-full"
               />
             </div>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { parseOperatorFromValue, PropertyOperator } from '@/lib/clickhouse';
 
 export function SaveQueryButton() {
   const searchParams = useSearchParams();
@@ -25,12 +26,12 @@ export function SaveQueryButton() {
     const search = searchParams.get('search') || '';
 
     // Extract property filters
-    const propertyFilters: { key: string; value: string; exclude: boolean }[] = [];
+    const propertyFilters: { key: string; value: string; operator: PropertyOperator }[] = [];
     searchParams.forEach((value, key) => {
       if (key.startsWith('prop.')) {
-        const exclude = key.endsWith('!');
-        const propKey = exclude ? key.slice(5, -1) : key.slice(5);
-        propertyFilters.push({ key: propKey, value, exclude });
+        const propKey = key.slice(5);
+        const { operator, value: parsedValue } = parseOperatorFromValue(value);
+        propertyFilters.push({ key: propKey, value: parsedValue, operator });
       }
     });
 

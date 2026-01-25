@@ -42,10 +42,47 @@ export async function queryClickHouse<T>(sql: string): Promise<T[]> {
   return result.data;
 }
 
+export type PropertyOperator = '=' | '!=' | '>' | '>=' | '<' | '<=';
+
 export interface PropertyFilter {
   key: string;
   value: string;
-  exclude: boolean;
+  operator: PropertyOperator;
+}
+
+// Parse operator from value string (e.g., ">5" -> { operator: ">", value: "5" })
+export function parseOperatorFromValue(rawValue: string): { operator: PropertyOperator; value: string } {
+  if (rawValue.startsWith('>=')) return { operator: '>=', value: rawValue.slice(2) };
+  if (rawValue.startsWith('<=')) return { operator: '<=', value: rawValue.slice(2) };
+  if (rawValue.startsWith('!=')) return { operator: '!=', value: rawValue.slice(2) };
+  if (rawValue.startsWith('>')) return { operator: '>', value: rawValue.slice(1) };
+  if (rawValue.startsWith('<')) return { operator: '<', value: rawValue.slice(1) };
+  return { operator: '=', value: rawValue };
+}
+
+function escapeString(str: string): string {
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+// Build JSON extraction SQL for nested paths (e.g., "metrics.End_to_End" -> JSONExtract with path)
+function buildJsonExtractSql(columnName: string, path: string, valueType: 'string' | 'number'): string {
+  const parts = path.split('.');
+  if (parts.length === 1) {
+    // Simple top-level property
+    return valueType === 'number'
+      ? `JSONExtractFloat(${columnName}, '${escapeString(parts[0])}')`
+      : `JSONExtractString(${columnName}, '${escapeString(parts[0])}')`;
+  }
+  // Nested path - use multiple arguments to JSONExtract
+  const pathArgs = parts.map(p => `'${escapeString(p)}'`).join(', ');
+  return valueType === 'number'
+    ? `JSONExtractFloat(${columnName}, ${pathArgs})`
+    : `JSONExtractString(${columnName}, ${pathArgs})`;
+}
+
+// Determine if a value looks like a number
+function isNumericValue(value: string): boolean {
+  return !isNaN(Number(value)) && value.trim() !== '';
 }
 
 export async function getRecentLogs(
@@ -71,12 +108,17 @@ export async function getRecentLogs(
 
   if (propertyFilters && propertyFilters.length > 0) {
     for (const filter of propertyFilters) {
-      const jsonValue = escapeString(filter.value);
-      const jsonKey = escapeString(filter.key);
-      if (filter.exclude) {
-        conditions.push(`JSONExtractString(e.properties, '${jsonKey}') != '${jsonValue}'`);
+      const isNumeric = isNumericValue(filter.value);
+      const jsonExtract = buildJsonExtractSql('e.properties', filter.key, isNumeric ? 'number' : 'string');
+      const escapedValue = escapeString(filter.value);
+
+      if (isNumeric) {
+        // Numeric comparison
+        conditions.push(`${jsonExtract} ${filter.operator} ${escapedValue}`);
       } else {
-        conditions.push(`JSONExtractString(e.properties, '${jsonKey}') = '${jsonValue}'`);
+        // String comparison (only = and != make sense)
+        const op = filter.operator === '!=' ? '!=' : '=';
+        conditions.push(`${jsonExtract} ${op} '${escapedValue}'`);
       }
     }
   }
@@ -142,10 +184,6 @@ export async function getSources(): Promise<string[]> {
 
   const results = await queryClickHouse<{source: string}>(sql);
   return results.map(r => r.source);
-}
-
-function escapeString(str: string): string {
-  return str.replace(/'/g, "\\'").replace(/\\/g, '\\\\');
 }
 
 export interface APIKey {

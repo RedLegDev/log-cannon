@@ -2,11 +2,12 @@
 
 import { useRouter, useSearchParams } from 'next/navigation'
 import { X, Filter } from 'lucide-react'
+import { PropertyOperator, parseOperatorFromValue } from '@/lib/clickhouse'
 
 interface PropertyFilter {
   key: string
   value: string
-  exclude: boolean
+  operator: PropertyOperator
 }
 
 function parsePropertyFilters(searchParams: URLSearchParams): PropertyFilter[] {
@@ -14,12 +15,9 @@ function parsePropertyFilters(searchParams: URLSearchParams): PropertyFilter[] {
 
   searchParams.forEach((value, key) => {
     if (key.startsWith('prop.')) {
-      const exclude = key.endsWith('!')
-      const propKey = exclude
-        ? key.slice(5, -1)  // Remove 'prop.' and '!'
-        : key.slice(5)      // Remove 'prop.'
-
-      filters.push({ key: propKey, value, exclude })
+      const propKey = key.slice(5)  // Remove 'prop.'
+      const { operator, value: parsedValue } = parseOperatorFromValue(value)
+      filters.push({ key: propKey, value: parsedValue, operator })
     }
   })
 
@@ -35,7 +33,7 @@ export function FilterBar() {
 
   const removeFilter = (filter: PropertyFilter) => {
     const params = new URLSearchParams(searchParams.toString())
-    const paramKey = filter.exclude ? `prop.${filter.key}!` : `prop.${filter.key}`
+    const paramKey = `prop.${filter.key}`
     params.delete(paramKey)
     router.push(`?${params.toString()}`)
   }
@@ -67,14 +65,14 @@ export function FilterBar() {
               className={`
                 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-mono
                 transition-all duration-200 group
-                ${filter.exclude
+                ${filter.operator === '!='
                   ? 'bg-cannon-critical/20 text-cannon-critical border border-cannon-critical/30 hover:border-cannon-critical/50'
                   : 'bg-cannon-fire/20 text-cannon-ember border border-cannon-fire/30 hover:border-cannon-fire/50'
                 }
               `}
             >
               <span className="font-semibold">{filter.key}</span>
-              <span className="text-text-muted">{filter.exclude ? '!=' : '='}</span>
+              <span className="text-text-muted">{filter.operator}</span>
               <span className="text-text-code">{filter.value}</span>
               <button
                 onClick={() => removeFilter(filter)}

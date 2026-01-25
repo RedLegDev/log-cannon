@@ -245,14 +245,11 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
 
   const handleFilter = (key: string, value: unknown, exclude: boolean) => {
     const params = new URLSearchParams(searchParams.toString())
-    const paramKey = exclude ? `prop.${key}!` : `prop.${key}`
-    const oppositeKey = exclude ? `prop.${key}` : `prop.${key}!`
+    const paramKey = `prop.${key}`
 
-    // Remove opposite filter if exists
-    params.delete(oppositeKey)
-
-    // Set the new filter
-    params.set(paramKey, String(value))
+    // Set the new filter with operator prefix in value
+    const filterValue = exclude ? `!=${String(value)}` : String(value)
+    params.set(paramKey, filterValue)
 
     router.push(`?${params.toString()}`)
   }

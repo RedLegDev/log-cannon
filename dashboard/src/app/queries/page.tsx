@@ -62,8 +62,12 @@ export default function QueriesPage() {
     try {
       const filters = JSON.parse(query.property_filters);
       for (const filter of filters) {
-        const key = filter.exclude ? `prop.${filter.key}!` : `prop.${filter.key}`;
-        params.set(key, filter.value);
+        const key = `prop.${filter.key}`;
+        // Include operator in value for non-equals operators
+        const value = filter.operator && filter.operator !== '='
+          ? `${filter.operator}${filter.value}`
+          : filter.value;
+        params.set(key, value);
       }
     } catch {
       // Ignore parse errors
