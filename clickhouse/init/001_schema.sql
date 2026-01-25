@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS logs.api_keys (
 ) ENGINE = MergeTree
 ORDER BY api_key;
 
--- Main logs table
+-- Main logs table with indexes
 CREATE TABLE IF NOT EXISTS logs.events (
     id UUID DEFAULT generateUUIDv4(),
     timestamp DateTime64(3),
@@ -21,11 +21,9 @@ CREATE TABLE IF NOT EXISTS logs.events (
     exception String DEFAULT '',
     event_type String DEFAULT '',
     source String,
-    properties String
+    properties String,
+    INDEX idx_level (level) TYPE set(5) GRANULARITY 1,
+    INDEX idx_message (message) TYPE tokenbf_v1(10240, 3, 0) GRANULARITY 1
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(timestamp)
 ORDER BY (source, toStartOfHour(timestamp), level);
-
--- Index for common query patterns
-ALTER TABLE logs.events ADD INDEX IF NOT EXISTS idx_level (level) TYPE set(5) GRANULARITY 1;
-ALTER TABLE logs.events ADD INDEX IF NOT EXISTS idx_message (message) TYPE tokenbf_v1(10240, 3, 0) GRANULARITY 1;
