@@ -42,10 +42,17 @@ export async function queryClickHouse<T>(sql: string): Promise<T[]> {
   return result.data;
 }
 
+export interface PropertyFilter {
+  key: string;
+  value: string;
+  exclude: boolean;
+}
+
 export async function getRecentLogs(
   source?: string,
   level?: string,
   search?: string,
+  propertyFilters?: PropertyFilter[],
   limit: number = 100
 ): Promise<LogEvent[]> {
   let conditions = ['e.timestamp > now() - INTERVAL 24 HOUR'];
@@ -60,6 +67,18 @@ export async function getRecentLogs(
 
   if (search) {
     conditions.push(`e.message LIKE '%${escapeString(search)}%'`);
+  }
+
+  if (propertyFilters && propertyFilters.length > 0) {
+    for (const filter of propertyFilters) {
+      const jsonValue = escapeString(filter.value);
+      const jsonKey = escapeString(filter.key);
+      if (filter.exclude) {
+        conditions.push(`JSONExtractString(e.properties, '${jsonKey}') != '${jsonValue}'`);
+      } else {
+        conditions.push(`JSONExtractString(e.properties, '${jsonKey}') = '${jsonValue}'`);
+      }
+    }
   }
 
   const sql = `

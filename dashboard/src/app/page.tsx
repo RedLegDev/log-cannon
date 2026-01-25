@@ -1,39 +1,29 @@
-import { getRecentLogs, getSources, LogEvent } from '@/lib/clickhouse'
+import { getRecentLogs, getSources, LogEvent, PropertyFilter } from '@/lib/clickhouse'
+import { LogList } from '@/components/LogList'
+import { FilterBar } from '@/components/FilterBar'
 
 interface SearchParams {
   source?: string
   level?: string
   search?: string
+  [key: string]: string | undefined
 }
 
-function getLevelClass(level: string): string {
-  switch (level.toLowerCase()) {
-    case 'debug': return 'log-level-debug'
-    case 'information': return 'log-level-information'
-    case 'warning': return 'log-level-warning'
-    case 'error': return 'log-level-error'
-    case 'fatal': return 'log-level-fatal'
-    default: return 'text-gray-400'
-  }
-}
+function parsePropertyFilters(searchParams: SearchParams): PropertyFilter[] {
+  const filters: PropertyFilter[] = []
 
-function formatTimestamp(ts: string): string {
-  try {
-    const date = new Date(ts)
-    return date.toLocaleString()
-  } catch {
-    return ts
-  }
-}
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (key.startsWith('prop.') && value) {
+      const exclude = key.endsWith('!')
+      const propKey = exclude
+        ? key.slice(5, -1)  // Remove 'prop.' and '!'
+        : key.slice(5)      // Remove 'prop.'
 
-function formatProperties(props: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(props)
-    if (Object.keys(parsed).length === 0) return null
-    return parsed
-  } catch {
-    return null
+      filters.push({ key: propKey, value, exclude })
+    }
   }
+
+  return filters
 }
 
 export default async function LogExplorer({
@@ -45,9 +35,16 @@ export default async function LogExplorer({
   let sources: string[] = []
   let error: string | null = null
 
+  const propertyFilters = parsePropertyFilters(searchParams)
+
   try {
     [logs, sources] = await Promise.all([
-      getRecentLogs(searchParams.source, searchParams.level, searchParams.search),
+      getRecentLogs(
+        searchParams.source,
+        searchParams.level,
+        searchParams.search,
+        propertyFilters
+      ),
       getSources()
     ])
   } catch (e) {
@@ -99,6 +96,8 @@ export default async function LogExplorer({
         </button>
       </form>
 
+      <FilterBar />
+
       {error ? (
         <div className="bg-red-900 border border-red-700 text-red-200 px-4 py-3 rounded">
           {error}
@@ -108,40 +107,7 @@ export default async function LogExplorer({
           No logs found. Logs from the last 24 hours will appear here.
         </div>
       ) : (
-        <div className="space-y-2">
-          {logs.map(log => {
-            const props = formatProperties(log.properties)
-            return (
-              <div key={log.id} className="bg-gray-800 rounded p-4 border border-gray-700">
-                <div className="flex items-start justify-between">
-                  <div className="flex-grow">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className="text-gray-500 text-sm">{formatTimestamp(log.timestamp)}</span>
-                      <span className={`font-medium ${getLevelClass(log.level)}`}>{log.level}</span>
-                      <span className="text-gray-400 text-sm">{log.source}</span>
-                    </div>
-                    <div className="text-white font-mono text-sm">{log.message}</div>
-                    {log.exception && (
-                      <pre className="mt-2 text-red-400 text-xs bg-gray-900 p-2 rounded overflow-x-auto">
-                        {log.exception}
-                      </pre>
-                    )}
-                    {props && (
-                      <details className="mt-2">
-                        <summary className="text-gray-500 text-sm cursor-pointer hover:text-gray-300">
-                          Properties
-                        </summary>
-                        <pre className="mt-1 text-gray-400 text-xs bg-gray-900 p-2 rounded overflow-x-auto">
-                          {JSON.stringify(props, null, 2)}
-                        </pre>
-                      </details>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-        </div>
+        <LogList logs={logs} />
       )}
     </div>
   )
