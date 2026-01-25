@@ -15,6 +15,8 @@ const navLinks = [
   { href: '/', label: 'Log Explorer' },
   { href: '/services', label: 'Services' },
   { href: '/live', label: 'Live Tail' },
+  { href: '/queries', label: 'Saved Queries' },
+  { href: '/endpoints', label: 'Endpoints' },
   { href: '/keys', label: 'API Keys' },
 ]
 

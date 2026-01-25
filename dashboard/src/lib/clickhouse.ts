@@ -225,3 +225,221 @@ function generateAPIKey(): string {
   }
   return result;
 }
+
+// Saved Queries
+
+export interface SavedQuery {
+  id: string;
+  name: string;
+  description: string;
+  source: string;
+  level: string;
+  search: string;
+  property_filters: string;
+  created_at: string;
+}
+
+export async function getSavedQueries(): Promise<SavedQuery[]> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      source,
+      level,
+      search,
+      property_filters,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at
+    FROM logs.saved_queries
+    ORDER BY created_at DESC
+  `;
+
+  return queryClickHouse<SavedQuery>(sql);
+}
+
+export interface SavedQueryInput {
+  name: string;
+  description?: string;
+  source?: string;
+  level?: string;
+  search?: string;
+  propertyFilters?: PropertyFilter[];
+}
+
+export async function createSavedQuery(query: SavedQueryInput): Promise<void> {
+  const propertyFiltersJson = JSON.stringify(query.propertyFilters || []);
+  const sql = `
+    INSERT INTO logs.saved_queries (name, description, source, level, search, property_filters)
+    VALUES (
+      '${escapeString(query.name)}',
+      '${escapeString(query.description || '')}',
+      '${escapeString(query.source || '')}',
+      '${escapeString(query.level || '')}',
+      '${escapeString(query.search || '')}',
+      '${escapeString(propertyFiltersJson)}'
+    )
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function deleteSavedQuery(id: string): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.saved_queries
+    DELETE WHERE id = '${escapeString(id)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+// Endpoints
+
+export interface Endpoint {
+  id: string;
+  name: string;
+  description: string;
+  sql_query: string;
+  cache_ttl_seconds: number;
+  enabled: number;
+  created_at: string;
+}
+
+export async function getEndpoints(): Promise<Endpoint[]> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      sql_query,
+      cache_ttl_seconds,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at
+    FROM logs.endpoints
+    ORDER BY created_at DESC
+  `;
+
+  return queryClickHouse<Endpoint>(sql);
+}
+
+export async function getEndpointByName(name: string): Promise<Endpoint | null> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      sql_query,
+      cache_ttl_seconds,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at
+    FROM logs.endpoints
+    WHERE name = '${escapeString(name)}'
+    LIMIT 1
+  `;
+
+  const results = await queryClickHouse<Endpoint>(sql);
+  return results.length > 0 ? results[0] : null;
+}
+
+export interface EndpointInput {
+  name: string;
+  description?: string;
+  sql_query: string;
+  cache_ttl_seconds?: number;
+}
+
+export async function createEndpoint(endpoint: EndpointInput): Promise<void> {
+  const sql = `
+    INSERT INTO logs.endpoints (name, description, sql_query, cache_ttl_seconds)
+    VALUES (
+      '${escapeString(endpoint.name)}',
+      '${escapeString(endpoint.description || '')}',
+      '${escapeString(endpoint.sql_query)}',
+      ${endpoint.cache_ttl_seconds || 0}
+    )
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function updateEndpoint(id: string, updates: Partial<EndpointInput> & { enabled?: boolean }): Promise<void> {
+  const setClauses: string[] = [];
+
+  if (updates.name !== undefined) {
+    setClauses.push(`name = '${escapeString(updates.name)}'`);
+  }
+  if (updates.description !== undefined) {
+    setClauses.push(`description = '${escapeString(updates.description)}'`);
+  }
+  if (updates.sql_query !== undefined) {
+    setClauses.push(`sql_query = '${escapeString(updates.sql_query)}'`);
+  }
+  if (updates.cache_ttl_seconds !== undefined) {
+    setClauses.push(`cache_ttl_seconds = ${updates.cache_ttl_seconds}`);
+  }
+  if (updates.enabled !== undefined) {
+    setClauses.push(`enabled = ${updates.enabled ? 1 : 0}`);
+  }
+
+  if (setClauses.length === 0) return;
+
+  const sql = `
+    ALTER TABLE logs.endpoints
+    UPDATE ${setClauses.join(', ')}
+    WHERE id = '${escapeString(id)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function deleteEndpoint(id: string): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.endpoints
+    DELETE WHERE id = '${escapeString(id)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function executeEndpointQuery(sqlQuery: string, params: Record<string, string>): Promise<unknown[]> {
+  // Interpolate @param placeholders
+  let interpolatedSql = sqlQuery;
+  for (const [key, value] of Object.entries(params)) {
+    // Only allow alphanumeric parameter names
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) continue;
+    const placeholder = new RegExp(`@${key}\\b`, 'g');
+    interpolatedSql = interpolatedSql.replace(placeholder, `'${escapeString(value)}'`);
+  }
+
+  // Security: Only allow SELECT statements
+  const trimmed = interpolatedSql.trim().toLowerCase();
+  if (!trimmed.startsWith('select')) {
+    throw new Error('Only SELECT statements are allowed');
+  }
+
+  return queryClickHouse<unknown>(interpolatedSql);
+}

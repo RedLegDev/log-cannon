@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { getRecentLogs, getSources, LogEvent, PropertyFilter } from '@/lib/clickhouse'
 import { LogList } from '@/components/LogList'
 import { FilterBar } from '@/components/FilterBar'
+import { SaveQueryButton } from '@/components/SaveQueryButton'
 import { Search, ChevronDown, AlertCircle } from 'lucide-react'
 
 interface SearchParams {
@@ -121,6 +122,11 @@ export default async function LogExplorer({
               <Search className="w-4 h-4 md:hidden" />
               <span className="hidden md:inline">Search Logs</span>
             </button>
+
+            {/* Save Query Button */}
+            <Suspense fallback={null}>
+              <SaveQueryButton />
+            </Suspense>
           </div>
         </div>
       </form>
