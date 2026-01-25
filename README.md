@@ -58,6 +58,28 @@ docker exec -it log-cannon-clickhouse-1 clickhouse-client -q \
   "INSERT INTO logs.api_keys (api_key, name) VALUES ('$(openssl rand -hex 32)', 'my-app')"
 ```
 
+### Discovery Mode (Migration from Seq)
+
+If you're migrating from Seq and don't have access to your existing API keys, enable **Discovery Mode** to auto-provision unknown keys:
+
+```bash
+# In .env or docker-compose
+DISCOVERY_MODE=true
+```
+
+When enabled:
+- Unknown API keys are automatically created as sources
+- Source names use format `discovered-{key-prefix}` (first 8 chars)
+- Logs are accepted immediately (no 403 errors)
+- Discovered keys appear in the API Keys management UI
+
+**Migration workflow:**
+1. Set `DISCOVERY_MODE=true` and restart ingest-api
+2. Point your apps to Log-Cannon (same endpoint format as Seq)
+3. Apps send logs → keys auto-provision
+4. Review discovered sources in dashboard, rename as needed
+5. Set `DISCOVERY_MODE=false` when migration complete
+
 ## Client Configuration
 
 ### Serilog (C#)
