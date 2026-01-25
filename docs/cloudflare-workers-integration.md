@@ -43,7 +43,7 @@ Define environment bindings in `wrangler.toml`:
 
 ```toml
 [vars]
-LOG_CANNON_URL = "https://logs.example.com"
+LOG_CANNON_URL = "https://logs.redleg.dev"
 
 # For secrets, use: wrangler secret put LOG_CANNON_API_KEY
 ```

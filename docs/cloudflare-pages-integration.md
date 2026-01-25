@@ -41,7 +41,7 @@ Example log events:
 
 The application needs these environment variables:
 ```
-LOG_CANNON_URL=https://logs.example.com
+LOG_CANNON_URL=https://logs.redleg.dev
 LOG_CANNON_API_KEY=your-api-key-here
 ```
 
