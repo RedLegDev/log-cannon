@@ -293,6 +293,38 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"MinimumLevelAccepted": nil})
 }
 
+// renderMessageTemplate replaces {PropertyName} placeholders with actual values
+func renderMessageTemplate(template string, properties map[string]interface{}) string {
+	if template == "" {
+		return ""
+	}
+
+	result := template
+	for key, value := range properties {
+		placeholder := "{" + key + "}"
+		var replacement string
+		switch v := value.(type) {
+		case string:
+			replacement = v
+		case float64:
+			if v == float64(int64(v)) {
+				replacement = fmt.Sprintf("%d", int64(v))
+			} else {
+				replacement = fmt.Sprintf("%g", v)
+			}
+		case bool:
+			replacement = fmt.Sprintf("%t", v)
+		case nil:
+			replacement = "null"
+		default:
+			b, _ := json.Marshal(v)
+			replacement = string(b)
+		}
+		result = strings.ReplaceAll(result, placeholder, replacement)
+	}
+	return result
+}
+
 func parseCLEFLine(line string, source string) (*LogEvent, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
@@ -331,9 +363,6 @@ func parseCLEFLine(line string, source string) (*LogEvent, error) {
 	if m, ok := raw["@m"].(string); ok {
 		message = m
 	}
-	if message == "" {
-		message = messageTemplate
-	}
 
 	exception := ""
 	if x, ok := raw["@x"].(string); ok {
@@ -345,13 +374,18 @@ func parseCLEFLine(line string, source string) (*LogEvent, error) {
 		eventType = i
 	}
 
-	// Remove CLEF fields, keep rest as properties
+	// Remove CLEF fields, keep rest as properties for rendering
 	delete(raw, "@t")
 	delete(raw, "@l")
 	delete(raw, "@mt")
 	delete(raw, "@m")
 	delete(raw, "@x")
 	delete(raw, "@i")
+
+	// Render message template if @m was not provided
+	if message == "" && messageTemplate != "" {
+		message = renderMessageTemplate(messageTemplate, raw)
+	}
 
 	propsJSON := "{}"
 	if len(raw) > 0 {
