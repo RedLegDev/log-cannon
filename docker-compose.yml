@@ -6,8 +6,7 @@ services:
         condition: service_healthy
     volumes:
       - ./clickhouse/init:/init:ro
-    entrypoint: >
-      bash -c "clickhouse-client --host clickhouse --multiquery < /init/001_schema.sql && echo 'Schema initialized'"
+    entrypoint: ["clickhouse-client", "--host", "clickhouse", "--queries-file", "/init/001_schema.sql"]
     restart: "no"
 
   ingest-api:
