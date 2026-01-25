@@ -13,7 +13,8 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED 1
 
 # Clerk publishable key must be available at build time for Next.js
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+# Publishable keys are safe to include - they're meant to be public
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZmVhc2libGUtbG9jdXN0LTcyLmNsZXJrLmFjY291bnRzLmRldiQ
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 
 RUN npm run build
