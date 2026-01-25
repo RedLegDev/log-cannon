@@ -127,6 +127,7 @@ log-cannon/
 | `RESEND_API_KEY` | Yes | Resend API key for alert emails |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Yes | Cloudflare tunnel token |
 | `ALERT_FROM_EMAIL` | No | Sender email for alerts |
+| `DISCOVERY_MODE` | No | Set to `true` to auto-provision unknown API keys (for migration) |
 
 ## Alerts
 
