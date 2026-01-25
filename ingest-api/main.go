@@ -153,6 +153,15 @@ func (s *Server) apiKeyReloader() {
 }
 
 func (s *Server) discoverAPIKey(apiKey string) (*APIKey, error) {
+	// Acquire write lock first to prevent race conditions
+	s.apiKeysMu.Lock()
+
+	// Check again if key was added by another goroutine while we waited
+	if existing, ok := s.apiKeys[apiKey]; ok {
+		s.apiKeysMu.Unlock()
+		return &existing, nil
+	}
+
 	// Generate source name from key prefix
 	prefix := apiKey
 	if len(prefix) > 8 {
@@ -167,16 +176,16 @@ func (s *Server) discoverAPIKey(apiKey string) (*APIKey, error) {
 		VALUES ($1, $2, 1)
 	`, apiKey, name)
 	if err != nil {
+		s.apiKeysMu.Unlock()
 		return nil, fmt.Errorf("failed to insert discovered key: %w", err)
 	}
 
-	// Add to in-memory cache immediately
+	// Add to in-memory cache (we already hold the lock)
 	newKey := APIKey{
 		APIKey:  apiKey,
 		Name:    name,
 		Enabled: 1,
 	}
-	s.apiKeysMu.Lock()
 	s.apiKeys[apiKey] = newKey
 	s.apiKeysMu.Unlock()
 
