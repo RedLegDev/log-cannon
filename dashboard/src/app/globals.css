@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 17, 24, 39;
+  --background-end-rgb: 17, 24, 39;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+      to bottom,
+      transparent,
+      rgb(var(--background-end-rgb))
+    )
+    rgb(var(--background-start-rgb));
+}
+
+.log-level-debug { color: #9ca3af; }
+.log-level-information { color: #60a5fa; }
+.log-level-warning { color: #fbbf24; }
+.log-level-error { color: #f87171; }
+.log-level-fatal { color: #ef4444; font-weight: bold; }

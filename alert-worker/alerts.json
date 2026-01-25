@@ -1,0 +1,37 @@
+{
+  "alerts": [
+    {
+      "id": "high-error-rate",
+      "name": "High Error Rate",
+      "description": "More than 50 errors in 5 minutes",
+      "query": "SELECT count(*) as cnt FROM logs.events WHERE level IN ('Error', 'Fatal') AND timestamp > now() - INTERVAL 5 MINUTE",
+      "condition": "cnt > 50",
+      "interval_seconds": 60,
+      "cooldown_seconds": 300,
+      "recipients": ["ops@example.com"],
+      "subject": "[ALERT] High error rate detected"
+    },
+    {
+      "id": "payment-failures",
+      "name": "Payment Service Failures",
+      "description": "Any fatal errors from payment service",
+      "query": "SELECT count(*) as cnt FROM logs.events WHERE source = 'payment-service' AND level = 'Fatal' AND timestamp > now() - INTERVAL 5 MINUTE",
+      "condition": "cnt > 0",
+      "interval_seconds": 60,
+      "cooldown_seconds": 600,
+      "recipients": ["payments-team@example.com", "ops@example.com"],
+      "subject": "[CRITICAL] Payment service fatal error"
+    },
+    {
+      "id": "service-quiet",
+      "name": "Service Gone Quiet",
+      "description": "No logs from order-service in 10 minutes",
+      "query": "SELECT count(*) as cnt FROM logs.events WHERE source = 'order-service' AND timestamp > now() - INTERVAL 10 MINUTE",
+      "condition": "cnt == 0",
+      "interval_seconds": 120,
+      "cooldown_seconds": 1800,
+      "recipients": ["ops@example.com"],
+      "subject": "[ALERT] order-service has stopped logging"
+    }
+  ]
+}

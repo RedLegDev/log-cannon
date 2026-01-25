@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  ingest-api:
+    build: ./ingest-api
+    expose:
+      - "8080"
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DATABASE=logs
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    expose:
+      - "8123"
+      - "9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    expose:
+      - "3000"
+    environment:
+      - CLICKHOUSE_URL=http://clickhouse:8123
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  alert-worker:
+    build: ./alert-worker
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DATABASE=logs
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@yourdomain.com}
+    volumes:
+      - ./alert-worker/alerts.json:/app/alerts.json:ro
+    depends_on:
+      - clickhouse
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - ingest-api
+      - dashboard
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:
