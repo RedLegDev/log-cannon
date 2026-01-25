@@ -216,18 +216,36 @@ After implementing, verify logs appear in Log-Cannon:
 
 For logging from React components and client-side code, you need a browser-compatible logger that batches events and sends them reliably.
 
-### Choosing an Approach: Proxy vs Direct
+### Choosing an Approach: Direct vs Proxy
 
-| Approach | API Key Exposure | CORS Required | Best For |
-|----------|------------------|---------------|----------|
-| **Proxy route** | Hidden server-side | No | Production apps, sensitive data |
-| **Direct to Log-Cannon** | Exposed in browser | Yes (add to ingest API) | Internal tools, dev/staging, public analytics |
+| Approach | Complexity | API Key Visible | Best For |
+|----------|------------|-----------------|----------|
+| **Direct to Log-Cannon** | Simple | Yes (in browser) | Most apps - key is rotatable |
+| **Proxy route** | More setup | No | High-security apps, PII in logs |
 
-**Recommendation:** Use the proxy route for production applications. Direct access is simpler but exposes your API key in browser dev tools.
+**Recommendation:** Use direct access for simplicity. API keys are rotatable and can be scoped to write-only. Only add a proxy if you have specific security requirements.
 
-### Option A: Proxy API Route (Recommended for Production)
+### Option A: Direct Browser Access (Recommended for Simplicity)
 
-Routes client logs through your own API, keeping the API key server-side:
+Send logs directly from the browser to Log-Cannon. Requires CORS to be enabled on Log-Cannon (set `CORS_ALLOWED_ORIGINS` environment variable).
+
+```typescript
+// lib/client-logger.ts - configure endpoint and API key
+export const logger = new ClientLogger({
+  endpoint: 'https://logs.redleg.dev/ingest/clef',
+  apiKey: 'your-client-api-key', // Visible in browser - use a dedicated key
+});
+```
+
+**Security considerations:**
+- Use a dedicated API key for client-side logging (separate from server-side keys)
+- Rotate keys periodically if concerned about abuse
+- The key can only write logs - it cannot read or delete data
+- Consider rate limiting at the Log-Cannon level if needed
+
+### Option B: Proxy API Route (For High-Security Requirements)
+
+If you need to hide the API key (e.g., logs contain sensitive data, strict compliance requirements):
 
 ```typescript
 // app/api/logs/route.ts
@@ -249,43 +267,12 @@ export async function POST(request: Request) {
 }
 ```
 
-### Option B: Direct Browser Access (Simpler, but exposes API key)
-
-For internal tools or non-sensitive logs, you can skip the proxy. This requires adding CORS headers to your Log-Cannon ingest API.
-
-**Step 1:** Add CORS to Log-Cannon's ingest API (in `ingest-api/main.go`):
-```go
-// Add CORS headers to handleIngest
-w.Header().Set("Access-Control-Allow-Origin", "*") // Or specific origins
-w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Seq-ApiKey")
-```
-
-**Step 2:** Configure the client logger to hit Log-Cannon directly:
+Then configure the client logger to use your proxy:
 ```typescript
-// lib/client-logger.ts
 export const logger = new ClientLogger({
-  endpoint: 'https://logs.redleg.dev/ingest/clef',
-  // API key will be visible in browser - only use for non-sensitive contexts
+  endpoint: '/api/logs', // Goes through your proxy
 });
-
-// Override flush to include the API key header
-// See full ClientLogger implementation below and modify fetch() call:
-// headers: {
-//   'Content-Type': 'application/vnd.serilog.clef',
-//   'X-Seq-ApiKey': 'your-public-api-key',
-// },
 ```
-
-**When this is acceptable:**
-- Internal admin tools
-- Development/staging environments
-- Public analytics where log data isn't sensitive
-- Logs with a dedicated, rate-limited API key
-
-**When to avoid:**
-- Production user-facing apps
-- Logs containing PII or sensitive business data
-- When API key abuse could cause problems
 
 ---
 
@@ -311,17 +298,20 @@ class ClientLogger {
   private buffer: LogEvent[] = [];
   private flushInterval: ReturnType<typeof setInterval> | null = null;
   private endpoint: string;
+  private apiKey?: string;
   private flushThreshold: number;
   private flushIntervalMs: number;
   private commonProperties: Record<string, unknown>;
 
   constructor(options: {
     endpoint?: string;
+    apiKey?: string; // For direct access to Log-Cannon
     flushThreshold?: number;
     flushIntervalMs?: number;
     commonProperties?: Record<string, unknown>;
   } = {}) {
     this.endpoint = options.endpoint ?? '/api/logs';
+    this.apiKey = options.apiKey;
     this.flushThreshold = options.flushThreshold ?? 10;
     this.flushIntervalMs = options.flushIntervalMs ?? 5000;
     this.commonProperties = options.commonProperties ?? {};
@@ -389,14 +379,25 @@ class ClientLogger {
     const events = this.buffer.splice(0, this.buffer.length);
     const body = events.map(e => JSON.stringify(e)).join('\n');
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/vnd.serilog.clef',
+    };
+    if (this.apiKey) {
+      headers['X-Seq-ApiKey'] = this.apiKey;
+    }
+
     if (useBeacon && navigator.sendBeacon) {
       // sendBeacon for reliable delivery during page unload
+      // Note: sendBeacon doesn't support custom headers, so API key goes in query string
+      const url = this.apiKey
+        ? `${this.endpoint}?apiKey=${encodeURIComponent(this.apiKey)}`
+        : this.endpoint;
       const blob = new Blob([body], { type: 'application/vnd.serilog.clef' });
-      navigator.sendBeacon(this.endpoint, blob);
+      navigator.sendBeacon(url, blob);
     } else {
       fetch(this.endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/vnd.serilog.clef' },
+        headers,
         body,
         keepalive: true, // Allows request to outlive the page
       }).catch(err => {

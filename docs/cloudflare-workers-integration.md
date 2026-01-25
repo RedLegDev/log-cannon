@@ -415,18 +415,36 @@ export default {
 
 If your Worker serves a frontend application (SPA, SSR hydration, etc.), you'll want client-side logging from React components and browser JavaScript.
 
-### Choosing an Approach: Proxy vs Direct
+### Choosing an Approach: Direct vs Proxy
 
-| Approach | API Key Exposure | CORS Required | Best For |
-|----------|------------------|---------------|----------|
-| **Proxy endpoint** | Hidden server-side | No | Production apps, sensitive data |
-| **Direct to Log-Cannon** | Exposed in browser | Yes (add to ingest API) | Internal tools, dev/staging, public analytics |
+| Approach | Complexity | API Key Visible | Best For |
+|----------|------------|-----------------|----------|
+| **Direct to Log-Cannon** | Simple | Yes (in browser) | Most apps - key is rotatable |
+| **Proxy endpoint** | More setup | No | High-security apps, PII in logs |
 
-**Recommendation:** Use the proxy endpoint for production applications. Direct access is simpler but exposes your API key in browser dev tools.
+**Recommendation:** Use direct access for simplicity. API keys are rotatable and can be scoped to write-only. Only add a proxy if you have specific security requirements.
 
-### Option A: Proxy Endpoint in Your Worker (Recommended)
+### Option A: Direct Browser Access (Recommended for Simplicity)
 
-Routes client logs through your Worker, keeping the API key server-side:
+Send logs directly from the browser to Log-Cannon. Requires CORS to be enabled on Log-Cannon (set `CORS_ALLOWED_ORIGINS` environment variable).
+
+```typescript
+// lib/client-logger.ts - configure endpoint and API key
+export const logger = new ClientLogger({
+  endpoint: 'https://logs.redleg.dev/ingest/clef',
+  apiKey: 'your-client-api-key', // Visible in browser - use a dedicated key
+});
+```
+
+**Security considerations:**
+- Use a dedicated API key for client-side logging (separate from server-side keys)
+- Rotate keys periodically if concerned about abuse
+- The key can only write logs - it cannot read or delete data
+- Consider rate limiting at the Log-Cannon level if needed
+
+### Option B: Proxy Endpoint (For High-Security Requirements)
+
+If you need to hide the API key, add a proxy endpoint to your Worker:
 
 ```typescript
 // Add to your Worker's fetch handler
@@ -442,55 +460,16 @@ if (url.pathname === '/api/logs' && request.method === 'POST') {
     body,
   });
 
-  return new Response(null, {
-    status: response.status,
-    headers: {
-      'Access-Control-Allow-Origin': '*', // Or your specific origin
-    },
-  });
-}
-
-// Handle CORS preflight
-if (url.pathname === '/api/logs' && request.method === 'OPTIONS') {
-  return new Response(null, {
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-  });
+  return new Response(null, { status: response.status });
 }
 ```
 
-### Option B: Direct Browser Access (Simpler, but exposes API key)
-
-For internal tools or non-sensitive logs, you can skip the proxy. This requires adding CORS headers to your Log-Cannon ingest API.
-
-**Step 1:** Add CORS to Log-Cannon's ingest API (in `ingest-api/main.go`):
-```go
-// Add CORS headers to handleIngest
-w.Header().Set("Access-Control-Allow-Origin", "*") // Or specific origins
-w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Seq-ApiKey")
-```
-
-**Step 2:** Configure the client logger to hit Log-Cannon directly:
+Then configure the client logger to use your proxy:
 ```typescript
 export const logger = new ClientLogger({
-  endpoint: 'https://logs.redleg.dev/ingest/clef',
+  endpoint: '/api/logs', // Goes through your proxy
 });
-
-// Modify the flush() method to include the API key header
-// (visible in browser - only use for non-sensitive contexts)
 ```
-
-**When this is acceptable:**
-- Internal admin tools
-- Development/staging environments
-- Public analytics where log data isn't sensitive
-
-**When to avoid:**
-- Production user-facing apps
-- Logs containing PII or sensitive business data
 
 ---
 
@@ -514,17 +493,20 @@ class ClientLogger {
   private buffer: LogEvent[] = [];
   private flushInterval: ReturnType<typeof setInterval> | null = null;
   private endpoint: string;
+  private apiKey?: string;
   private flushThreshold: number;
   private flushIntervalMs: number;
   private commonProperties: Record<string, unknown>;
 
   constructor(options: {
     endpoint?: string;
+    apiKey?: string; // For direct access to Log-Cannon
     flushThreshold?: number;
     flushIntervalMs?: number;
     commonProperties?: Record<string, unknown>;
   } = {}) {
     this.endpoint = options.endpoint ?? '/api/logs';
+    this.apiKey = options.apiKey;
     this.flushThreshold = options.flushThreshold ?? 10;
     this.flushIntervalMs = options.flushIntervalMs ?? 5000;
     this.commonProperties = options.commonProperties ?? {};
