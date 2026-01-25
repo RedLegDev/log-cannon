@@ -610,7 +610,7 @@ export function initializeSession(userId?: string) {
 
 ### Client-Side Best Practices
 
-1. **Use proxy for production**: Keeps API key secret; use direct access only for internal/dev tools
+1. **Direct access is fine for most apps**: API keys are write-only and rotatable; use proxy only if you have strict security requirements
 2. **Batch aggressively**: Client-side logging should batch more (10+ events) to reduce requests
 3. **Use `sendBeacon`**: For page unload, `sendBeacon` is more reliable than `fetch`
 4. **Add `keepalive: true`**: Allows fetch requests to complete even if the page is closing

@@ -574,13 +574,24 @@ class ClientLogger {
     const events = this.buffer.splice(0, this.buffer.length);
     const body = events.map(e => JSON.stringify(e)).join('\n');
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/vnd.serilog.clef',
+    };
+    if (this.apiKey) {
+      headers['X-Seq-ApiKey'] = this.apiKey;
+    }
+
     if (useBeacon && navigator.sendBeacon) {
+      // sendBeacon doesn't support custom headers, so API key goes in query string
+      const url = this.apiKey
+        ? `${this.endpoint}?apiKey=${encodeURIComponent(this.apiKey)}`
+        : this.endpoint;
       const blob = new Blob([body], { type: 'application/vnd.serilog.clef' });
-      navigator.sendBeacon(this.endpoint, blob);
+      navigator.sendBeacon(url, blob);
     } else {
       fetch(this.endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/vnd.serilog.clef' },
+        headers,
         body,
         keepalive: true,
       }).catch(err => {
@@ -770,7 +781,7 @@ export function setupPerformanceLogging() {
 
 ### Client-Side Best Practices
 
-1. **Use proxy for production**: Keeps API key secret; use direct access only for internal/dev tools
+1. **Direct access is fine for most apps**: API keys are write-only and rotatable; use proxy only if you have strict security requirements
 2. **Batch logs**: Accumulate 10+ events before sending to reduce network overhead
 3. **Use `sendBeacon`**: More reliable than `fetch` during page unload
 4. **Add `keepalive: true`**: Keeps fetch alive even if page closes
