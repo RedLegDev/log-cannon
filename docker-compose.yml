@@ -22,6 +22,8 @@ services:
     expose:
       - "8123"
       - "9000"
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
     environment:
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
       - CLICKHOUSE_PASSWORD=
@@ -78,7 +80,7 @@ services:
     ports:
       - "${CLICKHOUSE_UI_PORT:-5521}:5521"
     environment:
-      - VITE_CLICKHOUSE_URL=http://clickhouse:8123
+      - VITE_CLICKHOUSE_URL=http://localhost:8123
       - VITE_CLICKHOUSE_USER=default
       - VITE_CLICKHOUSE_PASSWORD=
     depends_on:
