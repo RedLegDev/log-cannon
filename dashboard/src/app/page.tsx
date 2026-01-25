@@ -69,7 +69,7 @@ export default async function LogExplorer({
       </div>
 
       {/* Search Form */}
-      <form className="mb-6">
+      <form className="mb-6" key={`${searchParams.source || ''}-${searchParams.level || ''}-${searchParams.search || ''}`}>
         <div className="card-cannon p-4">
           <div className="flex flex-col md:flex-row gap-3">
             {/* Source Select */}
