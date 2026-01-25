@@ -1,12 +1,12 @@
 services:
   clickhouse-init:
-    image: clickhouse/clickhouse-server:latest
+    image: curlimages/curl:latest
     depends_on:
       clickhouse:
         condition: service_healthy
     volumes:
       - ./clickhouse/init:/init:ro
-    entrypoint: ["clickhouse-client", "--host", "clickhouse", "--multiquery", "--queries-file", "/init/001_schema.sql"]
+    entrypoint: ["/bin/sh", "-c", "cat /init/001_schema.sql | curl -s --fail -X POST 'http://clickhouse:8123/?multiquery=1' --data-binary @-"]
     restart: "no"
 
   ingest-api:
