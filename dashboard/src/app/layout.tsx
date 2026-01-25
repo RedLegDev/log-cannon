@@ -34,6 +34,9 @@ export default function RootLayout({
                     <Link href="/live" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
                       Live Tail
                     </Link>
+                    <Link href="/keys" className="text-gray-300 hover:text-white px-3 py-2 rounded-md text-sm font-medium">
+                      API Keys
+                    </Link>
                   </div>
                 </div>
               </div>
