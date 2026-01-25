@@ -36,3 +36,4 @@ alert-worker/alert-worker
 
 # Docker volumes
 clickhouse-data/
+.claude/settings.local.json
