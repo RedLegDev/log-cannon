@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAPIKeys, createAPIKey, toggleAPIKey, deleteAPIKey } from '@/lib/clickhouse';
+import { getAPIKeys, createAPIKey, toggleAPIKey, renameAPIKey, deleteAPIKey } from '@/lib/clickhouse';
 
 export async function GET() {
   try {
@@ -31,15 +31,30 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const { keyId, enabled } = await request.json();
-    if (!keyId || typeof enabled !== 'boolean') {
-      return NextResponse.json({ error: 'keyId and enabled are required' }, { status: 400 });
+    const { keyId, enabled, name } = await request.json();
+    if (!keyId) {
+      return NextResponse.json({ error: 'keyId is required' }, { status: 400 });
     }
-    await toggleAPIKey(keyId, enabled);
-    return NextResponse.json({ success: true });
+
+    // Handle rename
+    if (typeof name === 'string') {
+      if (!name.trim()) {
+        return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 });
+      }
+      await renameAPIKey(keyId, name.trim());
+      return NextResponse.json({ success: true });
+    }
+
+    // Handle toggle
+    if (typeof enabled === 'boolean') {
+      await toggleAPIKey(keyId, enabled);
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ error: 'Either enabled or name is required' }, { status: 400 });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to toggle API key' },
+      { error: error instanceof Error ? error.message : 'Failed to update API key' },
       { status: 500 }
     );
   }

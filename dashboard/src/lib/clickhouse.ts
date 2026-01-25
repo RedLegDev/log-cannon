@@ -203,6 +203,21 @@ export async function toggleAPIKey(keyId: string, enabled: boolean): Promise<voi
   });
 }
 
+export async function renameAPIKey(keyId: string, name: string): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.api_keys
+    UPDATE name = '${escapeString(name)}'
+    WHERE key_id = '${escapeString(keyId)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
 export async function deleteAPIKey(keyId: string): Promise<void> {
   const sql = `
     ALTER TABLE logs.api_keys

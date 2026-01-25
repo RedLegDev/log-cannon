@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Key, Plus, Copy, Check, X, Trash2, ToggleLeft, ToggleRight, AlertCircle, Loader2, Terminal } from 'lucide-react';
+import { Key, Plus, Copy, Check, X, Trash2, ToggleLeft, ToggleRight, AlertCircle, Loader2, Terminal, Pencil } from 'lucide-react';
 
 interface APIKey {
   key_id: string;
@@ -19,6 +19,8 @@ export default function APIKeysPage() {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
 
   const fetchKeys = async () => {
     try {
@@ -88,6 +90,36 @@ export default function APIKeysPage() {
       await fetchKeys();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete API key');
+    }
+  };
+
+  const startEditing = (key: APIKey) => {
+    setEditingKeyId(key.key_id);
+    setEditingName(key.name);
+  };
+
+  const cancelEditing = () => {
+    setEditingKeyId(null);
+    setEditingName('');
+  };
+
+  const handleRename = async (keyId: string) => {
+    if (!editingName.trim()) {
+      cancelEditing();
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/keys', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyId, name: editingName.trim() })
+      });
+      if (!res.ok) throw new Error('Failed to rename key');
+      cancelEditing();
+      await fetchKeys();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to rename API key');
     }
   };
 
@@ -221,7 +253,37 @@ export default function APIKeysPage() {
                 {keys.map((key) => (
                   <tr key={key.key_id} className="border-t border-cannon-graphite hover:bg-cannon-steel/50 transition-colors">
                     <td className="px-4 py-3">
-                      <span className="text-text-primary font-medium font-mono">{key.name}</span>
+                      {editingKeyId === key.key_id ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={editingName}
+                            onChange={(e) => setEditingName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleRename(key.key_id);
+                              if (e.key === 'Escape') cancelEditing();
+                            }}
+                            className="input-cannon py-1 px-2 text-sm w-40"
+                            autoFocus
+                          />
+                          <button
+                            onClick={() => handleRename(key.key_id)}
+                            className="p-1 rounded hover:bg-cannon-tracer/20 text-cannon-tracer"
+                            title="Save"
+                          >
+                            <Check className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={cancelEditing}
+                            className="p-1 rounded hover:bg-cannon-graphite text-text-muted"
+                            title="Cancel"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-text-primary font-medium font-mono">{key.name}</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
@@ -258,6 +320,13 @@ export default function APIKeysPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => startEditing(key)}
+                          className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-cannon-graphite transition-colors"
+                          title="Rename"
+                        >
+                          <Pencil className="w-5 h-5" />
+                        </button>
                         <button
                           onClick={() => handleToggle(key.key_id, key.enabled)}
                           className={`p-2 rounded-lg transition-colors ${
