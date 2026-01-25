@@ -128,3 +128,81 @@ export async function getSources(): Promise<string[]> {
 function escapeString(str: string): string {
   return str.replace(/'/g, "\\'").replace(/\\/g, '\\\\');
 }
+
+export interface APIKey {
+  key_id: string;
+  api_key: string;
+  name: string;
+  created_at: string;
+  enabled: number;
+}
+
+export async function getAPIKeys(): Promise<APIKey[]> {
+  const sql = `
+    SELECT
+      toString(key_id) as key_id,
+      api_key,
+      name,
+      formatDateTime(created_at, '%Y-%m-%d %H:%M:%S') as created_at,
+      enabled
+    FROM logs.api_keys
+    ORDER BY created_at DESC
+  `;
+
+  return queryClickHouse<APIKey>(sql);
+}
+
+export async function createAPIKey(name: string): Promise<string> {
+  const apiKey = generateAPIKey();
+  const sql = `
+    INSERT INTO logs.api_keys (api_key, name, enabled)
+    VALUES ('${escapeString(apiKey)}', '${escapeString(name)}', 1)
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+
+  return apiKey;
+}
+
+export async function toggleAPIKey(keyId: string, enabled: boolean): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.api_keys
+    UPDATE enabled = ${enabled ? 1 : 0}
+    WHERE key_id = '${escapeString(keyId)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function deleteAPIKey(keyId: string): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.api_keys
+    DELETE WHERE key_id = '${escapeString(keyId)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+function generateAPIKey(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 32; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
