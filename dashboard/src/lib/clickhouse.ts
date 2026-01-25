@@ -48,34 +48,34 @@ export async function getRecentLogs(
   search?: string,
   limit: number = 100
 ): Promise<LogEvent[]> {
-  let conditions = ['timestamp > now() - INTERVAL 24 HOUR'];
+  let conditions = ['e.timestamp > now() - INTERVAL 24 HOUR'];
 
   if (source) {
-    conditions.push(`source = '${escapeString(source)}'`);
+    conditions.push(`e.source = '${escapeString(source)}'`);
   }
 
   if (level) {
-    conditions.push(`level = '${escapeString(level)}'`);
+    conditions.push(`e.level = '${escapeString(level)}'`);
   }
 
   if (search) {
-    conditions.push(`message LIKE '%${escapeString(search)}%'`);
+    conditions.push(`e.message LIKE '%${escapeString(search)}%'`);
   }
 
   const sql = `
     SELECT
-      toString(id) as id,
-      toString(timestamp) as timestamp,
-      level,
-      message_template,
-      message,
-      exception,
-      event_type,
-      source,
-      properties
-    FROM logs.events
+      toString(e.id) as id,
+      formatDateTime(e.timestamp, '%Y-%m-%d %H:%M:%S') as timestamp,
+      e.level,
+      e.message_template,
+      e.message,
+      e.exception,
+      e.event_type,
+      e.source,
+      e.properties
+    FROM logs.events e
     WHERE ${conditions.join(' AND ')}
-    ORDER BY timestamp DESC
+    ORDER BY e.timestamp DESC
     LIMIT ${limit}
   `;
 
@@ -85,13 +85,13 @@ export async function getRecentLogs(
 export async function getServiceStats(): Promise<ServiceStats[]> {
   const sql = `
     SELECT
-      source,
+      e.source as source,
       count(*) as total_count,
-      countIf(level IN ('Error', 'Fatal')) as error_count,
-      toString(max(timestamp)) as last_log
-    FROM logs.events
-    WHERE timestamp > now() - INTERVAL 24 HOUR
-    GROUP BY source
+      countIf(e.level IN ('Error', 'Fatal')) as error_count,
+      formatDateTime(max(e.timestamp), '%Y-%m-%d %H:%M:%S') as last_log
+    FROM logs.events e
+    WHERE e.timestamp > now() - INTERVAL 24 HOUR
+    GROUP BY e.source
     ORDER BY total_count DESC
   `;
 
@@ -101,13 +101,13 @@ export async function getServiceStats(): Promise<ServiceStats[]> {
 export async function getTimeSeries(minutes: number = 60): Promise<TimeSeriesPoint[]> {
   const sql = `
     SELECT
-      toString(toStartOfMinute(timestamp)) as minute,
+      formatDateTime(toStartOfMinute(e.timestamp), '%Y-%m-%d %H:%M:%S') as minute,
       count(*) as count,
-      countIf(level IN ('Error', 'Fatal')) as errors
-    FROM logs.events
-    WHERE timestamp > now() - INTERVAL ${minutes} MINUTE
-    GROUP BY minute
-    ORDER BY minute
+      countIf(e.level IN ('Error', 'Fatal')) as errors
+    FROM logs.events e
+    WHERE e.timestamp > now() - INTERVAL ${minutes} MINUTE
+    GROUP BY toStartOfMinute(e.timestamp)
+    ORDER BY toStartOfMinute(e.timestamp)
   `;
 
   return queryClickHouse<TimeSeriesPoint>(sql);
@@ -115,9 +115,9 @@ export async function getTimeSeries(minutes: number = 60): Promise<TimeSeriesPoi
 
 export async function getSources(): Promise<string[]> {
   const sql = `
-    SELECT DISTINCT source
-    FROM logs.events
-    WHERE timestamp > now() - INTERVAL 24 HOUR
+    SELECT DISTINCT e.source as source
+    FROM logs.events e
+    WHERE e.timestamp > now() - INTERVAL 24 HOUR
     ORDER BY source
   `;
 
