@@ -12,6 +12,10 @@ COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED 1
 
+# Clerk publishable key must be available at build time for Next.js
+ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+
 RUN npm run build
 
 FROM node:20-alpine AS runner
