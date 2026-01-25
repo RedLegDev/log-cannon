@@ -415,9 +415,9 @@ export default {
 
 If your Worker serves a frontend application (SPA, SSR hydration, etc.), you'll want client-side logging from React components and browser JavaScript.
 
-### 1. Proxy Endpoint in Your Worker
+### 1. Proxy Endpoint in Your Worker (Required)
 
-Add a log ingestion proxy to avoid exposing credentials to the browser:
+Log-Cannon runs on a separate domain (e.g., `logs.redleg.dev`), so you must proxy client-side log requests through your Worker. This keeps the API key server-side and handles CORS:
 
 ```typescript
 // Add to your Worker's fetch handler
@@ -747,7 +747,7 @@ export function setupPerformanceLogging() {
 
 ### Client-Side Best Practices
 
-1. **Proxy through your Worker**: Never expose Log-Cannon URL or API key to browsers
+1. **Always use the proxy endpoint**: Log-Cannon is on a separate domain, so direct browser requests won't work
 2. **Batch logs**: Accumulate 10+ events before sending to reduce network overhead
 3. **Use `sendBeacon`**: More reliable than `fetch` during page unload
 4. **Add `keepalive: true`**: Keeps fetch alive even if page closes

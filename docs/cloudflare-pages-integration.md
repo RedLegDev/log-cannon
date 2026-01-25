@@ -216,9 +216,9 @@ After implementing, verify logs appear in Log-Cannon:
 
 For logging from React components and client-side code, you need a browser-compatible logger that batches events and sends them reliably.
 
-### 1. CORS Configuration
+### 1. Proxy API Route (Required)
 
-If your Log-Cannon instance is on a different domain than your app, proxy requests through an API route to avoid exposing credentials:
+Log-Cannon runs on a separate domain (e.g., `logs.redleg.dev`), so you must proxy client-side log requests through your own API route. This also keeps your API key server-side:
 
 ```typescript
 // app/api/logs/route.ts
@@ -560,7 +560,7 @@ export function initializeSession(userId?: string) {
 
 ### Client-Side Best Practices
 
-1. **Use a proxy route**: Avoid exposing your Log-Cannon URL and API key to the browser
+1. **Always use the proxy route**: Log-Cannon is on a separate domain, so direct browser requests won't work
 2. **Batch aggressively**: Client-side logging should batch more (10+ events) to reduce requests
 3. **Use `sendBeacon`**: For page unload, `sendBeacon` is more reliable than `fetch`
 4. **Add `keepalive: true`**: Allows fetch requests to complete even if the page is closing
