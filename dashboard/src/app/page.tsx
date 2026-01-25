@@ -79,6 +79,13 @@ export default async function LogExplorer({
 
       {/* Search Form */}
       <form className="mb-6" key={`${resolvedParams.source || ''}-${resolvedParams.level || ''}-${resolvedParams.search || ''}`}>
+        {/* Preserve property filters as hidden inputs */}
+        {Object.entries(resolvedParams)
+          .filter(([key]) => key.startsWith('prop.'))
+          .map(([key, value]) => (
+            <input key={key} type="hidden" name={key} value={value || ''} />
+          ))
+        }
         <div className="card-cannon p-4">
           <div className="flex flex-col md:flex-row gap-3">
             {/* Source Select */}
