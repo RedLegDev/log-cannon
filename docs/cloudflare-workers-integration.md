@@ -409,6 +409,354 @@ export default {
 4. Filter by your API key's source name
 5. Verify events appear with expected properties
 
+---
+
+## Client-Side Logging (Browser)
+
+If your Worker serves a frontend application (SPA, SSR hydration, etc.), you'll want client-side logging from React components and browser JavaScript.
+
+### 1. Proxy Endpoint in Your Worker
+
+Add a log ingestion proxy to avoid exposing credentials to the browser:
+
+```typescript
+// Add to your Worker's fetch handler
+if (url.pathname === '/api/logs' && request.method === 'POST') {
+  const body = await request.text();
+
+  const response = await fetch(`${env.LOG_CANNON_URL}/ingest/clef`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/vnd.serilog.clef',
+      'X-Seq-ApiKey': env.LOG_CANNON_API_KEY,
+    },
+    body,
+  });
+
+  return new Response(null, {
+    status: response.status,
+    headers: {
+      'Access-Control-Allow-Origin': '*', // Or your specific origin
+    },
+  });
+}
+
+// Handle CORS preflight
+if (url.pathname === '/api/logs' && request.method === 'OPTIONS') {
+  return new Response(null, {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    },
+  });
+}
+```
+
+### 2. Browser Logger Utility
+
+Create a client-side logger with batching and reliable delivery:
+
+```typescript
+// public/js/logger.ts or lib/client-logger.ts
+interface LogEvent {
+  '@t': string;
+  '@l': string;
+  '@mt': string;
+  '@x'?: string;
+  [key: string]: unknown;
+}
+
+type LogLevel = 'Verbose' | 'Debug' | 'Information' | 'Warning' | 'Error' | 'Fatal';
+
+class ClientLogger {
+  private buffer: LogEvent[] = [];
+  private flushInterval: ReturnType<typeof setInterval> | null = null;
+  private endpoint: string;
+  private flushThreshold: number;
+  private flushIntervalMs: number;
+  private commonProperties: Record<string, unknown>;
+
+  constructor(options: {
+    endpoint?: string;
+    flushThreshold?: number;
+    flushIntervalMs?: number;
+    commonProperties?: Record<string, unknown>;
+  } = {}) {
+    this.endpoint = options.endpoint ?? '/api/logs';
+    this.flushThreshold = options.flushThreshold ?? 10;
+    this.flushIntervalMs = options.flushIntervalMs ?? 5000;
+    this.commonProperties = options.commonProperties ?? {};
+
+    if (typeof window !== 'undefined') {
+      this.startAutoFlush();
+      this.setupUnloadHandler();
+    }
+  }
+
+  private startAutoFlush() {
+    this.flushInterval = setInterval(() => this.flush(), this.flushIntervalMs);
+  }
+
+  private setupUnloadHandler() {
+    window.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        this.flush(true);
+      }
+    });
+
+    window.addEventListener('pagehide', () => {
+      this.flush(true);
+    });
+  }
+
+  private log(level: LogLevel, template: string, props?: Record<string, unknown>) {
+    this.buffer.push({
+      '@t': new Date().toISOString(),
+      '@l': level,
+      '@mt': template,
+      ...this.commonProperties,
+      ...this.getClientContext(),
+      ...props,
+    });
+
+    if (this.buffer.length >= this.flushThreshold) {
+      this.flush();
+    }
+  }
+
+  private getClientContext(): Record<string, unknown> {
+    if (typeof window === 'undefined') return {};
+
+    return {
+      ClientUrl: window.location.href,
+      ClientPath: window.location.pathname,
+      UserAgent: navigator.userAgent,
+      ScreenWidth: window.screen.width,
+      ScreenHeight: window.screen.height,
+      Referrer: document.referrer || undefined,
+    };
+  }
+
+  verbose(template: string, props?: Record<string, unknown>) { this.log('Verbose', template, props); }
+  debug(template: string, props?: Record<string, unknown>) { this.log('Debug', template, props); }
+  info(template: string, props?: Record<string, unknown>) { this.log('Information', template, props); }
+  warn(template: string, props?: Record<string, unknown>) { this.log('Warning', template, props); }
+  error(template: string, props?: Record<string, unknown>) { this.log('Error', template, props); }
+  fatal(template: string, props?: Record<string, unknown>) { this.log('Fatal', template, props); }
+
+  flush(useBeacon = false) {
+    if (this.buffer.length === 0) return;
+
+    const events = this.buffer.splice(0, this.buffer.length);
+    const body = events.map(e => JSON.stringify(e)).join('\n');
+
+    if (useBeacon && navigator.sendBeacon) {
+      const blob = new Blob([body], { type: 'application/vnd.serilog.clef' });
+      navigator.sendBeacon(this.endpoint, blob);
+    } else {
+      fetch(this.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/vnd.serilog.clef' },
+        body,
+        keepalive: true,
+      }).catch(err => {
+        console.error('Failed to send logs:', err);
+        this.buffer.unshift(...events);
+      });
+    }
+  }
+
+  setCommonProperty(key: string, value: unknown) {
+    this.commonProperties[key] = value;
+  }
+
+  destroy() {
+    if (this.flushInterval) clearInterval(this.flushInterval);
+    this.flush();
+  }
+}
+
+export const logger = new ClientLogger();
+```
+
+### 3. React Error Boundary
+
+Capture React component errors:
+
+```typescript
+// components/LoggingErrorBoundary.tsx
+import { Component, ReactNode } from 'react';
+import { logger } from '@/lib/client-logger';
+
+interface Props {
+  children: ReactNode;
+  fallback?: ReactNode;
+}
+
+interface State {
+  hasError: boolean;
+}
+
+export class LoggingErrorBoundary extends Component<Props, State> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError(): State {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    logger.error('React component error {ErrorMessage}', {
+      ErrorMessage: error.message,
+      '@x': error.stack,
+      ComponentStack: errorInfo.componentStack,
+    });
+    logger.flush();
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback ?? <div>Something went wrong.</div>;
+    }
+    return this.props.children;
+  }
+}
+```
+
+### 4. Global Error Handlers
+
+Capture unhandled errors and promise rejections:
+
+```typescript
+// lib/global-error-handler.ts
+import { logger } from '@/lib/client-logger';
+
+export function setupGlobalErrorHandlers() {
+  if (typeof window === 'undefined') return;
+
+  window.onerror = (message, source, lineno, colno, error) => {
+    logger.error('Uncaught error {Message}', {
+      Message: String(message),
+      Source: source,
+      Line: lineno,
+      Column: colno,
+      '@x': error?.stack,
+    });
+    logger.flush();
+  };
+
+  window.onunhandledrejection = (event) => {
+    logger.error('Unhandled promise rejection {Reason}', {
+      Reason: String(event.reason),
+      '@x': event.reason instanceof Error ? event.reason.stack : undefined,
+    });
+    logger.flush();
+  };
+}
+```
+
+### 5. Usage in Components
+
+```typescript
+// components/SearchForm.tsx
+import { logger } from '@/lib/client-logger';
+
+export function SearchForm() {
+  const handleSearch = async (query: string) => {
+    logger.info('Search initiated {Query}', { Query: query });
+
+    const startTime = performance.now();
+
+    try {
+      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const results = await response.json();
+
+      logger.info('Search completed {Query} {ResultCount} {DurationMs}', {
+        Query: query,
+        ResultCount: results.length,
+        DurationMs: Math.round(performance.now() - startTime),
+      });
+    } catch (err) {
+      logger.error('Search failed {Query} {Error}', {
+        Query: query,
+        Error: err instanceof Error ? err.message : String(err),
+        '@x': err instanceof Error ? err.stack : undefined,
+      });
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault();
+      handleSearch(new FormData(e.currentTarget).get('q') as string);
+    }}>
+      <input name="q" placeholder="Search..." />
+      <button type="submit">Search</button>
+    </form>
+  );
+}
+```
+
+### 6. Performance Monitoring
+
+Track Web Vitals and performance metrics:
+
+```typescript
+// lib/performance-logger.ts
+import { logger } from '@/lib/client-logger';
+
+export function setupPerformanceLogging() {
+  if (typeof window === 'undefined') return;
+
+  // Log page load timing
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      const timing = performance.timing;
+      const loadTime = timing.loadEventEnd - timing.navigationStart;
+      const domReady = timing.domContentLoadedEventEnd - timing.navigationStart;
+
+      logger.info('Page loaded {Path} {LoadTimeMs} {DomReadyMs}', {
+        Path: window.location.pathname,
+        LoadTimeMs: loadTime,
+        DomReadyMs: domReady,
+        TransferSize: (performance.getEntriesByType('navigation')[0] as any)?.transferSize,
+      });
+    }, 0);
+  });
+
+  // Log long tasks (>50ms)
+  if ('PerformanceObserver' in window) {
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration > 100) { // Only log tasks > 100ms
+            logger.warn('Long task detected {DurationMs}', {
+              DurationMs: Math.round(entry.duration),
+              Path: window.location.pathname,
+            });
+          }
+        }
+      });
+      observer.observe({ entryTypes: ['longtask'] });
+    } catch (e) {
+      // longtask not supported
+    }
+  }
+}
+```
+
+### Client-Side Best Practices
+
+1. **Proxy through your Worker**: Never expose Log-Cannon URL or API key to browsers
+2. **Batch logs**: Accumulate 10+ events before sending to reduce network overhead
+3. **Use `sendBeacon`**: More reliable than `fetch` during page unload
+4. **Add `keepalive: true`**: Keeps fetch alive even if page closes
+5. **Include session IDs**: Correlate logs across a user's session
+6. **Flush errors immediately**: Don't batch error logs - send them right away
+7. **Track performance**: Web Vitals and load times help identify UX issues
+
+---
+
 ## Troubleshooting
 
 - **No logs appearing**: Verify API key is valid and enabled
@@ -416,3 +764,5 @@ export default {
 - **Logs truncated**: Each line must be valid JSON; check for unescaped characters
 - **High latency**: `waitUntil` runs after response, so user-facing latency shouldn't be affected
 - **Missing env vars**: Ensure secrets are set via `wrangler secret put`
+- **Client logs failing**: Check browser Network tab for `/api/logs` requests; verify CORS headers
+- **Logs lost on navigation**: Ensure `sendBeacon` handler is registered before user can navigate
