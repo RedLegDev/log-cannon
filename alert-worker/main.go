@@ -42,6 +42,8 @@ func main() {
 	host := getEnv("CLICKHOUSE_HOST", "clickhouse")
 	port := getEnv("CLICKHOUSE_PORT", "9000")
 	database := getEnv("CLICKHOUSE_DATABASE", "logs")
+	user := getEnv("CLICKHOUSE_USER", "default")
+	password := getEnv("CLICKHOUSE_PASSWORD", "")
 	resendAPIKey := os.Getenv("RESEND_API_KEY")
 	fromEmail := getEnv("ALERT_FROM_EMAIL", "alerts@yourdomain.com")
 
@@ -65,6 +67,8 @@ func main() {
 			Addr: []string{fmt.Sprintf("%s:%s", host, port)},
 			Auth: clickhouse.Auth{
 				Database: database,
+				Username: user,
+				Password: password,
 			},
 			Settings: clickhouse.Settings{
 				"max_execution_time": 60,

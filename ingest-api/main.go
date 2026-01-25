@@ -48,6 +48,8 @@ func main() {
 	host := getEnv("CLICKHOUSE_HOST", "clickhouse")
 	port := getEnv("CLICKHOUSE_PORT", "9000")
 	database := getEnv("CLICKHOUSE_DATABASE", "logs")
+	user := getEnv("CLICKHOUSE_USER", "default")
+	password := getEnv("CLICKHOUSE_PASSWORD", "")
 	serverPort := getEnv("PORT", "8080")
 
 	var conn driver.Conn
@@ -59,6 +61,8 @@ func main() {
 			Addr: []string{fmt.Sprintf("%s:%s", host, port)},
 			Auth: clickhouse.Auth{
 				Database: database,
+				Username: user,
+				Password: password,
 			},
 			Settings: clickhouse.Settings{
 				"max_execution_time": 60,
