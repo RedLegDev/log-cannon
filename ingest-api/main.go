@@ -36,12 +36,13 @@ type APIKey struct {
 }
 
 type Server struct {
-	conn       driver.Conn
-	apiKeys    map[string]APIKey
-	apiKeysMu  sync.RWMutex
-	eventBatch []LogEvent
-	batchMu    sync.Mutex
-	lastFlush  time.Time
+	conn          driver.Conn
+	apiKeys       map[string]APIKey
+	apiKeysMu     sync.RWMutex
+	eventBatch    []LogEvent
+	batchMu       sync.Mutex
+	lastFlush     time.Time
+	discoveryMode bool
 }
 
 func main() {
@@ -85,11 +86,17 @@ func main() {
 		log.Fatalf("Failed to connect to ClickHouse: %v", err)
 	}
 
+	discoveryMode := os.Getenv("DISCOVERY_MODE") == "true"
+	if discoveryMode {
+		log.Println("DISCOVERY MODE ENABLED - unknown API keys will be auto-provisioned")
+	}
+
 	server := &Server{
-		conn:       conn,
-		apiKeys:    make(map[string]APIKey),
-		eventBatch: make([]LogEvent, 0, 1000),
-		lastFlush:  time.Now(),
+		conn:          conn,
+		apiKeys:       make(map[string]APIKey),
+		eventBatch:    make([]LogEvent, 0, 1000),
+		lastFlush:     time.Now(),
+		discoveryMode: discoveryMode,
 	}
 
 	// Load API keys
@@ -143,6 +150,37 @@ func (s *Server) apiKeyReloader() {
 			log.Printf("Failed to reload API keys: %v", err)
 		}
 	}
+}
+
+func (s *Server) discoverAPIKey(apiKey string) (*APIKey, error) {
+	// Generate source name from key prefix
+	prefix := apiKey
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	name := fmt.Sprintf("discovered-%s", prefix)
+
+	// Insert into database
+	ctx := context.Background()
+	err := s.conn.Exec(ctx, `
+		INSERT INTO logs.api_keys (api_key, name, enabled)
+		VALUES ($1, $2, 1)
+	`, apiKey, name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert discovered key: %w", err)
+	}
+
+	// Add to in-memory cache immediately
+	newKey := APIKey{
+		APIKey:  apiKey,
+		Name:    name,
+		Enabled: 1,
+	}
+	s.apiKeysMu.Lock()
+	s.apiKeys[apiKey] = newKey
+	s.apiKeysMu.Unlock()
+
+	return &newKey, nil
 }
 
 func (s *Server) backgroundFlusher() {
@@ -233,9 +271,22 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	s.apiKeysMu.RUnlock()
 
 	if matchedKey == nil || matchedKey.Enabled == 0 {
-		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]string{"Error": "Invalid or disabled API key"})
-		return
+		if s.discoveryMode && matchedKey == nil {
+			// Auto-provision the unknown key
+			newKey, err := s.discoverAPIKey(apiKey)
+			if err != nil {
+				log.Printf("ERROR: Failed to auto-provision key: %v", err)
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]string{"Error": "Invalid API key"})
+				return
+			}
+			matchedKey = newKey
+			log.Printf("DISCOVERY: Auto-provisioned API key as source=%s", newKey.Name)
+		} else {
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]string{"Error": "Invalid or disabled API key"})
+			return
+		}
 	}
 
 	source := matchedKey.Name
