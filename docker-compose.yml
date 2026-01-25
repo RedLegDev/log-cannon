@@ -6,7 +6,7 @@ services:
         condition: service_healthy
     volumes:
       - ./clickhouse/init:/init:ro
-    entrypoint: ["clickhouse-client", "--host", "clickhouse", "--queries-file", "/init/001_schema.sql"]
+    entrypoint: ["clickhouse-client", "--host", "clickhouse", "--multiquery", "--queries-file", "/init/001_schema.sql"]
     restart: "no"
 
   ingest-api:

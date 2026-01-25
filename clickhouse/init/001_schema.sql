@@ -1,7 +1,5 @@
--- Create database
 CREATE DATABASE IF NOT EXISTS logs;
 
--- API keys for authentication
 CREATE TABLE IF NOT EXISTS logs.api_keys (
     key_id UUID DEFAULT generateUUIDv4(),
     api_key String,
@@ -11,7 +9,6 @@ CREATE TABLE IF NOT EXISTS logs.api_keys (
 ) ENGINE = MergeTree
 ORDER BY api_key;
 
--- Main logs table with indexes
 CREATE TABLE IF NOT EXISTS logs.events (
     id UUID DEFAULT generateUUIDv4(),
     timestamp DateTime64(3),
@@ -21,9 +18,7 @@ CREATE TABLE IF NOT EXISTS logs.events (
     exception String DEFAULT '',
     event_type String DEFAULT '',
     source String,
-    properties String,
-    INDEX idx_level (level) TYPE set(5) GRANULARITY 1,
-    INDEX idx_message (message) TYPE tokenbf_v1(10240, 3, 0) GRANULARITY 1
+    properties String
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(timestamp)
 ORDER BY (source, toStartOfHour(timestamp), level);
