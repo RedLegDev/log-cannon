@@ -65,6 +65,9 @@ function escapeString(str: string): string {
 }
 
 // Build JSON extraction SQL for nested paths (e.g., "metrics.End_to_End" -> JSONExtract with path)
+// Handles both:
+// 1. Nested JSON objects: JSONExtract(props, 'metrics', 'latency')
+// 2. JSON strings that contain JSON: JSONExtract(JSONExtract(props, 'item'), 'AccountId')
 function buildJsonExtractSql(columnName: string, path: string, valueType: 'string' | 'number'): string {
   const parts = path.split('.');
   if (parts.length === 1) {
@@ -73,11 +76,27 @@ function buildJsonExtractSql(columnName: string, path: string, valueType: 'strin
       ? `JSONExtractFloat(${columnName}, '${escapeString(parts[0])}')`
       : `JSONExtractString(${columnName}, '${escapeString(parts[0])}')`;
   }
-  // Nested path - use multiple arguments to JSONExtract
+
+  // For nested paths, try both approaches:
+  // 1. Direct nested extraction (for actual nested objects)
+  // 2. Extract first key as string, then parse as JSON (for JSON strings)
   const pathArgs = parts.map(p => `'${escapeString(p)}'`).join(', ');
-  return valueType === 'number'
-    ? `JSONExtractFloat(${columnName}, ${pathArgs})`
-    : `JSONExtractString(${columnName}, ${pathArgs})`;
+  const firstKey = `'${escapeString(parts[0])}'`;
+  const restPathArgs = parts.slice(1).map(p => `'${escapeString(p)}'`).join(', ');
+
+  if (valueType === 'number') {
+    // Try direct nested path first, then try parsing first key as JSON string
+    return `coalesce(
+      nullIf(JSONExtractFloat(${columnName}, ${pathArgs}), 0),
+      JSONExtractFloat(JSONExtractString(${columnName}, ${firstKey}), ${restPathArgs})
+    )`;
+  } else {
+    // Try direct nested path first, then try parsing first key as JSON string
+    return `coalesce(
+      nullIf(JSONExtractString(${columnName}, ${pathArgs}), ''),
+      JSONExtractString(JSONExtractString(${columnName}, ${firstKey}), ${restPathArgs})
+    )`;
+  }
 }
 
 // Determine if a value looks like a number

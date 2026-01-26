@@ -10,6 +10,7 @@ function isNumericValue(value: string): boolean {
   return !isNaN(Number(value)) && value.trim() !== ''
 }
 
+// Handles both nested JSON objects and JSON strings that contain JSON
 function buildJsonExtractSql(columnName: string, path: string, valueType: 'string' | 'number'): string {
   const parts = path.split('.')
   if (parts.length === 1) {
@@ -17,10 +18,25 @@ function buildJsonExtractSql(columnName: string, path: string, valueType: 'strin
       ? `JSONExtractFloat(${columnName}, '${escapeString(parts[0])}')`
       : `JSONExtractString(${columnName}, '${escapeString(parts[0])}')`
   }
+
+  // For nested paths, try both approaches:
+  // 1. Direct nested extraction (for actual nested objects)
+  // 2. Extract first key as string, then parse as JSON (for JSON strings)
   const pathArgs = parts.map(p => `'${escapeString(p)}'`).join(', ')
-  return valueType === 'number'
-    ? `JSONExtractFloat(${columnName}, ${pathArgs})`
-    : `JSONExtractString(${columnName}, ${pathArgs})`
+  const firstKey = `'${escapeString(parts[0])}'`
+  const restPathArgs = parts.slice(1).map(p => `'${escapeString(p)}'`).join(', ')
+
+  if (valueType === 'number') {
+    return `coalesce(
+      nullIf(JSONExtractFloat(${columnName}, ${pathArgs}), 0),
+      JSONExtractFloat(JSONExtractString(${columnName}, ${firstKey}), ${restPathArgs})
+    )`
+  } else {
+    return `coalesce(
+      nullIf(JSONExtractString(${columnName}, ${pathArgs}), ''),
+      JSONExtractString(JSONExtractString(${columnName}, ${firstKey}), ${restPathArgs})
+    )`
+  }
 }
 
 type PropertyOperator = '=' | '!=' | '>' | '>=' | '<' | '<='

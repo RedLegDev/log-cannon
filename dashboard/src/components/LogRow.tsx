@@ -74,6 +74,22 @@ function parseProperties(props: string): Record<string, unknown> | null {
   }
 }
 
+function tryParseJson(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'string') return null
+  // Only try to parse if it looks like JSON object
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 function isUrl(value: unknown): boolean {
   if (typeof value !== 'string') return false
   try {
@@ -157,9 +173,80 @@ function formatColumnValue(value: unknown): string {
   return '—'
 }
 
+function getNestedValue(properties: Record<string, unknown> | null, path: string): unknown {
+  if (!properties) return undefined
+  const parts = path.split('.')
+  if (parts.length === 1) {
+    return properties[parts[0]]
+  }
+
+  // For nested paths, try to get the first part and parse if it's a JSON string
+  const firstPart = properties[parts[0]]
+  if (firstPart === undefined || firstPart === null) return undefined
+
+  // If first part is a JSON string, parse it and extract the nested value
+  const parsed = tryParseJson(firstPart)
+  if (parsed) {
+    const restPath = parts.slice(1).join('.')
+    return getNestedValue(parsed, restPath)
+  }
+
+  // If first part is an object, recursively get the value
+  if (typeof firstPart === 'object' && !Array.isArray(firstPart)) {
+    const restPath = parts.slice(1).join('.')
+    return getNestedValue(firstPart as Record<string, unknown>, restPath)
+  }
+
+  return undefined
+}
+
 function getColumnTooltip(property: string, value: unknown): string {
   if (value === null || value === undefined) return `${property}: (no value)`
   return `${property}: ${String(value)}`
+}
+
+interface NestedPropertyRowProps {
+  parentKey: string
+  propKey: string
+  value: unknown
+  onFilter: (key: string, value: unknown, exclude: boolean) => void
+  onToggleColumn?: (property: string) => void
+  hasColumn?: (property: string) => boolean
+}
+
+function NestedPropertyRow({ parentKey, propKey, value, onFilter, onToggleColumn, hasColumn }: NestedPropertyRowProps) {
+  const fullPath = `${parentKey}.${propKey}`
+  const isColumn = hasColumn?.(fullPath) ?? false
+
+  return (
+    <tr className="border-b border-cannon-graphite/30 last:border-0 group bg-cannon-charcoal/30">
+      <td className="py-2 pr-2 w-10 align-top pl-6">
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+          <PropertyMenu
+            property={fullPath}
+            value={value}
+            isColumn={isColumn}
+            onToggleColumn={() => onToggleColumn?.(fullPath)}
+            onFilter={(exclude) => onFilter(fullPath, value, exclude)}
+            isFilterable={isFilterableValue(value)}
+          />
+        </div>
+      </td>
+      <td className="py-2 pr-4 text-cyan-400 font-medium font-mono whitespace-nowrap align-top text-xs">
+        <span className="flex items-center gap-2">
+          <span className="text-text-muted">{parentKey}.</span>{propKey}
+          {isColumn && (
+            <span title="Shown as column">
+              <Columns size={12} className="text-text-muted" />
+            </span>
+          )}
+        </span>
+      </td>
+      <td className="py-2 break-all align-top text-xs">
+        {formatValue(value)}
+      </td>
+    </tr>
+  )
 }
 
 interface PropertyMenuProps {
@@ -301,7 +388,7 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
               </span>
               {/* Dynamic columns */}
               {columns.map((col) => {
-                const value = properties?.[col.property]
+                const value = getNestedValue(properties, col.property)
                 const displayValue = formatColumnValue(value)
                 const tooltip = getColumnTooltip(col.property, value)
                 const isMissing = value === null || value === undefined
@@ -354,9 +441,13 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
                   <tbody>
                     {Object.entries(properties)
                       .sort(([a], [b]) => a.localeCompare(b))
-                      .map(([key, value]) => {
+                      .flatMap(([key, value]) => {
                         const isColumn = hasColumn?.(key) ?? false
-                        return (
+                        const nestedJson = tryParseJson(value)
+                        const rows: React.ReactNode[] = []
+
+                        // Main property row
+                        rows.push(
                           <tr key={key} className="border-b border-cannon-graphite/50 last:border-0 group">
                             <td className="py-2.5 pr-2 w-10 align-top">
                               <div className="opacity-0 group-hover:opacity-100 transition-opacity">
@@ -373,6 +464,9 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
                             <td className="py-2.5 pr-4 text-cannon-warning font-medium font-mono whitespace-nowrap align-top">
                               <span className="flex items-center gap-2">
                                 {key}
+                                {nestedJson && (
+                                  <span className="text-text-muted text-xs font-normal">(JSON object)</span>
+                                )}
                                 {isColumn && (
                                   <span title="Shown as column">
                                     <Columns size={12} className="text-text-muted" />
@@ -381,10 +475,35 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
                               </span>
                             </td>
                             <td className="py-2.5 break-all align-top">
-                              {formatValue(value)}
+                              {nestedJson ? (
+                                <span className="text-text-muted text-xs italic">Expanded below ↓</span>
+                              ) : (
+                                formatValue(value)
+                              )}
                             </td>
                           </tr>
                         )
+
+                        // Nested properties if value is a JSON string
+                        if (nestedJson) {
+                          Object.entries(nestedJson)
+                            .sort(([a], [b]) => a.localeCompare(b))
+                            .forEach(([nestedKey, nestedValue]) => {
+                              rows.push(
+                                <NestedPropertyRow
+                                  key={`${key}.${nestedKey}`}
+                                  parentKey={key}
+                                  propKey={nestedKey}
+                                  value={nestedValue}
+                                  onFilter={handleFilter}
+                                  onToggleColumn={onToggleColumn}
+                                  hasColumn={hasColumn}
+                                />
+                              )
+                            })
+                        }
+
+                        return rows
                       })}
                   </tbody>
                 </table>
