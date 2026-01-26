@@ -48,7 +48,14 @@ function getLevelBorderClass(level: string): string {
 function formatTimestamp(ts: string): string {
   try {
     const date = new Date(ts)
-    return date.toLocaleString()
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    })
   } catch {
     return ts
   }
