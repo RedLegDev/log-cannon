@@ -30,6 +30,7 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
   const [newLogCount, setNewLogCount] = useState(0)
   const [isAtTop, setIsAtTop] = useState(true)
   const topSentinelRef = useRef<HTMLDivElement>(null)
+  const logsRef = useRef<LogEvent[]>(initialLogs)
 
   // Build query string from current search params for the live API
   const buildQueryParams = useCallback(() => {
@@ -67,28 +68,35 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
 
       const data = await response.json()
       if (data.logs && data.logs.length > 0) {
-        const newIds = new Set<string>(data.logs.map((l: LogEvent) => l.id))
-        setNewLogIds(newIds)
-        setTimeout(() => setNewLogIds(new Set()), 500)
+        // Dedupe by ID using ref to avoid stale closure issues
+        const existingIds = new Set(logsRef.current.map(l => l.id))
+        const uniqueNewLogs = data.logs.filter((l: LogEvent) => !existingIds.has(l.id))
 
-        setLogs(prev => {
-          // Dedupe by ID
-          const existingIds = new Set(prev.map(l => l.id))
-          const uniqueNewLogs = data.logs.filter((l: LogEvent) => !existingIds.has(l.id))
-          return [...uniqueNewLogs, ...prev]
-        })
+        // Only flash and add logs that are actually new
+        if (uniqueNewLogs.length > 0) {
+          const newIds = new Set<string>(uniqueNewLogs.map((l: LogEvent) => l.id))
+          setNewLogIds(newIds)
+          setTimeout(() => setNewLogIds(new Set()), 500)
+
+          setLogs(prev => [...uniqueNewLogs, ...prev])
+
+          // Track new logs for indicator if not at top
+          if (!isAtTop) {
+            setNewLogCount(prev => prev + uniqueNewLogs.length)
+          }
+        }
 
         setLastTimestamp(data.logs[0].timestamp)
-
-        // Track new logs for indicator if not at top
-        if (!isAtTop) {
-          setNewLogCount(prev => prev + data.logs.length)
-        }
       }
     } catch {
       // Silently fail - don't disrupt the UI
     }
   }, [buildQueryParams, isAtTop])
+
+  // Keep logsRef in sync with logs state
+  useEffect(() => {
+    logsRef.current = logs
+  }, [logs])
 
   // Polling effect
   useEffect(() => {
