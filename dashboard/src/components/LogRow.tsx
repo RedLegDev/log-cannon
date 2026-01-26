@@ -47,7 +47,10 @@ function getLevelBorderClass(level: string): string {
 
 function formatTimestamp(ts: string): string {
   try {
-    const date = new Date(ts)
+    // Timestamps from ClickHouse are in UTC but without timezone suffix
+    // Convert to ISO format with Z suffix so JS parses as UTC
+    const isoString = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z'
+    const date = new Date(isoString)
     return date.toLocaleString(undefined, {
       month: 'short',
       day: 'numeric',
