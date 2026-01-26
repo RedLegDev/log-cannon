@@ -52,7 +52,12 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <ClerkProvider>
+    <ClerkProvider
+        signInUrl="/sign-in"
+        signUpUrl="/sign-up"
+        signInFallbackRedirectUrl="/"
+        signUpFallbackRedirectUrl="/"
+      >
       <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
         <head>
           <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
