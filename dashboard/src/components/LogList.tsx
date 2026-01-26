@@ -14,6 +14,7 @@ interface Log {
   source: string
   exception?: string
   properties: string
+  isNew?: boolean
 }
 
 interface LogListProps {
@@ -89,6 +90,7 @@ export function LogList({ logs }: LogListProps) {
             log={log}
             isExpanded={expandedId === log.id}
             onToggle={() => toggleExpanded(log.id)}
+            isNew={log.isNew}
             columns={columns}
             onToggleColumn={toggleColumn}
             hasColumn={hasColumn}

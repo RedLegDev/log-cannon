@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue } from '@/lib/clickhouse'
-import { LogList } from '@/components/LogList'
+import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
 import { Search, ChevronDown, AlertCircle } from 'lucide-react'
@@ -37,7 +37,7 @@ function parsePropertyFilters(searchParams: SearchParams): PropertyFilter[] {
   return filters
 }
 
-export default async function LogExplorer({
+export default async function LogExplorerPage({
   searchParams,
 }: {
   searchParams: Promise<SearchParams>
@@ -164,15 +164,7 @@ export default async function LogExplorer({
           </div>
         </div>
       ) : (
-        <>
-          {/* Results count */}
-          {logs.length > 0 && (
-            <div className="mb-4 text-text-secondary text-sm">
-              Showing <span className="text-text-primary font-medium">{logs.length}</span> logs
-            </div>
-          )}
-          <LogList logs={logs} />
-        </>
+        <LogExplorer initialLogs={logs} />
       )}
     </div>
   )
