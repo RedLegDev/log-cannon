@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Widget } from '@/lib/clickhouse';
-import { ChartWrapper } from './ChartWrapper';
 
 interface PieChartWidgetProps {
   data: unknown[];
@@ -59,47 +58,41 @@ export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
   }
 
   return (
-    <ChartWrapper>
-      {(dimensions) => (
-        <div style={{ width: dimensions.width, height: dimensions.height }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-              <Pie
-                data={chartData}
-                dataKey="value"
-                nameKey="name"
-                cx="50%"
-                cy="50%"
-                outerRadius="70%"
-                label={({ name, percent }) =>
-                  `${name}: ${(percent * 100).toFixed(0)}%`
-                }
-                labelLine={{ stroke: '#888' }}
-              >
-                {chartData.map((_, index) => (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={colors[index % colors.length]}
-                  />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#1a1a1a',
-                  border: '1px solid #333',
-                  borderRadius: '4px',
-                  color: '#fff',
-                }}
-                formatter={(value: number) => [value.toLocaleString(), 'Count']}
+    <ResponsiveContainer width="100%" height="100%">
+        <PieChart margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+          <Pie
+            data={chartData}
+            dataKey="value"
+            nameKey="name"
+            cx="50%"
+            cy="50%"
+            outerRadius="70%"
+            label={({ name, percent }) =>
+              `${name}: ${(percent * 100).toFixed(0)}%`
+            }
+            labelLine={{ stroke: '#888' }}
+          >
+            {chartData.map((_, index) => (
+              <Cell
+                key={`cell-${index}`}
+                fill={colors[index % colors.length]}
               />
-              <Legend
-                wrapperStyle={{ color: '#888' }}
-                formatter={(value) => <span style={{ color: '#888' }}>{value}</span>}
-              />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </ChartWrapper>
+            ))}
+          </Pie>
+          <Tooltip
+            contentStyle={{
+              backgroundColor: '#1a1a1a',
+              border: '1px solid #333',
+              borderRadius: '4px',
+              color: '#fff',
+            }}
+            formatter={(value: number) => [value.toLocaleString(), 'Count']}
+          />
+          <Legend
+            wrapperStyle={{ color: '#888' }}
+            formatter={(value) => <span style={{ color: '#888' }}>{value}</span>}
+          />
+        </PieChart>
+      </ResponsiveContainer>
   );
 }

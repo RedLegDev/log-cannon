@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Widget } from '@/lib/clickhouse';
-import { ChartWrapper } from './ChartWrapper';
 
 interface LineChartWidgetProps {
   data: unknown[];
@@ -51,50 +50,44 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   }
 
   return (
-    <ChartWrapper>
-      {(dimensions) => (
-        <div style={{ width: dimensions.width, height: dimensions.height }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={chartData}
-              margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-              <XAxis
-                dataKey="name"
-                stroke="#666"
-                fontSize={12}
-                tickLine={false}
-                interval="preserveStartEnd"
-              />
-              <YAxis
-                stroke="#666"
-                fontSize={12}
-                tickLine={false}
-                tickFormatter={(value) => value.toLocaleString()}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#1a1a1a',
-                  border: '1px solid #333',
-                  borderRadius: '4px',
-                  color: '#fff',
-                }}
-                formatter={(value: number) => [value.toLocaleString(), 'Value']}
-              />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke={colors[0]}
-                strokeWidth={2}
-                dot={chartData.length <= 30}
-                activeDot={{ r: 6, fill: colors[0] }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </ChartWrapper>
+    <ResponsiveContainer width="100%" height="100%">
+        <LineChart
+          data={chartData}
+          margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+          <XAxis
+            dataKey="name"
+            stroke="#666"
+            fontSize={12}
+            tickLine={false}
+            interval="preserveStartEnd"
+          />
+          <YAxis
+            stroke="#666"
+            fontSize={12}
+            tickLine={false}
+            tickFormatter={(value) => value.toLocaleString()}
+          />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: '#1a1a1a',
+              border: '1px solid #333',
+              borderRadius: '4px',
+              color: '#fff',
+            }}
+            formatter={(value: number) => [value.toLocaleString(), 'Value']}
+          />
+          <Line
+            type="monotone"
+            dataKey="value"
+            stroke={colors[0]}
+            strokeWidth={2}
+            dot={chartData.length <= 30}
+            activeDot={{ r: 6, fill: colors[0] }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
   );
 }
 

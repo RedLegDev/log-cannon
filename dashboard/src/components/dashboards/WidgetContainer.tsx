@@ -96,8 +96,8 @@ export function WidgetContainer({ widget, dashboardName, children }: WidgetConta
             No data available
           </div>
         ) : data ? (
-          /* Render widget content */
-          <div className="flex-grow flex flex-col min-h-0">
+          /* Render widget content - use flex-1 with explicit min-height for charts */
+          <div className="flex-1 min-h-0 overflow-hidden">
             {children(data)}
           </div>
         ) : null}

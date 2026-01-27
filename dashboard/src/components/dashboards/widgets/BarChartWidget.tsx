@@ -3,7 +3,6 @@
 import { useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { Widget } from '@/lib/clickhouse';
-import { ChartWrapper } from './ChartWrapper';
 
 interface BarChartWidgetProps {
   data: unknown[];
@@ -50,42 +49,36 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   }
 
   return (
-    <ChartWrapper>
-      {(dimensions) => (
-        <div style={{ width: dimensions.width, height: dimensions.height }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={chartData}
-              layout="vertical"
-              margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-            >
-              <XAxis type="number" stroke="#666" fontSize={12} />
-              <YAxis
-                type="category"
-                dataKey="name"
-                stroke="#666"
-                fontSize={12}
-                width={100}
-                tickFormatter={(value) => value.length > 15 ? `${value.slice(0, 15)}...` : value}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#1a1a1a',
-                  border: '1px solid #333',
-                  borderRadius: '4px',
-                  color: '#fff',
-                }}
-                formatter={(value: number) => [value.toLocaleString(), 'Value']}
-              />
-              <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                {chartData.map((_, index) => (
-                  <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </ChartWrapper>
+    <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={chartData}
+          layout="vertical"
+          margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+        >
+          <XAxis type="number" stroke="#666" fontSize={12} />
+          <YAxis
+            type="category"
+            dataKey="name"
+            stroke="#666"
+            fontSize={12}
+            width={100}
+            tickFormatter={(value) => value.length > 15 ? `${value.slice(0, 15)}...` : value}
+          />
+          <Tooltip
+            contentStyle={{
+              backgroundColor: '#1a1a1a',
+              border: '1px solid #333',
+              borderRadius: '4px',
+              color: '#fff',
+            }}
+            formatter={(value: number) => [value.toLocaleString(), 'Value']}
+          />
+          <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+            {chartData.map((_, index) => (
+              <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
   );
 }
