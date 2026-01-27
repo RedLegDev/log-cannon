@@ -209,6 +209,7 @@ export interface APIKey {
   key_id: string;
   api_key: string;
   name: string;
+  scopes: string;
   created_at: string;
   enabled: number;
 }
@@ -219,6 +220,7 @@ export async function getAPIKeys(): Promise<APIKey[]> {
       toString(key_id) as key_id,
       api_key,
       name,
+      scopes,
       formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
       enabled
     FROM logs.api_keys
@@ -228,11 +230,11 @@ export async function getAPIKeys(): Promise<APIKey[]> {
   return queryClickHouse<APIKey>(sql);
 }
 
-export async function createAPIKey(name: string): Promise<string> {
+export async function createAPIKey(name: string, scopes: string = 'ingest'): Promise<string> {
   const apiKey = generateAPIKey();
   const sql = `
-    INSERT INTO logs.api_keys (api_key, name, enabled)
-    VALUES ('${escapeString(apiKey)}', '${escapeString(name)}', 1)
+    INSERT INTO logs.api_keys (api_key, name, scopes, enabled)
+    VALUES ('${escapeString(apiKey)}', '${escapeString(name)}', '${escapeString(scopes)}', 1)
   `;
 
   await fetch(CLICKHOUSE_URL, {
