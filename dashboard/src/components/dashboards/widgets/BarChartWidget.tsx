@@ -25,10 +25,31 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   // Support multiple y fields
   const yFields = Array.isArray(yField) ? yField : [yField];
 
+  // Transform data to ensure numeric values for y fields (like PieChartWidget does)
+  const chartData = (Array.isArray(data) ? data : []).map((item) => {
+    const record = item as Record<string, unknown>;
+    const transformed: Record<string, unknown> = {};
+    // Keep x field as string
+    transformed[xField] = String(record[xField] ?? '');
+    // Ensure y fields are numbers
+    for (const field of yFields) {
+      transformed[field] = Number(record[field]) || 0;
+    }
+    return transformed;
+  });
+
+  if (chartData.length === 0) {
+    return (
+      <div className="flex-grow flex items-center justify-center text-text-muted text-sm">
+        No data to display
+      </div>
+    );
+  }
+
   return (
     <div className="flex-grow">
       <ResponsiveContainer width="100%" height={220}>
-        <BarChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+        <BarChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#333" />
           <XAxis
             dataKey={xField}
