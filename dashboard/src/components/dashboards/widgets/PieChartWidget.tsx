@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo } from 'react';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { useMemo, useRef, useState, useEffect } from 'react';
+import { PieChart, Pie, Cell, Tooltip, Legend } from 'recharts';
 import { Widget } from '@/lib/clickhouse';
 
 interface PieChartWidgetProps {
@@ -21,6 +21,27 @@ const DEFAULT_COLORS = [
 ];
 
 export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 400, height: 200 });
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const updateSize = () => {
+      if (containerRef.current) {
+        const { width, height } = containerRef.current.getBoundingClientRect();
+        if (width > 0 && height > 0) {
+          setSize({ width, height });
+        }
+      }
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
   const config = widget.visualization;
   const nameField = config?.xField || 'name';
   const valueField = config?.yField;
@@ -57,42 +78,44 @@ export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
     );
   }
 
+  const outerRadius = Math.min(size.width, size.height) * 0.35;
+
   return (
-    <ResponsiveContainer width="100%" height="100%">
-        <PieChart margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
-          <Pie
-            data={chartData}
-            dataKey="value"
-            nameKey="name"
-            cx="50%"
-            cy="50%"
-            outerRadius="70%"
-            label={({ name, percent }) =>
-              `${name}: ${(percent * 100).toFixed(0)}%`
-            }
-            labelLine={{ stroke: '#888' }}
-          >
-            {chartData.map((_, index) => (
-              <Cell
-                key={`cell-${index}`}
-                fill={colors[index % colors.length]}
-              />
-            ))}
-          </Pie>
-          <Tooltip
-            contentStyle={{
-              backgroundColor: '#1a1a1a',
-              border: '1px solid #333',
-              borderRadius: '4px',
-              color: '#fff',
-            }}
-            formatter={(value: number) => [value.toLocaleString(), 'Count']}
-          />
-          <Legend
-            wrapperStyle={{ color: '#888' }}
-            formatter={(value) => <span style={{ color: '#888' }}>{value}</span>}
-          />
-        </PieChart>
-      </ResponsiveContainer>
+    <div ref={containerRef} className="w-full h-full">
+      <PieChart width={size.width} height={size.height}>
+        <Pie
+          data={chartData}
+          dataKey="value"
+          nameKey="name"
+          cx="50%"
+          cy="50%"
+          outerRadius={outerRadius}
+          label={({ name, percent }) =>
+            `${name}: ${(percent * 100).toFixed(0)}%`
+          }
+          labelLine={{ stroke: '#888' }}
+        >
+          {chartData.map((_, index) => (
+            <Cell
+              key={`cell-${index}`}
+              fill={colors[index % colors.length]}
+            />
+          ))}
+        </Pie>
+        <Tooltip
+          contentStyle={{
+            backgroundColor: '#1a1a1a',
+            border: '1px solid #333',
+            borderRadius: '4px',
+            color: '#fff',
+          }}
+          formatter={(value: number) => [value.toLocaleString(), 'Count']}
+        />
+        <Legend
+          wrapperStyle={{ color: '#888' }}
+          formatter={(value) => <span style={{ color: '#888' }}>{value}</span>}
+        />
+      </PieChart>
+    </div>
   );
 }
