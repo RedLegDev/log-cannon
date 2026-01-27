@@ -230,6 +230,24 @@ export async function getAPIKeys(): Promise<APIKey[]> {
   return queryClickHouse<APIKey>(sql);
 }
 
+export async function getAPIKey(keyId: string): Promise<APIKey | null> {
+  const sql = `
+    SELECT
+      toString(key_id) as key_id,
+      api_key,
+      name,
+      scopes,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
+      enabled
+    FROM logs.api_keys
+    WHERE key_id = '${escapeString(keyId)}'
+    LIMIT 1
+  `;
+
+  const results = await queryClickHouse<APIKey>(sql);
+  return results.length > 0 ? results[0] : null;
+}
+
 export async function createAPIKey(name: string, scopes: string = 'ingest'): Promise<string> {
   const apiKey = generateAPIKey();
   const sql = `
@@ -263,15 +281,34 @@ export async function toggleAPIKey(keyId: string, enabled: boolean): Promise<voi
 }
 
 export async function renameAPIKey(keyId: string, name: string): Promise<void> {
-  const sql = `
-    ALTER TABLE logs.api_keys
-    UPDATE name = '${escapeString(name)}'
-    WHERE key_id = '${escapeString(keyId)}'
-  `;
+  // Get current key to find the old name
+  const currentKey = await getAPIKey(keyId);
+  if (!currentKey) {
+    throw new Error(`API key not found: ${keyId}`);
+  }
 
+  const oldName = currentKey.name;
+
+  // Update the API key name
   await fetch(CLICKHOUSE_URL, {
     method: 'POST',
-    body: sql,
+    body: `
+      ALTER TABLE logs.api_keys
+      UPDATE name = '${escapeString(name)}'
+      WHERE key_id = '${escapeString(keyId)}'
+    `,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+
+  // Update all events with the old source name to use the new name
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: `
+      ALTER TABLE logs.events
+      UPDATE source = '${escapeString(name)}'
+      WHERE source = '${escapeString(oldName)}'
+    `,
     headers: { 'Content-Type': 'text/plain' },
     cache: 'no-store'
   });
