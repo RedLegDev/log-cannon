@@ -38,7 +38,12 @@ export async function queryClickHouse<T>(sql: string): Promise<T[]> {
     throw new Error(`ClickHouse query failed: ${errorText}`);
   }
 
-  const result = await response.json();
+  const text = await response.text();
+  if (!text) {
+    return [];
+  }
+
+  const result = JSON.parse(text);
   return result.data;
 }
 
