@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Eye, Trash2, ToggleLeft, ToggleRight, Plus } from 'lucide-react';
+import { Eye, Trash2, ToggleLeft, ToggleRight, Plus, Edit } from 'lucide-react';
 
 interface Dashboard {
   id: string;
@@ -18,6 +18,7 @@ export default function DashboardsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [editingDashboard, setEditingDashboard] = useState<Dashboard | null>(null);
 
   // Form state
   const [formName, setFormName] = useState('');
@@ -103,6 +104,57 @@ export default function DashboardsPage() {
     }
   }
 
+  function handleEdit(dashboard: Dashboard) {
+    setEditingDashboard(dashboard);
+    setFormName(dashboard.name);
+    setFormDescription(dashboard.description);
+    setFormConfig(JSON.stringify(JSON.parse(dashboard.config), null, 2));
+    setFormError(null);
+    setShowCreate(false);
+  }
+
+  async function handleUpdate(e: React.FormEvent) {
+    e.preventDefault();
+    setFormError(null);
+
+    if (!editingDashboard) return;
+
+    try {
+      // Parse config JSON
+      const config = JSON.parse(formConfig);
+
+      const res = await fetch('/api/dashboards', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingDashboard.id,
+          name: formName,
+          description: formDescription,
+          config
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update dashboard');
+
+      setEditingDashboard(null);
+      setFormName('');
+      setFormDescription('');
+      setFormConfig('');
+      fetchDashboards();
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : 'Failed to update dashboard');
+    }
+  }
+
+  function cancelEdit() {
+    setEditingDashboard(null);
+    setFormName('');
+    setFormDescription('');
+    setFormConfig('');
+    setFormError(null);
+  }
+
   function loadExample() {
     setFormConfig(JSON.stringify({
       "layout": "auto",
@@ -162,10 +214,12 @@ export default function DashboardsPage() {
         </div>
       )}
 
-      {showCreate && (
+      {(showCreate || editingDashboard) && (
         <div className="card-cannon p-6 mb-6">
-          <h2 className="text-lg font-semibold text-text-primary mb-4">Create Dashboard</h2>
-          <form onSubmit={handleCreate} className="space-y-4">
+          <h2 className="text-lg font-semibold text-text-primary mb-4">
+            {editingDashboard ? 'Edit Dashboard' : 'Create Dashboard'}
+          </h2>
+          <form onSubmit={editingDashboard ? handleUpdate : handleCreate} className="space-y-4">
             <div>
               <label className="block text-sm text-text-secondary mb-1">Name (URL-safe)</label>
               <input
@@ -174,8 +228,14 @@ export default function DashboardsPage() {
                 onChange={e => setFormName(e.target.value)}
                 placeholder="api-health"
                 className="input-cannon w-full"
+                disabled={!!editingDashboard}
                 required
               />
+              {editingDashboard && (
+                <p className="text-text-muted text-xs mt-1">
+                  Dashboard name cannot be changed
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-sm text-text-secondary mb-1">Description</label>
@@ -214,11 +274,11 @@ export default function DashboardsPage() {
             )}
             <div className="flex gap-2">
               <button type="submit" className="btn-cannon">
-                Create
+                {editingDashboard ? 'Update' : 'Create'}
               </button>
               <button
                 type="button"
-                onClick={() => setShowCreate(false)}
+                onClick={() => editingDashboard ? cancelEdit() : setShowCreate(false)}
                 className="btn-cannon bg-bg-tertiary hover:bg-bg-secondary"
               >
                 Cancel
@@ -292,6 +352,13 @@ export default function DashboardsPage() {
                         <Eye className="w-4 h-4" />
                         View
                       </Link>
+                      <button
+                        onClick={() => handleEdit(dashboard)}
+                        className="text-text-secondary hover:text-text-primary transition-colors inline-flex items-center gap-1"
+                      >
+                        <Edit className="w-4 h-4" />
+                        Edit
+                      </button>
                       <button
                         onClick={() => handleDelete(dashboard.id)}
                         className="text-cannon-critical hover:text-cannon-warning transition-colors inline-flex items-center gap-1"
