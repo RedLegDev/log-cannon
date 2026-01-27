@@ -52,15 +52,19 @@ export function RechartsBarChart({ data, widget }: RechartsBarChartProps) {
     );
   }
 
-  console.log('chartData:', chartData, 'xField:', xField, 'yKey:', yKey);
+  // Test with completely hardcoded static data
+  const testData = [
+    { name: 'A', value: 100 },
+    { name: 'B', value: 200 },
+    { name: 'C', value: 150 },
+  ];
 
-  // Absolute minimum - no formatters, no custom tick props
   return (
     <div className="overflow-x-auto">
-      <BarChart width={450} height={200} data={chartData}>
-        <XAxis dataKey={xField} />
+      <BarChart width={400} height={200} data={testData}>
+        <XAxis dataKey="name" />
         <YAxis />
-        <Bar dataKey={yKey} fill="#FF3366" />
+        <Bar dataKey="value" fill="#FF3366" />
       </BarChart>
     </div>
   );
