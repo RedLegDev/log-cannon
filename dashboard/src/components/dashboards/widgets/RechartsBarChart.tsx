@@ -54,35 +54,13 @@ export function RechartsBarChart({ data, widget }: RechartsBarChartProps) {
 
   console.log('chartData:', chartData, 'xField:', xField, 'yKey:', yKey);
 
-  // Try without ResponsiveContainer - fixed width/height directly on BarChart
+  // Absolute minimum - no formatters, no custom tick props
   return (
     <div className="overflow-x-auto">
-      <BarChart width={450} height={200} data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-        <XAxis
-          dataKey={xField}
-          stroke="#888"
-          tick={{ fill: '#888', fontSize: 10 }}
-          interval={0}
-          angle={-45}
-          textAnchor="end"
-          height={60}
-        />
-        <YAxis
-          stroke="#888"
-          tick={{ fill: '#888', fontSize: 10 }}
-          tickFormatter={(value) => value.toLocaleString()}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #333',
-            borderRadius: '4px',
-            color: '#fff',
-          }}
-          formatter={(value: number) => value.toLocaleString()}
-        />
-        <Bar dataKey={yKey} fill={colors[0]} />
+      <BarChart width={450} height={200} data={chartData}>
+        <XAxis dataKey={xField} />
+        <YAxis />
+        <Bar dataKey={yKey} fill="#FF3366" />
       </BarChart>
     </div>
   );
