@@ -39,7 +39,7 @@ Each widget requires:
 \`\`\`
 
 - **id**: Unique identifier within the dashboard
-- **type**: One of "stat", "line_chart", "bar_chart", "table"
+- **type**: One of "stat", "line_chart", "bar_chart", "pie_chart", "table"
 - **title**: Display title shown above the widget
 - **dataSource**: Where to get data (required)
 - **visualization**: How to render it (optional, type-specific defaults apply)
@@ -145,6 +145,37 @@ Visualization options:
 - **xField**: Field for categories (X axis)
 - **yField**: Field for values (Y axis)
 - **colors**: Optional array of colors for bars
+
+### pie_chart - Proportional Distribution
+
+Shows data as proportional slices. Best for showing composition and relative sizes.
+
+\`\`\`json
+{
+  "id": "errors-by-source",
+  "type": "pie_chart",
+  "title": "Errors by Source",
+  "dataSource": {
+    "type": "inline",
+    "sql": "SELECT source as name, count() as count FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY count DESC LIMIT 8"
+  },
+  "visualization": {
+    "xField": "name",
+    "yField": "count"
+  }
+}
+\`\`\`
+
+Visualization options:
+- **xField**: Field for slice labels (e.g., category names)
+- **yField**: Field for slice values (must be a single field, not an array)
+- **colors**: Optional array of colors for slices (defaults to a preset palette)
+
+Tips for pie charts:
+- Limit to 8 or fewer slices for readability
+- Use ORDER BY and LIMIT in your query to show top categories
+- Zero values are automatically filtered out
+- Labels show both name and percentage
 
 ### table - Tabular Data
 
@@ -545,6 +576,17 @@ Here's a comprehensive example combining multiple widget types:
           "refreshInterval": 60
         },
         "visualization": { "xField": "level", "yField": "count" }
+      },
+      {
+        "id": "by-source",
+        "type": "pie_chart",
+        "title": "Distribution by Source",
+        "dataSource": {
+          "type": "inline",
+          "sql": "SELECT source as name, count() as count FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY count DESC LIMIT 8",
+          "refreshInterval": 60
+        },
+        "visualization": { "xField": "name", "yField": "count" }
       },
       {
         "id": "recent-errors",
