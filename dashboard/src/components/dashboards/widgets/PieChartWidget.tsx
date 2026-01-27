@@ -1,41 +1,24 @@
 'use client';
 
-import dynamic from 'next/dynamic';
+import { useMemo } from 'react';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { Widget } from '@/lib/clickhouse';
 import { ChartWrapper } from './ChartWrapper';
-
-// Dynamic import for Recharts - SSR disabled since it uses browser APIs
-const RechartsPieChartInner = dynamic(
-  () => import('./RechartsPieChartInner').then(mod => mod.RechartsPieChartInner),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex items-center justify-center h-full text-text-muted">
-        <div className="animate-pulse">Loading chart...</div>
-      </div>
-    ),
-  }
-);
 
 interface PieChartWidgetProps {
   data: unknown[];
   widget: Widget;
 }
 
-export interface PieChartData {
-  name: string;
-  value: number;
-}
-
 const DEFAULT_COLORS = [
-  '#FF4D2A', // cannon-fire
-  '#FF3366', // pinkish-red
-  '#36A2EB', // blue
-  '#FFCE56', // yellow
-  '#4BC0C0', // teal
-  '#9966FF', // purple
-  '#FF9F40', // orange
-  '#C9CBCF', // gray
+  '#FF4D2A',
+  '#FF3366',
+  '#36A2EB',
+  '#FFCE56',
+  '#4BC0C0',
+  '#9966FF',
+  '#FF9F40',
+  '#C9CBCF',
 ];
 
 export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
@@ -43,6 +26,21 @@ export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
   const nameField = config?.xField || 'name';
   const valueField = config?.yField;
   const colors = config?.colors || DEFAULT_COLORS;
+
+  const chartData = useMemo(() => {
+    if (!valueField || Array.isArray(valueField)) return null;
+
+    const items = (Array.isArray(data) ? data : []).map((item) => {
+      const record = item as Record<string, unknown>;
+      return {
+        name: String(record[nameField] ?? 'Unknown'),
+        value: Number(record[valueField]) || 0,
+      };
+    });
+
+    // Filter out zero values
+    return items.filter((item) => item.value > 0);
+  }, [data, nameField, valueField]);
 
   if (!valueField || Array.isArray(valueField)) {
     return (
@@ -52,19 +50,7 @@ export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
     );
   }
 
-  // Transform data to ensure numeric values
-  const chartData: PieChartData[] = (Array.isArray(data) ? data : []).map((item) => {
-    const record = item as Record<string, unknown>;
-    return {
-      name: String(record[nameField] ?? 'Unknown'),
-      value: Number(record[valueField]) || 0,
-    };
-  });
-
-  // Filter out zero values for cleaner display
-  const filteredData = chartData.filter((item) => item.value > 0);
-
-  if (filteredData.length === 0) {
+  if (!chartData || chartData.length === 0) {
     return (
       <div className="flex-grow flex items-center justify-center text-text-muted text-sm">
         No data available
@@ -75,12 +61,44 @@ export function PieChartWidget({ data, widget }: PieChartWidgetProps) {
   return (
     <ChartWrapper>
       {(dimensions) => (
-        <RechartsPieChartInner
-          data={filteredData}
-          width={dimensions.width}
-          height={dimensions.height}
-          colors={colors}
-        />
+        <div style={{ width: dimensions.width, height: dimensions.height }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <PieChart margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+              <Pie
+                data={chartData}
+                dataKey="value"
+                nameKey="name"
+                cx="50%"
+                cy="50%"
+                outerRadius="70%"
+                label={({ name, percent }) =>
+                  `${name}: ${(percent * 100).toFixed(0)}%`
+                }
+                labelLine={{ stroke: '#888' }}
+              >
+                {chartData.map((_, index) => (
+                  <Cell
+                    key={`cell-${index}`}
+                    fill={colors[index % colors.length]}
+                  />
+                ))}
+              </Pie>
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#1a1a1a',
+                  border: '1px solid #333',
+                  borderRadius: '4px',
+                  color: '#fff',
+                }}
+                formatter={(value: number) => [value.toLocaleString(), 'Count']}
+              />
+              <Legend
+                wrapperStyle={{ color: '#888' }}
+                formatter={(value) => <span style={{ color: '#888' }}>{value}</span>}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
       )}
     </ChartWrapper>
   );
