@@ -26,7 +26,7 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   const yFields = Array.isArray(yField) ? yField : [yField];
 
   return (
-    <div className="flex-grow">
+    <div className="flex-grow min-h-[200px]">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#333" />
