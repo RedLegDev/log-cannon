@@ -239,6 +239,101 @@ Use formatDateTime for display:
 formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as formatted_time
 \`\`\`
 
+## API v1 - Programmatic Access
+
+Log Cannon provides a REST API for programmatic access. Authenticate with an API key.
+
+### Authentication
+
+Include your API key in requests:
+
+\`\`\`bash
+# Header method (preferred)
+curl -H "X-Api-Key: your-key-here" https://your-instance/api/v1/logs
+
+# Bearer token method
+curl -H "Authorization: Bearer your-key-here" https://your-instance/api/v1/logs
+\`\`\`
+
+### Scopes
+
+API keys have permission scopes:
+- **ingest**: Write logs only (default for existing keys)
+- **read**: Query logs, view dashboards/endpoints/queries
+- **write**: Everything in read + create/update/delete resources
+- **admin**: Everything in write + manage API keys
+
+### Endpoints
+
+#### Logs
+
+\`\`\`bash
+# Search logs
+GET /api/v1/logs?source=MyApp&level=Error&search=timeout&limit=100
+
+# Property filters
+GET /api/v1/logs?prop.userId=123&prop.duration=>500
+\`\`\`
+
+#### Query
+
+\`\`\`bash
+# Execute arbitrary SELECT query
+POST /api/v1/query
+Content-Type: application/json
+
+{"sql": "SELECT source, count() as count FROM logs.events GROUP BY source"}
+\`\`\`
+
+#### Dashboards
+
+\`\`\`bash
+GET /api/v1/dashboards              # List all
+GET /api/v1/dashboards/:name        # Get one
+POST /api/v1/dashboards             # Create
+PATCH /api/v1/dashboards/:name      # Update
+DELETE /api/v1/dashboards/:name     # Delete
+\`\`\`
+
+#### Endpoints (Stored Queries)
+
+\`\`\`bash
+GET /api/v1/endpoints               # List all
+GET /api/v1/endpoints/:name?param=value  # Execute with params
+POST /api/v1/endpoints              # Create
+PATCH /api/v1/endpoints/:name       # Update
+DELETE /api/v1/endpoints/:name      # Delete
+\`\`\`
+
+#### Saved Queries
+
+\`\`\`bash
+GET /api/v1/saved-queries           # List all
+POST /api/v1/saved-queries          # Create
+DELETE /api/v1/saved-queries/:id    # Delete
+\`\`\`
+
+#### API Keys (admin scope required)
+
+\`\`\`bash
+GET /api/v1/keys                    # List all (keys masked)
+POST /api/v1/keys                   # Create (returns key once)
+PATCH /api/v1/keys/:id              # Update name/scopes/enabled
+DELETE /api/v1/keys/:id             # Revoke
+\`\`\`
+
+### Error Responses
+
+\`\`\`json
+{
+  "error": "error_code",
+  "message": "Human-readable description",
+  "details": { "fields": { "name": "Required field" } }
+}
+\`\`\`
+
+Error codes: \`unauthorized\`, \`forbidden\`, \`not_found\`, \`validation_error\`, \`query_error\`, \`query_timeout\`, \`internal_error\`
+
 `;
 
 async function getActiveSources(): Promise<string[]> {
