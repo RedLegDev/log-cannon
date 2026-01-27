@@ -285,6 +285,20 @@ export async function toggleAPIKey(keyId: string, enabled: boolean): Promise<voi
   });
 }
 
+async function executeClickHouse(sql: string): Promise<void> {
+  const response = await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`ClickHouse query failed: ${errorText}`);
+  }
+}
+
 export async function renameAPIKey(keyId: string, name: string): Promise<void> {
   // Get current key to find the old name
   const currentKey = await getAPIKey(keyId);
@@ -295,28 +309,18 @@ export async function renameAPIKey(keyId: string, name: string): Promise<void> {
   const oldName = currentKey.name;
 
   // Update the API key name
-  await fetch(CLICKHOUSE_URL, {
-    method: 'POST',
-    body: `
-      ALTER TABLE logs.api_keys
-      UPDATE name = '${escapeString(name)}'
-      WHERE key_id = '${escapeString(keyId)}'
-    `,
-    headers: { 'Content-Type': 'text/plain' },
-    cache: 'no-store'
-  });
+  await executeClickHouse(`
+    ALTER TABLE logs.api_keys
+    UPDATE name = '${escapeString(name)}'
+    WHERE key_id = '${escapeString(keyId)}'
+  `);
 
   // Update all events with the old source name to use the new name
-  await fetch(CLICKHOUSE_URL, {
-    method: 'POST',
-    body: `
-      ALTER TABLE logs.events
-      UPDATE source = '${escapeString(name)}'
-      WHERE source = '${escapeString(oldName)}'
-    `,
-    headers: { 'Content-Type': 'text/plain' },
-    cache: 'no-store'
-  });
+  await executeClickHouse(`
+    ALTER TABLE logs.events
+    UPDATE source = '${escapeString(name)}'
+    WHERE source = '${escapeString(oldName)}'
+  `);
 }
 
 export async function deleteAPIKey(keyId: string): Promise<void> {
