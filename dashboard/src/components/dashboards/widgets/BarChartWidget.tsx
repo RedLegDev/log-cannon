@@ -46,42 +46,35 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
     );
   }
 
-  // Debug: show data count
   const maxValue = Math.max(...chartData.map(d => Number(d[yFields[0]]) || 0));
 
+  // Simple CSS bar chart as fallback (Recharts not rendering for unknown reason)
   return (
-    <div className="flex-grow flex flex-col">
-      <div className="text-xs text-gray-500 mb-1">
-        Debug: {chartData.length} items, max={maxValue.toLocaleString()}
-      </div>
-      <div className="flex-grow" style={{ minHeight: 200 }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-            <XAxis
-              dataKey={xField}
-              stroke="#888"
-              tick={{ fill: '#888' }}
-            />
-            <YAxis stroke="#888" tick={{ fill: '#888' }} />
-            <Tooltip
-              contentStyle={{
-                backgroundColor: '#1a1a1a',
-                border: '1px solid #333',
-                borderRadius: '4px',
-                color: '#fff'
-              }}
-            />
-            {yFields.map((field, idx) => (
-              <Bar
-                key={field}
-                dataKey={field}
-                fill={colors[idx % colors.length]}
+    <div className="flex-grow flex flex-col gap-2 overflow-hidden">
+      {chartData.slice(0, 8).map((item, idx) => {
+        const label = String(item[xField]);
+        const value = Number(item[yFields[0]]) || 0;
+        const percentage = maxValue > 0 ? (value / maxValue) * 100 : 0;
+        return (
+          <div key={idx} className="flex items-center gap-2 text-xs">
+            <div className="w-24 truncate text-gray-400" title={label}>
+              {label}
+            </div>
+            <div className="flex-grow h-5 bg-gray-800 rounded overflow-hidden">
+              <div
+                className="h-full rounded"
+                style={{
+                  width: `${percentage}%`,
+                  backgroundColor: colors[idx % colors.length],
+                }}
               />
-            ))}
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+            </div>
+            <div className="w-20 text-right text-gray-400">
+              {value.toLocaleString()}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
