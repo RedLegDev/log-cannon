@@ -515,3 +515,218 @@ export async function executeEndpointQuery(sqlQuery: string, params: Record<stri
 
   return queryClickHouse<unknown>(interpolatedSql);
 }
+
+// Dashboards
+
+export type WidgetType = 'stat' | 'line_chart' | 'bar_chart' | 'table';
+export type LayoutType = 'auto' | 'grid';
+
+export interface WidgetPosition {
+  row: number;
+  col: number;
+  width: number;
+  height: number;
+}
+
+export interface WidgetDataSource {
+  type: 'endpoint' | 'inline';
+  endpointName?: string;
+  sql?: string;
+  params?: Record<string, string>;
+  refreshInterval?: number;
+}
+
+export interface WidgetVisualization {
+  // Common
+  valueField?: string;
+  trend?: boolean;
+  format?: 'number' | 'percent' | 'duration';
+
+  // Charts
+  xField?: string;
+  yField?: string | string[];
+  colors?: string[];
+
+  // Table
+  columns?: string[];
+  sortBy?: string;
+}
+
+export interface Widget {
+  id: string;
+  type: WidgetType;
+  title: string;
+  position?: WidgetPosition;
+  dataSource: WidgetDataSource;
+  visualization?: WidgetVisualization;
+}
+
+export interface DashboardConfig {
+  layout: LayoutType;
+  widgets: Widget[];
+}
+
+export interface Dashboard {
+  id: string;
+  name: string;
+  description: string;
+  config: string;  // JSON string
+  enabled: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DashboardInput {
+  name: string;
+  description?: string;
+  config: DashboardConfig;
+}
+
+export async function getDashboards(): Promise<Dashboard[]> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      config,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
+      formatDateTime(updated_at, '%Y-%m-%d %H:%i:%S') as updated_at
+    FROM logs.dashboards
+    ORDER BY created_at DESC
+  `;
+
+  return queryClickHouse<Dashboard>(sql);
+}
+
+export async function getDashboardByName(name: string): Promise<Dashboard | null> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      config,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
+      formatDateTime(updated_at, '%Y-%m-%d %H:%i:%S') as updated_at
+    FROM logs.dashboards
+    WHERE name = '${escapeString(name)}'
+    LIMIT 1
+  `;
+
+  const results = await queryClickHouse<Dashboard>(sql);
+  return results.length > 0 ? results[0] : null;
+}
+
+export async function createDashboard(dashboard: DashboardInput): Promise<void> {
+  const configJson = JSON.stringify(dashboard.config);
+  const sql = `
+    INSERT INTO logs.dashboards (name, description, config)
+    VALUES (
+      '${escapeString(dashboard.name)}',
+      '${escapeString(dashboard.description || '')}',
+      '${escapeString(configJson)}'
+    )
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function updateDashboard(id: string, updates: Partial<DashboardInput> & { enabled?: boolean }): Promise<void> {
+  const setClauses: string[] = [];
+
+  if (updates.name !== undefined) {
+    setClauses.push(`name = '${escapeString(updates.name)}'`);
+  }
+  if (updates.description !== undefined) {
+    setClauses.push(`description = '${escapeString(updates.description)}'`);
+  }
+  if (updates.config !== undefined) {
+    const configJson = JSON.stringify(updates.config);
+    setClauses.push(`config = '${escapeString(configJson)}'`);
+  }
+  if (updates.enabled !== undefined) {
+    setClauses.push(`enabled = ${updates.enabled ? 1 : 0}`);
+  }
+
+  if (setClauses.length === 0) return;
+
+  setClauses.push(`updated_at = now()`);
+
+  const sql = `
+    ALTER TABLE logs.dashboards
+    UPDATE ${setClauses.join(', ')}
+    WHERE id = '${escapeString(id)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function deleteDashboard(id: string): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.dashboards
+    DELETE WHERE id = '${escapeString(id)}'
+  `;
+
+  await fetch(CLICKHOUSE_URL, {
+    method: 'POST',
+    body: sql,
+    headers: { 'Content-Type': 'text/plain' },
+    cache: 'no-store'
+  });
+}
+
+export async function executeWidgetQuery(widget: Widget): Promise<unknown[]> {
+  if (widget.dataSource.type === 'endpoint') {
+    // Use existing endpoint system
+    if (!widget.dataSource.endpointName) {
+      throw new Error('Endpoint name is required for endpoint data source');
+    }
+
+    const endpoint = await getEndpointByName(widget.dataSource.endpointName);
+    if (!endpoint) {
+      throw new Error(`Endpoint not found: ${widget.dataSource.endpointName}`);
+    }
+
+    if (!endpoint.enabled) {
+      throw new Error(`Endpoint is disabled: ${widget.dataSource.endpointName}`);
+    }
+
+    return executeEndpointQuery(endpoint.sql_query, widget.dataSource.params || {});
+  } else if (widget.dataSource.type === 'inline') {
+    // Execute inline SQL
+    if (!widget.dataSource.sql) {
+      throw new Error('SQL is required for inline data source');
+    }
+
+    // Security: Only allow SELECT statements
+    const trimmed = widget.dataSource.sql.trim().toLowerCase();
+    if (!trimmed.startsWith('select')) {
+      throw new Error('Only SELECT statements are allowed');
+    }
+
+    // Apply parameter interpolation
+    let interpolatedSql = widget.dataSource.sql;
+    if (widget.dataSource.params) {
+      for (const [key, value] of Object.entries(widget.dataSource.params)) {
+        if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) continue;
+        const placeholder = new RegExp(`@${key}\\b`, 'g');
+        interpolatedSql = interpolatedSql.replace(placeholder, `'${escapeString(value)}'`);
+      }
+    }
+
+    return queryClickHouse<unknown>(interpolatedSql);
+  } else {
+    throw new Error(`Unknown data source type: ${widget.dataSource.type}`);
+  }
+}

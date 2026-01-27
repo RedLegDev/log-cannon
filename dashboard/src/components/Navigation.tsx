@@ -14,6 +14,7 @@ import { MobileNav } from './MobileNav'
 const navLinks = [
   { href: '/', label: 'Log Explorer' },
   { href: '/services', label: 'Services' },
+  { href: '/dashboards', label: 'Dashboards' },
   { href: '/live', label: 'Live Tail' },
   { href: '/queries', label: 'Saved Queries' },
   { href: '/endpoints', label: 'Endpoints' },
