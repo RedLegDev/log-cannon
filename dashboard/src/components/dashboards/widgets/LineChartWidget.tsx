@@ -1,7 +1,6 @@
 'use client';
 
 import { Widget } from '@/lib/clickhouse';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface LineChartWidgetProps {
   data: unknown[];
@@ -12,7 +11,7 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
-  const colors = config?.colors || ['#FF4D2A']; // Default to cannon-fire color
+  const colors = config?.colors || ['#FF4D2A'];
 
   if (!yField) {
     return (
@@ -22,20 +21,16 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
     );
   }
 
-  // Support multiple y fields
   const yFields = Array.isArray(yField) ? yField : [yField];
+  const yKey = yFields[0];
 
-  // Transform data to ensure numeric values for y fields
+  // Transform data
   const chartData = (Array.isArray(data) ? data : []).map((item) => {
     const record = item as Record<string, unknown>;
-    const transformed: Record<string, unknown> = {};
-    // Keep x field as string (for time formatting)
-    transformed[xField] = String(record[xField] ?? '');
-    // Ensure y fields are numbers
-    for (const field of yFields) {
-      transformed[field] = Number(record[field]) || 0;
-    }
-    return transformed;
+    return {
+      label: String(record[xField] ?? ''),
+      value: Number(record[yKey]) || 0,
+    };
   });
 
   if (chartData.length === 0) {
@@ -46,50 +41,56 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
     );
   }
 
+  const maxValue = Math.max(...chartData.map(d => d.value));
+  const minValue = Math.min(...chartData.map(d => d.value));
+  const range = maxValue - minValue || 1;
+
+  // Format time label
+  const formatLabel = (label: string) => {
+    try {
+      const date = new Date(label);
+      if (!isNaN(date.getTime())) {
+        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
+    } catch {
+      // Not a date
+    }
+    return label;
+  };
+
   return (
-    <div className="flex-grow">
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={chartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-          <XAxis
-            dataKey={xField}
-            stroke="#888"
-            tick={{ fill: '#888' }}
-            tickFormatter={(value) => {
-              // Try to format as time if it looks like a timestamp
-              try {
-                const date = new Date(value);
-                if (!isNaN(date.getTime())) {
-                  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                }
-              } catch {
-                // Not a date, return as is
-              }
-              return value;
-            }}
-          />
-          <YAxis stroke="#888" tick={{ fill: '#888' }} />
-          <Tooltip
-            contentStyle={{
-              backgroundColor: '#1a1a1a',
-              border: '1px solid #333',
-              borderRadius: '4px',
-              color: '#fff'
-            }}
-          />
-          {yFields.map((field, idx) => (
-            <Line
-              key={field}
-              type="monotone"
-              dataKey={field}
-              stroke={colors[idx % colors.length]}
-              strokeWidth={2}
-              dot={false}
-              activeDot={{ r: 4 }}
-            />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
+    <div className="flex-grow flex flex-col">
+      {/* Chart area */}
+      <div className="flex-grow flex items-end gap-0.5 min-h-[160px]">
+        {chartData.map((item, idx) => {
+          const height = ((item.value - minValue) / range) * 100;
+          return (
+            <div
+              key={idx}
+              className="flex-1 flex flex-col justify-end group cursor-pointer relative"
+              title={`${formatLabel(item.label)}: ${item.value.toLocaleString()}`}
+            >
+              <div
+                className="w-full rounded-t transition-all duration-200 group-hover:opacity-80"
+                style={{
+                  height: `${Math.max(height, 2)}%`,
+                  backgroundColor: colors[0],
+                  opacity: 0.8,
+                }}
+              />
+              {/* Hover tooltip */}
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                {item.value.toLocaleString()}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {/* X-axis labels */}
+      <div className="flex justify-between text-xs text-gray-500 mt-2 px-1">
+        <span>{formatLabel(chartData[0]?.label || '')}</span>
+        <span>{formatLabel(chartData[chartData.length - 1]?.label || '')}</span>
+      </div>
     </div>
   );
 }
