@@ -1,6 +1,7 @@
 import { getDashboardByName } from '@/lib/clickhouse';
 import { DashboardView } from '@/components/dashboards/DashboardView';
-import { AlertCircle, ArrowLeft, Share2 } from 'lucide-react';
+import { ShareButton } from '@/components/dashboards/ShareButton';
+import { AlertCircle, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
 export default async function DashboardPage({
@@ -87,17 +88,7 @@ export default async function DashboardPage({
             )}
           </div>
 
-          <button
-            onClick={() => {
-              const url = window.location.href;
-              navigator.clipboard.writeText(url);
-              alert('Dashboard URL copied to clipboard!');
-            }}
-            className="btn-cannon flex items-center gap-2 text-sm"
-          >
-            <Share2 className="w-4 h-4" />
-            Share
-          </button>
+          <ShareButton />
         </div>
       </div>
 
