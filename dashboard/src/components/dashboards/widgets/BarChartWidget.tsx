@@ -12,7 +12,7 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
-  const colors = config?.colors || ['#FF3366']; // Default to pinkish-red
+  const colors = config?.colors || ['#FF3366'];
 
   if (!yField) {
     return (
@@ -22,20 +22,15 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
     );
   }
 
-  // Support multiple y fields
   const yFields = Array.isArray(yField) ? yField : [yField];
 
-  // Transform data to ensure numeric values for y fields (like PieChartWidget does)
+  // Transform data
   const chartData = (Array.isArray(data) ? data : []).map((item) => {
     const record = item as Record<string, unknown>;
-    const transformed: Record<string, unknown> = {};
-    // Keep x field as string
-    transformed[xField] = String(record[xField] ?? '');
-    // Ensure y fields are numbers
-    for (const field of yFields) {
-      transformed[field] = Number(record[field]) || 0;
-    }
-    return transformed;
+    return {
+      [xField]: String(record[xField] ?? ''),
+      [yFields[0]]: Number(record[yFields[0]]) || 0,
+    };
   });
 
   if (chartData.length === 0) {
@@ -46,35 +41,21 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
     );
   }
 
-  const maxValue = Math.max(...chartData.map(d => Number(d[yFields[0]]) || 0));
+  // Debug info
+  console.log('BarChart chartData:', JSON.stringify(chartData));
+  console.log('BarChart xField:', xField, 'yField:', yFields[0]);
 
-  // Simple CSS bar chart as fallback (Recharts not rendering for unknown reason)
   return (
-    <div className="flex-grow flex flex-col gap-2 overflow-hidden">
-      {chartData.slice(0, 8).map((item, idx) => {
-        const label = String(item[xField]);
-        const value = Number(item[yFields[0]]) || 0;
-        const percentage = maxValue > 0 ? (value / maxValue) * 100 : 0;
-        return (
-          <div key={idx} className="flex items-center gap-2 text-xs">
-            <div className="w-24 truncate text-gray-400" title={label}>
-              {label}
-            </div>
-            <div className="flex-grow h-5 bg-gray-800 rounded overflow-hidden">
-              <div
-                className="h-full rounded"
-                style={{
-                  width: `${percentage}%`,
-                  backgroundColor: colors[idx % colors.length],
-                }}
-              />
-            </div>
-            <div className="w-20 text-right text-gray-400">
-              {value.toLocaleString()}
-            </div>
-          </div>
-        );
-      })}
+    <div style={{ width: '100%', height: 220 }}>
+      <ResponsiveContainer>
+        <BarChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+          <XAxis dataKey={xField} stroke="#888" tick={{ fill: '#888' }} />
+          <YAxis stroke="#888" tick={{ fill: '#888' }} />
+          <Tooltip />
+          <Bar dataKey={yFields[0]} fill={colors[0]} />
+        </BarChart>
+      </ResponsiveContainer>
     </div>
   );
 }
