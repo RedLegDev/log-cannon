@@ -45,17 +45,23 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   console.log('BarChart chartData:', JSON.stringify(chartData));
   console.log('BarChart xField:', xField, 'yField:', yFields[0]);
 
+  // Skip ResponsiveContainer - use fixed dimensions directly
   return (
-    <div style={{ width: '100%', height: 220 }}>
-      <ResponsiveContainer>
-        <BarChart data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-          <XAxis dataKey={xField} stroke="#888" tick={{ fill: '#888' }} />
-          <YAxis stroke="#888" tick={{ fill: '#888' }} />
-          <Tooltip />
-          <Bar dataKey={yFields[0]} fill={colors[0]} />
-        </BarChart>
-      </ResponsiveContainer>
+    <div className="w-full overflow-x-auto">
+      <BarChart width={500} height={200} data={chartData}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+        <XAxis dataKey={xField} stroke="#888" tick={{ fill: '#888', fontSize: 11 }} />
+        <YAxis stroke="#888" tick={{ fill: '#888', fontSize: 11 }} />
+        <Tooltip
+          contentStyle={{
+            backgroundColor: '#1a1a1a',
+            border: '1px solid #333',
+            borderRadius: '4px',
+            color: '#fff'
+          }}
+        />
+        <Bar dataKey={yFields[0]} fill={colors[0]} />
+      </BarChart>
     </div>
   );
 }
