@@ -69,7 +69,7 @@ export function TableWidget({ data, widget }: TableWidgetProps) {
   }
 
   return (
-    <div className="flex-grow overflow-auto">
+    <div className="h-full overflow-auto">
       <table className="w-full text-sm">
         <thead className="sticky top-0 bg-bg-primary border-b border-border-subtle">
           <tr>

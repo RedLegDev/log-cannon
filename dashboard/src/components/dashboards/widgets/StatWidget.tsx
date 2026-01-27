@@ -55,7 +55,7 @@ export function StatWidget({ data, widget }: StatWidgetProps) {
   const formattedValue = formatValue(value, config?.format);
 
   return (
-    <div className="flex-grow flex flex-col items-center justify-center">
+    <div className="h-full flex flex-col items-center justify-center">
       <div className="text-4xl md:text-5xl font-bold text-cannon-fire font-mono">
         {formattedValue}
       </div>
