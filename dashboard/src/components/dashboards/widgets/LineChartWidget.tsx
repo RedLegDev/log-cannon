@@ -1,8 +1,21 @@
 'use client';
 
-import { useMemo, useRef, useState, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { useMemo } from 'react';
+import { Line } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler,
+} from 'chart.js';
 import { Widget } from '@/lib/clickhouse';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
 interface LineChartWidgetProps {
   data: unknown[];
@@ -10,27 +23,6 @@ interface LineChartWidgetProps {
 }
 
 export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ width: 400, height: 200 });
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    const updateSize = () => {
-      if (containerRef.current) {
-        const { width, height } = containerRef.current.getBoundingClientRect();
-        if (width > 0 && height > 0) {
-          setSize({ width, height });
-        }
-      }
-    };
-
-    updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, []);
-
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
@@ -42,15 +34,29 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
     const yFields = Array.isArray(yField) ? yField : [yField];
     const yKey = yFields[0];
 
-    return (Array.isArray(data) ? data : []).map((item) => {
+    const items = (Array.isArray(data) ? data : []).map((item) => {
       const record = item as Record<string, unknown>;
       const label = String(record[xField] ?? '');
       return {
-        name: formatLabel(label),
+        label: formatLabel(label),
         value: Number(record[yKey]) || 0,
       };
     });
-  }, [data, xField, yField]);
+
+    return {
+      labels: items.map((i) => i.label),
+      datasets: [
+        {
+          data: items.map((i) => i.value),
+          borderColor: color,
+          backgroundColor: color + '20',
+          fill: true,
+          tension: 0.3,
+          pointRadius: items.length > 30 ? 0 : 3,
+        },
+      ],
+    };
+  }, [data, xField, yField, color]);
 
   if (!yField) {
     return (
@@ -60,7 +66,7 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
     );
   }
 
-  if (!chartData || chartData.length === 0) {
+  if (!chartData || chartData.labels.length === 0) {
     return (
       <div className="flex-grow flex items-center justify-center text-text-muted text-sm">
         No data to display
@@ -69,19 +75,27 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   }
 
   return (
-    <div ref={containerRef} className="w-full h-full">
-      <LineChart
-        width={size.width}
-        height={size.height}
+    <div className="w-full h-full">
+      <Line
         data={chartData}
-        margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-      >
-        <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-        <XAxis dataKey="name" stroke="#666" fontSize={12} />
-        <YAxis stroke="#666" fontSize={12} />
-        <Tooltip />
-        <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} />
-      </LineChart>
+        options={{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+          },
+          scales: {
+            x: {
+              grid: { color: '#333' },
+              ticks: { color: '#888', maxTicksLimit: 8 },
+            },
+            y: {
+              grid: { color: '#333' },
+              ticks: { color: '#888' },
+            },
+          },
+        }}
+      />
     </div>
   );
 }
