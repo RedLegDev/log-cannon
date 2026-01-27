@@ -17,6 +17,8 @@ interface RechartsBarChartProps {
 }
 
 export function RechartsBarChart({ data, widget }: RechartsBarChartProps) {
+  console.log('RechartsBarChart render - data:', data, 'widget:', widget);
+
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
