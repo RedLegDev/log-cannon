@@ -1,15 +1,13 @@
 'use client';
 
 import { useMemo, useRef, useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts';
 import { Widget } from '@/lib/clickhouse';
 
 interface BarChartWidgetProps {
   data: unknown[];
   widget: Widget;
 }
-
-const DEFAULT_COLORS = ['#FF3366', '#FF4D2A', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40'];
 
 export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -36,7 +34,7 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
-  const colors = config?.colors || DEFAULT_COLORS;
+  const color = config?.colors?.[0] || '#FF3366';
 
   const chartData = useMemo(() => {
     if (!yField) return null;
@@ -85,22 +83,9 @@ export function BarChartWidget({ data, widget }: BarChartWidgetProps) {
           stroke="#666"
           fontSize={12}
           width={100}
-          tickFormatter={(value) => value.length > 15 ? `${value.slice(0, 15)}...` : value}
         />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #333',
-            borderRadius: '4px',
-            color: '#fff',
-          }}
-          formatter={(value: number) => [value.toLocaleString(), 'Value']}
-        />
-        <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-          {chartData.map((_, index) => (
-            <Cell key={`cell-${index}`} fill={colors[index % colors.length]} />
-          ))}
-        </Bar>
+        <Tooltip />
+        <Bar dataKey="value" fill={color} />
       </BarChart>
     </div>
   );

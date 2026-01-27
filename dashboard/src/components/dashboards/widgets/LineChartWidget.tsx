@@ -9,8 +9,6 @@ interface LineChartWidgetProps {
   widget: Widget;
 }
 
-const DEFAULT_COLORS = ['#FF4D2A'];
-
 export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 400, height: 200 });
@@ -36,7 +34,7 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
-  const colors = config?.colors || DEFAULT_COLORS;
+  const color = config?.colors?.[0] || '#FF4D2A';
 
   const chartData = useMemo(() => {
     if (!yField) return null;
@@ -79,36 +77,10 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
         margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
       >
         <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-        <XAxis
-          dataKey="name"
-          stroke="#666"
-          fontSize={12}
-          tickLine={false}
-          interval="preserveStartEnd"
-        />
-        <YAxis
-          stroke="#666"
-          fontSize={12}
-          tickLine={false}
-          tickFormatter={(value) => value.toLocaleString()}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: '#1a1a1a',
-            border: '1px solid #333',
-            borderRadius: '4px',
-            color: '#fff',
-          }}
-          formatter={(value: number) => [value.toLocaleString(), 'Value']}
-        />
-        <Line
-          type="monotone"
-          dataKey="value"
-          stroke={colors[0]}
-          strokeWidth={2}
-          dot={chartData.length <= 30}
-          activeDot={{ r: 6, fill: colors[0] }}
-        />
+        <XAxis dataKey="name" stroke="#666" fontSize={12} />
+        <YAxis stroke="#666" fontSize={12} />
+        <Tooltip />
+        <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} />
       </LineChart>
     </div>
   );
