@@ -300,26 +300,10 @@ async function executeClickHouse(sql: string): Promise<void> {
 }
 
 export async function renameAPIKey(keyId: string, name: string): Promise<void> {
-  // Get current key to find the old name
-  const currentKey = await getAPIKey(keyId);
-  if (!currentKey) {
-    throw new Error(`API key not found: ${keyId}`);
-  }
-
-  const oldName = currentKey.name;
-
-  // Update the API key name
   await executeClickHouse(`
     ALTER TABLE logs.api_keys
     UPDATE name = '${escapeString(name)}'
     WHERE key_id = '${escapeString(keyId)}'
-  `);
-
-  // Update all events with the old source name to use the new name
-  await executeClickHouse(`
-    ALTER TABLE logs.events
-    UPDATE source = '${escapeString(name)}'
-    WHERE source = '${escapeString(oldName)}'
   `);
 }
 
