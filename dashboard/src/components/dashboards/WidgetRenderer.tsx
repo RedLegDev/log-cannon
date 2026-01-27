@@ -7,6 +7,8 @@ import { LineChartWidget } from './widgets/LineChartWidget';
 import { BarChartWidget } from './widgets/BarChartWidget';
 import { TableWidget } from './widgets/TableWidget';
 import { PieChartWidget } from './widgets/PieChartWidget';
+import { DoughnutChartWidget } from './widgets/DoughnutChartWidget';
+import { ScatterChartWidget } from './widgets/ScatterChartWidget';
 
 interface WidgetRendererProps {
   widget: Widget;
@@ -26,6 +28,10 @@ export function WidgetRenderer({ widget, dashboardName }: WidgetRendererProps) {
             return <BarChartWidget data={data} widget={widget} />;
           case 'pie_chart':
             return <PieChartWidget data={data} widget={widget} />;
+          case 'doughnut_chart':
+            return <DoughnutChartWidget data={data} widget={widget} />;
+          case 'scatter_chart':
+            return <ScatterChartWidget data={data} widget={widget} />;
           case 'table':
             return <TableWidget data={data} widget={widget} />;
           default:

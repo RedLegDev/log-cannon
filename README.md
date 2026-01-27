@@ -158,6 +158,8 @@ Create custom dashboards with configurable widgets for visualizing your log data
 | `line_chart` | Time-series line chart | `xField`, `yField` (string or array), `colors` |
 | `bar_chart` | Categorical bar chart | `xField`, `yField` (string or array), `colors` |
 | `pie_chart` | Proportional pie chart | `xField` (label field), `yField` (value field), `colors` |
+| `doughnut_chart` | Pie chart with center hole | `xField` (label field), `yField` (value field), `colors` |
+| `scatter_chart` | Correlation scatter plot | `xField` (numeric), `yField` (numeric), `colors` |
 | `table` | Sortable data table | `columns`, `sortBy` |
 
 ### Dashboard Configuration Example

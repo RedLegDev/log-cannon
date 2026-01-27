@@ -39,7 +39,7 @@ Each widget requires:
 \`\`\`
 
 - **id**: Unique identifier within the dashboard
-- **type**: One of "stat", "line_chart", "bar_chart", "pie_chart", "table"
+- **type**: One of "stat", "line_chart", "bar_chart", "pie_chart", "doughnut_chart", "scatter_chart", "table"
 - **title**: Display title shown above the widget
 - **dataSource**: Where to get data (required)
 - **visualization**: How to render it (optional, type-specific defaults apply)
@@ -176,6 +176,61 @@ Tips for pie charts:
 - Use ORDER BY and LIMIT in your query to show top categories
 - Zero values are automatically filtered out
 - Labels show both name and percentage
+
+### doughnut_chart - Proportional Distribution with Center Hole
+
+Like a pie chart but with a hollow center. Best for showing composition when you want space for a center label or cleaner aesthetic.
+
+\`\`\`json
+{
+  "id": "logs-by-level",
+  "type": "doughnut_chart",
+  "title": "Logs by Level",
+  "dataSource": {
+    "type": "inline",
+    "sql": "SELECT level as name, count() as count FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR GROUP BY level ORDER BY count DESC"
+  },
+  "visualization": {
+    "xField": "name",
+    "yField": "count"
+  }
+}
+\`\`\`
+
+Visualization options:
+- **xField**: Field for slice labels (e.g., category names)
+- **yField**: Field for slice values (must be a single field, not an array)
+- **colors**: Optional array of colors for slices (defaults to a preset palette)
+
+### scatter_chart - Correlation Analysis
+
+Shows relationship between two numeric variables. Best for identifying patterns, outliers, and correlations in log data.
+
+\`\`\`json
+{
+  "id": "response-time-vs-size",
+  "type": "scatter_chart",
+  "title": "Response Time vs Payload Size",
+  "dataSource": {
+    "type": "inline",
+    "sql": "SELECT JSONExtractFloat(properties, 'PayloadSize') as size, JSONExtractFloat(properties, 'ResponseTime') as time FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR AND JSONHas(properties, 'PayloadSize') LIMIT 500"
+  },
+  "visualization": {
+    "xField": "size",
+    "yField": "time"
+  }
+}
+\`\`\`
+
+Visualization options:
+- **xField**: Field for X axis (must be numeric)
+- **yField**: Field for Y axis (must be numeric, single field only)
+- **colors**: Optional array with single color for points
+
+Tips for scatter charts:
+- Both xField and yField must contain numeric values
+- Use LIMIT to prevent overloading with too many points (500-1000 max recommended)
+- Great for analyzing: response times vs request size, error rates vs load, memory vs CPU usage
 
 ### table - Tabular Data
 
