@@ -146,6 +146,55 @@ Configure alerts in `alert-worker/alerts.json`:
 }
 ```
 
+## Custom Dashboards
+
+Create custom dashboards with configurable widgets for visualizing your log data.
+
+### Widget Types
+
+| Type | Description | Configuration |
+|------|-------------|---------------|
+| `stat` | Single KPI metric display | `valueField`, `format` (number/percent/duration), `trend` |
+| `line_chart` | Time-series line chart | `xField`, `yField` (string or array), `colors` |
+| `bar_chart` | Categorical bar chart | `xField`, `yField` (string or array), `colors` |
+| `pie_chart` | Proportional pie chart | `xField` (label field), `yField` (value field), `colors` |
+| `table` | Sortable data table | `columns`, `sortBy` |
+
+### Dashboard Configuration Example
+
+```json
+{
+  "layout": "auto",
+  "widgets": [
+    {
+      "id": "errors-by-source",
+      "type": "pie_chart",
+      "title": "Errors by Source",
+      "dataSource": {
+        "sql": "SELECT source as name, count() as count FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR GROUP BY source"
+      },
+      "visualization": {
+        "xField": "name",
+        "yField": "count",
+        "colors": ["#FF4D2A", "#FF3366", "#36A2EB", "#FFCE56"]
+      }
+    },
+    {
+      "id": "log-volume",
+      "type": "line_chart",
+      "title": "Log Volume (24h)",
+      "dataSource": {
+        "sql": "SELECT toStartOfHour(timestamp) as time, count() as count FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR GROUP BY time ORDER BY time"
+      },
+      "visualization": {
+        "xField": "time",
+        "yField": "count"
+      }
+    }
+  ]
+}
+```
+
 ## API Endpoints
 
 | Endpoint | Method | Description |

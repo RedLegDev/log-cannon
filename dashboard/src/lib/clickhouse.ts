@@ -520,7 +520,7 @@ export async function executeEndpointQuery(sqlQuery: string, params: Record<stri
 
 // Dashboards
 
-export type WidgetType = 'stat' | 'line_chart' | 'bar_chart' | 'table';
+export type WidgetType = 'stat' | 'line_chart' | 'bar_chart' | 'pie_chart' | 'table';
 export type LayoutType = 'auto' | 'grid';
 
 export interface WidgetPosition {
