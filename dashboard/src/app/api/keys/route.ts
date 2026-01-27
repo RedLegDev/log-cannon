@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAPIKeys, createAPIKey, toggleAPIKey, renameAPIKey, deleteAPIKey } from '@/lib/clickhouse';
+import { getAPIKeys, createAPIKey, toggleAPIKey, renameAPIKey, deleteAPIKey, queryClickHouse } from '@/lib/clickhouse';
 
 export async function GET() {
   try {
@@ -13,14 +13,28 @@ export async function GET() {
   }
 }
 
+const VALID_SCOPES = ['ingest', 'read', 'write', 'admin'];
+
 export async function POST(request: NextRequest) {
   try {
-    const { name } = await request.json();
+    const { name, scopes } = await request.json();
     if (!name || typeof name !== 'string') {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
-    const apiKey = await createAPIKey(name);
-    return NextResponse.json({ apiKey });
+
+    // Validate scopes if provided
+    let scopesStr = 'ingest'; // default
+    if (scopes) {
+      const scopeList = typeof scopes === 'string' ? scopes.split(',').map(s => s.trim()) : scopes;
+      const invalidScopes = scopeList.filter((s: string) => !VALID_SCOPES.includes(s));
+      if (invalidScopes.length > 0) {
+        return NextResponse.json({ error: `Invalid scopes: ${invalidScopes.join(', ')}` }, { status: 400 });
+      }
+      scopesStr = scopeList.join(',');
+    }
+
+    const apiKey = await createAPIKey(name, scopesStr);
+    return NextResponse.json({ apiKey, scopes: scopesStr });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to create API key' },
@@ -31,10 +45,12 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const { keyId, enabled, name } = await request.json();
+    const { keyId, enabled, name, scopes } = await request.json();
     if (!keyId) {
       return NextResponse.json({ error: 'keyId is required' }, { status: 400 });
     }
+
+    let updated = false;
 
     // Handle rename
     if (typeof name === 'string') {
@@ -42,16 +58,33 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 });
       }
       await renameAPIKey(keyId, name.trim());
-      return NextResponse.json({ success: true });
+      updated = true;
     }
 
     // Handle toggle
     if (typeof enabled === 'boolean') {
       await toggleAPIKey(keyId, enabled);
-      return NextResponse.json({ success: true });
+      updated = true;
     }
 
-    return NextResponse.json({ error: 'Either enabled or name is required' }, { status: 400 });
+    // Handle scopes update
+    if (scopes !== undefined) {
+      const scopeList = typeof scopes === 'string' ? scopes.split(',').map(s => s.trim()) : scopes;
+      const invalidScopes = scopeList.filter((s: string) => !VALID_SCOPES.includes(s));
+      if (invalidScopes.length > 0) {
+        return NextResponse.json({ error: `Invalid scopes: ${invalidScopes.join(', ')}` }, { status: 400 });
+      }
+      const scopesStr = scopeList.join(',');
+      const escapedKeyId = keyId.replace(/'/g, "''");
+      await queryClickHouse(`ALTER TABLE logs.api_keys UPDATE scopes = '${scopesStr}' WHERE key_id = '${escapedKeyId}'`);
+      updated = true;
+    }
+
+    if (!updated) {
+      return NextResponse.json({ error: 'Either enabled, name, or scopes is required' }, { status: 400 });
+    }
+
+    return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to update API key' },

@@ -7,9 +7,17 @@ interface APIKey {
   key_id: string;
   api_key: string;
   name: string;
+  scopes: string;
   created_at: string;
   enabled: number;
 }
+
+const SCOPE_OPTIONS = [
+  { value: 'ingest', label: 'Ingest', desc: 'Write logs only' },
+  { value: 'read', label: 'Read', desc: 'Query logs, view dashboards' },
+  { value: 'write', label: 'Write', desc: 'Create/update/delete resources' },
+  { value: 'admin', label: 'Admin', desc: 'Full access + manage keys' },
+];
 
 export default function APIKeysPage() {
   const [keys, setKeys] = useState<APIKey[]>([]);
@@ -21,6 +29,8 @@ export default function APIKeysPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+  const [newKeyScopes, setNewKeyScopes] = useState<string[]>(['ingest']);
+  const [editingScopes, setEditingScopes] = useState<string[]>([]);
 
   const fetchKeys = async () => {
     try {
@@ -49,12 +59,13 @@ export default function APIKeysPage() {
       const res = await fetch('/api/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newKeyName.trim() })
+        body: JSON.stringify({ name: newKeyName.trim(), scopes: newKeyScopes })
       });
       if (!res.ok) throw new Error('Failed to create key');
       const data = await res.json();
       setCreatedKey(data.apiKey);
       setNewKeyName('');
+      setNewKeyScopes(['ingest']);
       await fetchKeys();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create API key');
@@ -96,14 +107,16 @@ export default function APIKeysPage() {
   const startEditing = (key: APIKey) => {
     setEditingKeyId(key.key_id);
     setEditingName(key.name);
+    setEditingScopes(key.scopes ? key.scopes.split(',') : ['ingest']);
   };
 
   const cancelEditing = () => {
     setEditingKeyId(null);
     setEditingName('');
+    setEditingScopes([]);
   };
 
-  const handleRename = async (keyId: string) => {
+  const handleSaveEdit = async (keyId: string) => {
     if (!editingName.trim()) {
       cancelEditing();
       return;
@@ -113,13 +126,24 @@ export default function APIKeysPage() {
       const res = await fetch('/api/keys', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyId, name: editingName.trim() })
+        body: JSON.stringify({ keyId, name: editingName.trim(), scopes: editingScopes })
       });
-      if (!res.ok) throw new Error('Failed to rename key');
+      if (!res.ok) throw new Error('Failed to update key');
       cancelEditing();
       await fetchKeys();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to rename API key');
+      setError(e instanceof Error ? e.message : 'Failed to update API key');
+    }
+  };
+
+  const toggleScope = (scope: string, scopeList: string[], setScopeList: (scopes: string[]) => void) => {
+    if (scopeList.includes(scope)) {
+      // Don't allow removing the last scope
+      if (scopeList.length > 1) {
+        setScopeList(scopeList.filter(s => s !== scope));
+      }
+    } else {
+      setScopeList([...scopeList, scope]);
     }
   };
 
@@ -194,29 +218,49 @@ export default function APIKeysPage() {
 
       {/* Create Key Form */}
       <div className="card-cannon p-4 mb-6">
-        <form onSubmit={handleCreate} className="flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
-            <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-            <input
-              type="text"
-              placeholder="Service name (e.g., order-service)"
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-              className="input-cannon pl-10 w-full"
-            />
+        <form onSubmit={handleCreate} className="space-y-3">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
+              <Key className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
+              <input
+                type="text"
+                placeholder="Service name (e.g., order-service)"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                className="input-cannon pl-10 w-full"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={creating || !newKeyName.trim()}
+              className="btn-cannon flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {creating ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Plus className="w-4 h-4" />
+              )}
+              {creating ? 'Creating...' : 'Create Key'}
+            </button>
           </div>
-          <button
-            type="submit"
-            disabled={creating || !newKeyName.trim()}
-            className="btn-cannon flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {creating ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Plus className="w-4 h-4" />
-            )}
-            {creating ? 'Creating...' : 'Create Key'}
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <span className="text-text-muted text-sm mr-2">Scopes:</span>
+            {SCOPE_OPTIONS.map(scope => (
+              <button
+                key={scope.value}
+                type="button"
+                onClick={() => toggleScope(scope.value, newKeyScopes, setNewKeyScopes)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  newKeyScopes.includes(scope.value)
+                    ? 'bg-cannon-fire text-white'
+                    : 'bg-cannon-graphite text-text-muted hover:bg-cannon-steel'
+                }`}
+                title={scope.desc}
+              >
+                {scope.label}
+              </button>
+            ))}
+          </div>
         </form>
       </div>
 
@@ -244,6 +288,7 @@ export default function APIKeysPage() {
                 <tr className="text-left text-text-secondary text-sm">
                   <th className="px-4 py-3 font-medium">Name</th>
                   <th className="px-4 py-3 font-medium">API Key</th>
+                  <th className="px-4 py-3 font-medium">Scopes</th>
                   <th className="px-4 py-3 font-medium hidden md:table-cell">Created</th>
                   <th className="px-4 py-3 text-center font-medium">Status</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
@@ -260,14 +305,14 @@ export default function APIKeysPage() {
                             value={editingName}
                             onChange={(e) => setEditingName(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleRename(key.key_id);
+                              if (e.key === 'Enter') handleSaveEdit(key.key_id);
                               if (e.key === 'Escape') cancelEditing();
                             }}
                             className="input-cannon py-1 px-2 text-sm w-40"
                             autoFocus
                           />
                           <button
-                            onClick={() => handleRename(key.key_id)}
+                            onClick={() => handleSaveEdit(key.key_id)}
                             className="p-1 rounded hover:bg-cannon-tracer/20 text-cannon-tracer"
                             title="Save"
                           >
@@ -302,6 +347,39 @@ export default function APIKeysPage() {
                           )}
                         </button>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      {editingKeyId === key.key_id ? (
+                        <div className="flex flex-wrap gap-1">
+                          {SCOPE_OPTIONS.map(scope => (
+                            <button
+                              key={scope.value}
+                              type="button"
+                              onClick={() => toggleScope(scope.value, editingScopes, setEditingScopes)}
+                              className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                                editingScopes.includes(scope.value)
+                                  ? 'bg-cannon-fire text-white'
+                                  : 'bg-cannon-graphite text-text-muted hover:bg-cannon-steel'
+                              }`}
+                              title={scope.desc}
+                            >
+                              {scope.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {(key.scopes || 'ingest').split(',').map(scope => (
+                            <span
+                              key={scope}
+                              className="px-2 py-0.5 rounded text-xs font-medium bg-cannon-steel text-text-secondary"
+                              title={SCOPE_OPTIONS.find(s => s.value === scope)?.desc}
+                            >
+                              {scope}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-text-muted text-sm font-mono hidden md:table-cell">
                       {key.created_at}
