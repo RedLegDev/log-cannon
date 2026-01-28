@@ -1,6 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 const isPublicRoute = createRouteMatcher([
+  '/',              // Allow root with query params through - handle auth in page
   '/sign-in(.*)',
   '/sign-up(.*)',
   '/llms.txt',
@@ -11,9 +12,6 @@ export default clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
     await auth.protect();
   }
-  // Note: Don't strip Clerk's internal params (__clerk_db_jwt, __clerk_ticket, __clerk_status)
-  // Clerk's SDK handles its own URL cleanup. Stripping them in middleware interferes with
-  // Clerk's redirect flow and can cause infinite loops on deep link navigation.
 });
 
 export const config = {

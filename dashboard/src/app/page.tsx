@@ -1,9 +1,11 @@
 import { Suspense } from 'react'
+import { auth } from '@clerk/nextjs/server'
+import { SignInButton } from '@clerk/nextjs'
 import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue } from '@/lib/clickhouse'
 import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
-import { Search, ChevronDown, AlertCircle } from 'lucide-react'
+import { Search, ChevronDown, AlertCircle, LogIn } from 'lucide-react'
 
 interface SearchParams {
   source?: string
@@ -42,6 +44,32 @@ export default async function LogExplorerPage({
 }: {
   searchParams: Promise<SearchParams>
 }) {
+  const { userId } = await auth()
+
+  // Show login prompt for unauthenticated users (avoids redirect loops on deep links)
+  if (!userId) {
+    return (
+      <div className="animate-fade-in">
+        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
+          <div className="card-cannon p-8 max-w-md">
+            <LogIn className="w-12 h-12 text-cannon-fire mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-text-primary font-mono mb-2">
+              Sign In Required
+            </h1>
+            <p className="text-text-secondary mb-6">
+              Please sign in to access the Log Explorer.
+            </p>
+            <SignInButton mode="modal">
+              <button className="btn-cannon w-full">
+                Sign In
+              </button>
+            </SignInButton>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   let logs: LogEvent[] = []
   let sources: string[] = []
   let error: string | null = null
