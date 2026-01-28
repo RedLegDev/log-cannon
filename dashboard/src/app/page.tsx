@@ -1,11 +1,11 @@
 import { Suspense } from 'react'
 import { auth } from '@clerk/nextjs/server'
-import { SignInButton } from '@clerk/nextjs'
 import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue } from '@/lib/clickhouse'
 import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
-import { Search, ChevronDown, AlertCircle, LogIn } from 'lucide-react'
+import { AuthGate } from '@/components/AuthGate'
+import { Search, ChevronDown, AlertCircle } from 'lucide-react'
 
 interface SearchParams {
   source?: string
@@ -44,31 +44,9 @@ export default async function LogExplorerPage({
 }: {
   searchParams: Promise<SearchParams>
 }) {
+  // Try to get auth state - if authenticated, fetch logs server-side for performance
+  // If not authenticated (e.g., cross-app deep link), AuthGate will handle it client-side
   const { userId } = await auth()
-
-  // Show login prompt for unauthenticated users (avoids redirect loops on deep links)
-  if (!userId) {
-    return (
-      <div className="animate-fade-in">
-        <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
-          <div className="card-cannon p-8 max-w-md">
-            <LogIn className="w-12 h-12 text-cannon-fire mx-auto mb-4" />
-            <h1 className="text-2xl font-bold text-text-primary font-mono mb-2">
-              Sign In Required
-            </h1>
-            <p className="text-text-secondary mb-6">
-              Please sign in to access the Log Explorer.
-            </p>
-            <SignInButton mode="modal">
-              <button className="btn-cannon w-full">
-                Sign In
-              </button>
-            </SignInButton>
-          </div>
-        </div>
-      </div>
-    )
-  }
 
   let logs: LogEvent[] = []
   let sources: string[] = []
@@ -77,23 +55,27 @@ export default async function LogExplorerPage({
   const resolvedParams = await searchParams
   const propertyFilters = parsePropertyFilters(resolvedParams)
 
-  try {
-    [logs, sources] = await Promise.all([
-      getRecentLogs(
-        resolvedParams.source,
-        resolvedParams.level,
-        resolvedParams.search,
-        propertyFilters
-      ),
-      getSources()
-    ])
-  } catch (e) {
-    error = e instanceof Error ? e.message : 'Failed to fetch logs'
+  // Only fetch data if we have a userId (server-side auth succeeded)
+  if (userId) {
+    try {
+      [logs, sources] = await Promise.all([
+        getRecentLogs(
+          resolvedParams.source,
+          resolvedParams.level,
+          resolvedParams.search,
+          propertyFilters
+        ),
+        getSources()
+      ])
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Failed to fetch logs'
+    }
   }
 
   const levels = ['Debug', 'Information', 'Warning', 'Error', 'Fatal']
 
   return (
+    <AuthGate hasServerData={!!userId}>
     <div className="animate-fade-in">
       {/* Header */}
       <div className="mb-6">
@@ -195,5 +177,6 @@ export default async function LogExplorerPage({
         <LogExplorer initialLogs={logs} />
       )}
     </div>
+    </AuthGate>
   )
 }
