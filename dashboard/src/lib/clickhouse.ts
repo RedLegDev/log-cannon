@@ -762,3 +762,158 @@ export async function executeWidgetQuery(widget: Widget): Promise<unknown[]> {
     throw new Error(`Unknown data source type: ${widget.dataSource.type}`);
   }
 }
+
+// Alerts
+
+export interface Alert {
+  id: string;
+  name: string;
+  description: string;
+  query: string;
+  condition: string;
+  interval_seconds: number;
+  cooldown_seconds: number;
+  recipients: string;  // JSON array string
+  subject: string;
+  enabled: number;
+  created_at: string;
+  last_triggered_at: string;
+}
+
+export interface AlertInput {
+  name: string;
+  description?: string;
+  query: string;
+  condition: string;
+  interval_seconds?: number;
+  cooldown_seconds?: number;
+  recipients: string[];
+  subject: string;
+}
+
+export async function getAlerts(): Promise<Alert[]> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      query,
+      condition,
+      interval_seconds,
+      cooldown_seconds,
+      recipients,
+      subject,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
+      formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at
+    FROM logs.alerts
+    ORDER BY created_at DESC
+  `;
+
+  return queryClickHouse<Alert>(sql);
+}
+
+export async function getAlertById(id: string): Promise<Alert | null> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      query,
+      condition,
+      interval_seconds,
+      cooldown_seconds,
+      recipients,
+      subject,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
+      formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at
+    FROM logs.alerts
+    WHERE id = '${escapeString(id)}'
+    LIMIT 1
+  `;
+
+  const results = await queryClickHouse<Alert>(sql);
+  return results.length > 0 ? results[0] : null;
+}
+
+export async function createAlert(alert: AlertInput): Promise<void> {
+  const recipientsJson = JSON.stringify(alert.recipients);
+  const sql = `
+    INSERT INTO logs.alerts (name, description, query, condition, interval_seconds, cooldown_seconds, recipients, subject)
+    VALUES (
+      '${escapeString(alert.name)}',
+      '${escapeString(alert.description || '')}',
+      '${escapeString(alert.query)}',
+      '${escapeString(alert.condition)}',
+      ${alert.interval_seconds || 60},
+      ${alert.cooldown_seconds || 300},
+      '${escapeString(recipientsJson)}',
+      '${escapeString(alert.subject)}'
+    )
+  `;
+
+  await executeClickHouse(sql);
+}
+
+export async function updateAlert(id: string, updates: Partial<AlertInput> & { enabled?: number }): Promise<void> {
+  const setClauses: string[] = [];
+
+  if (updates.name !== undefined) {
+    setClauses.push(`name = '${escapeString(updates.name)}'`);
+  }
+  if (updates.description !== undefined) {
+    setClauses.push(`description = '${escapeString(updates.description)}'`);
+  }
+  if (updates.query !== undefined) {
+    setClauses.push(`query = '${escapeString(updates.query)}'`);
+  }
+  if (updates.condition !== undefined) {
+    setClauses.push(`condition = '${escapeString(updates.condition)}'`);
+  }
+  if (updates.interval_seconds !== undefined) {
+    setClauses.push(`interval_seconds = ${updates.interval_seconds}`);
+  }
+  if (updates.cooldown_seconds !== undefined) {
+    setClauses.push(`cooldown_seconds = ${updates.cooldown_seconds}`);
+  }
+  if (updates.recipients !== undefined) {
+    const recipientsJson = JSON.stringify(updates.recipients);
+    setClauses.push(`recipients = '${escapeString(recipientsJson)}'`);
+  }
+  if (updates.subject !== undefined) {
+    setClauses.push(`subject = '${escapeString(updates.subject)}'`);
+  }
+  if (updates.enabled !== undefined) {
+    setClauses.push(`enabled = ${updates.enabled}`);
+  }
+
+  if (setClauses.length === 0) return;
+
+  const sql = `
+    ALTER TABLE logs.alerts
+    UPDATE ${setClauses.join(', ')}
+    WHERE id = '${escapeString(id)}'
+  `;
+
+  await executeClickHouse(sql);
+}
+
+export async function deleteAlert(id: string): Promise<void> {
+  const sql = `
+    ALTER TABLE logs.alerts
+    DELETE WHERE id = '${escapeString(id)}'
+  `;
+
+  await executeClickHouse(sql);
+}
+
+export async function testAlertQuery(query: string): Promise<Record<string, unknown>[]> {
+  // Security: Only allow SELECT statements
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed.startsWith('select')) {
+    throw new Error('Only SELECT statements are allowed');
+  }
+
+  return queryClickHouse<Record<string, unknown>>(query);
+}

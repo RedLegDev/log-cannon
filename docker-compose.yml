@@ -68,8 +68,6 @@ services:
       - CLICKHOUSE_PASSWORD=
       - RESEND_API_KEY=${RESEND_API_KEY}
       - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@yourdomain.com}
-    volumes:
-      - ./alert-worker/alerts.json:/app/alerts.json:ro
     depends_on:
       clickhouse:
         condition: service_healthy

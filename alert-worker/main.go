@@ -17,25 +17,21 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-type AlertConfig struct {
-	Alerts []Alert `json:"alerts"`
-}
-
 type Alert struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Description     string   `json:"description"`
-	Query           string   `json:"query"`
-	Condition       string   `json:"condition"`
-	IntervalSeconds int      `json:"interval_seconds"`
-	CooldownSeconds int      `json:"cooldown_seconds"`
-	Recipients      []string `json:"recipients"`
-	Subject         string   `json:"subject"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description"`
+	Query           string    `json:"query"`
+	Condition       string    `json:"condition"`
+	IntervalSeconds int       `json:"interval_seconds"`
+	CooldownSeconds int       `json:"cooldown_seconds"`
+	Recipients      []string  `json:"recipients"`
+	Subject         string    `json:"subject"`
+	LastTriggeredAt time.Time `json:"last_triggered_at"`
 }
 
 type AlertState struct {
-	LastRun       time.Time
-	LastTriggered time.Time
+	LastRun time.Time
 }
 
 func main() {
@@ -51,17 +47,9 @@ func main() {
 		log.Fatal("RESEND_API_KEY environment variable is required")
 	}
 
-	// Load alerts config
-	alertConfig, err := loadAlerts("/app/alerts.json")
-	if err != nil {
-		log.Printf("Warning: Failed to load alerts.json: %v", err)
-		alertConfig = &AlertConfig{Alerts: []Alert{}}
-	}
-
-	log.Printf("Loaded %d alerts", len(alertConfig.Alerts))
-
 	// Connect to ClickHouse
 	var conn driver.Conn
+	var err error
 	for i := 0; i < 30; i++ {
 		conn, err = clickhouse.Open(&clickhouse.Options{
 			Addr: []string{fmt.Sprintf("%s:%s", host, port)},
@@ -93,15 +81,24 @@ func main() {
 
 	log.Println("Connected to ClickHouse, starting alert worker...")
 
-	// Initialize state
+	// Initialize state map for tracking last run times
 	state := make(map[string]*AlertState)
-	for _, alert := range alertConfig.Alerts {
-		state[alert.ID] = &AlertState{}
-	}
 
 	// Main loop
 	for {
-		for _, alert := range alertConfig.Alerts {
+		// Fetch alerts from database each iteration (enables hot-reload)
+		alerts, err := fetchAlertsFromDB(conn)
+		if err != nil {
+			log.Printf("Error fetching alerts from database: %v", err)
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		for _, alert := range alerts {
+			// Initialize state for new alerts
+			if state[alert.ID] == nil {
+				state[alert.ID] = &AlertState{}
+			}
 			s := state[alert.ID]
 			now := time.Now()
 
@@ -130,9 +127,9 @@ func main() {
 				continue
 			}
 
-			// Check cooldown
-			if now.Sub(s.LastTriggered) < time.Duration(alert.CooldownSeconds)*time.Second {
-				log.Printf("[%s] Alert triggered but in cooldown", alert.ID)
+			// Check cooldown using last_triggered_at from database
+			if now.Sub(alert.LastTriggeredAt) < time.Duration(alert.CooldownSeconds)*time.Second {
+				log.Printf("[%s] Alert triggered but in cooldown (last triggered: %v)", alert.ID, alert.LastTriggeredAt)
 				continue
 			}
 
@@ -148,32 +145,96 @@ func main() {
 				}
 			}
 
-			s.LastTriggered = now
+			// Update last_triggered_at in database
+			if err := updateLastTriggered(conn, alert.ID); err != nil {
+				log.Printf("[%s] Failed to update last_triggered_at: %v", alert.ID, err)
+			}
 		}
 
 		time.Sleep(time.Second)
 	}
 }
 
-func loadAlerts(path string) (*AlertConfig, error) {
-	data, err := os.ReadFile(path)
+func fetchAlertsFromDB(conn driver.Conn) ([]Alert, error) {
+	query := `
+		SELECT
+			toString(id) as id,
+			name,
+			description,
+			query,
+			condition,
+			interval_seconds,
+			cooldown_seconds,
+			recipients,
+			subject,
+			last_triggered_at
+		FROM logs.alerts
+		WHERE enabled = 1
+	`
+
+	rows, err := conn.Query(context.Background(), query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query alerts: %w", err)
 	}
+	defer rows.Close()
 
-	var config AlertConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
-	}
+	var alerts []Alert
+	for rows.Next() {
+		var (
+			id              string
+			name            string
+			description     string
+			alertQuery      string
+			condition       string
+			intervalSeconds uint32
+			cooldownSeconds uint32
+			recipientsJSON  string
+			subject         string
+			lastTriggeredAt time.Time
+		)
 
-	// Validate alerts
-	for i, alert := range config.Alerts {
-		if alert.IntervalSeconds < 30 {
-			config.Alerts[i].IntervalSeconds = 30
+		if err := rows.Scan(&id, &name, &description, &alertQuery, &condition,
+			&intervalSeconds, &cooldownSeconds, &recipientsJSON, &subject, &lastTriggeredAt); err != nil {
+			return nil, fmt.Errorf("failed to scan alert row: %w", err)
 		}
+
+		// Parse recipients JSON
+		var recipients []string
+		if err := json.Unmarshal([]byte(recipientsJSON), &recipients); err != nil {
+			log.Printf("Warning: Failed to parse recipients for alert %s: %v", id, err)
+			recipients = []string{}
+		}
+
+		// Enforce minimum interval
+		if intervalSeconds < 30 {
+			intervalSeconds = 30
+		}
+
+		alerts = append(alerts, Alert{
+			ID:              id,
+			Name:            name,
+			Description:     description,
+			Query:           alertQuery,
+			Condition:       condition,
+			IntervalSeconds: int(intervalSeconds),
+			CooldownSeconds: int(cooldownSeconds),
+			Recipients:      recipients,
+			Subject:         subject,
+			LastTriggeredAt: lastTriggeredAt,
+		})
 	}
 
-	return &config, nil
+	return alerts, nil
+}
+
+func updateLastTriggered(conn driver.Conn, alertID string) error {
+	query := fmt.Sprintf(`
+		ALTER TABLE logs.alerts
+		UPDATE last_triggered_at = now()
+		WHERE id = '%s'
+	`, alertID)
+
+	return conn.Exec(context.Background(), query)
 }
 
 func executeQuery(conn driver.Conn, query string) (map[string]interface{}, error) {

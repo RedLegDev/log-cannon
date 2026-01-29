@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot } from 'lucide-react'
+import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell } from 'lucide-react'
 import {
   SignInButton,
   SignUpButton,
@@ -18,6 +18,7 @@ const navLinks = [
   { href: '/live', label: 'Live Tail', icon: Radio },
   { href: '/queries', label: 'Saved Queries', icon: Bookmark },
   { href: '/endpoints', label: 'Endpoints', icon: Zap },
+  { href: '/alerts', label: 'Alerts', icon: Bell },
   { href: '/keys', label: 'API Keys', icon: Key },
   { href: '/llms.txt', label: 'LLMs.txt', icon: Bot },
 ]

@@ -18,6 +18,7 @@ const navLinks = [
   { href: '/live', label: 'Live Tail' },
   { href: '/queries', label: 'Saved Queries' },
   { href: '/endpoints', label: 'Endpoints' },
+  { href: '/alerts', label: 'Alerts' },
   { href: '/keys', label: 'API Keys' },
   { href: '/llms.txt', label: 'LLMs.txt' },
 ]
