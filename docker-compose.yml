@@ -67,7 +67,8 @@ services:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
       - RESEND_API_KEY=${RESEND_API_KEY}
-      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@yourdomain.com}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.dev}
+      - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
     depends_on:
       clickhouse:
         condition: service_healthy

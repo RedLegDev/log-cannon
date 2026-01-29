@@ -42,6 +42,7 @@ func main() {
 	password := getEnv("CLICKHOUSE_PASSWORD", "")
 	resendAPIKey := os.Getenv("RESEND_API_KEY")
 	fromEmail := getEnv("ALERT_FROM_EMAIL", "alerts@yourdomain.com")
+	dashboardURL := getEnv("DASHBOARD_URL", "https://logs.redleg.dev")
 
 	if resendAPIKey == "" {
 		log.Fatal("RESEND_API_KEY environment variable is required")
@@ -135,10 +136,10 @@ func main() {
 
 			// Send alert
 			log.Printf("[%s] Sending alert: %s", alert.ID, alert.Name)
-			body := formatAlertBody(alert, result)
+			textBody, htmlBody := formatAlertBody(alert, result, dashboardURL)
 
 			for _, recipient := range alert.Recipients {
-				if err := sendEmail(resendAPIKey, fromEmail, recipient, alert.Subject, body); err != nil {
+				if err := sendEmail(resendAPIKey, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
 					log.Printf("[%s] Failed to send email to %s: %v", alert.ID, recipient, err)
 				} else {
 					log.Printf("[%s] Email sent to %s", alert.ID, recipient)
@@ -422,29 +423,157 @@ func evaluateCondition(condition string, result map[string]interface{}) (bool, e
 	return false, fmt.Errorf("could not parse condition: %s", condition)
 }
 
-func formatAlertBody(alert Alert, result map[string]interface{}) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Alert: %s\n", alert.Name))
-	sb.WriteString(fmt.Sprintf("Time: %s\n", time.Now().Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("Description: %s\n\n", alert.Description))
-
-	sb.WriteString("Query Result:\n")
+func formatAlertBody(alert Alert, result map[string]interface{}, dashboardURL string) (string, string) {
+	// Plain text version
+	var text strings.Builder
+	text.WriteString(fmt.Sprintf("Alert: %s\n", alert.Name))
+	text.WriteString(fmt.Sprintf("Time: %s\n", time.Now().Format(time.RFC3339)))
+	text.WriteString(fmt.Sprintf("Description: %s\n\n", alert.Description))
+	text.WriteString("Query Result:\n")
 	for k, v := range result {
-		sb.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+		text.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+	}
+	text.WriteString(fmt.Sprintf("\nQuery:\n%s\n", alert.Query))
+	text.WriteString(fmt.Sprintf("\nView in Log Cannon: %s/alerts\n", dashboardURL))
+
+	// HTML version
+	alertURL := fmt.Sprintf("%s/alerts", dashboardURL)
+	logsURL := fmt.Sprintf("%s/", dashboardURL)
+	triggeredTime := time.Now().Format("Jan 2, 2006 at 3:04 PM MST")
+
+	// Build query results HTML
+	var resultsHTML strings.Builder
+	for k, v := range result {
+		resultsHTML.WriteString(fmt.Sprintf(`
+			<tr>
+				<td style="padding: 8px 12px; border-bottom: 1px solid #2a2a2e; color: #a0a0a5; font-family: 'JetBrains Mono', Monaco, 'Courier New', monospace; font-size: 13px;">%s</td>
+				<td style="padding: 8px 12px; border-bottom: 1px solid #2a2a2e; color: #ffffff; font-family: 'JetBrains Mono', Monaco, 'Courier New', monospace; font-size: 13px; font-weight: 600;">%v</td>
+			</tr>`, escapeHTML(k), v))
 	}
 
-	sb.WriteString(fmt.Sprintf("\nQuery:\n%s\n", alert.Query))
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>%s</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #0a0a0b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+	<table role="presentation" style="width: 100%%; border-collapse: collapse;">
+		<tr>
+			<td align="center" style="padding: 40px 20px;">
+				<table role="presentation" style="width: 100%%; max-width: 600px; border-collapse: collapse;">
+					<!-- Header -->
+					<tr>
+						<td style="padding: 24px 32px; background: linear-gradient(135deg, #141416 0%%, #1a1a1e 100%%); border-radius: 12px 12px 0 0; border-bottom: 2px solid #FF4D2A;">
+							<table role="presentation" style="width: 100%%;">
+								<tr>
+									<td>
+										<img src="https://logs.redleg.dev/icons/icon.svg" width="32" height="32" alt="Log Cannon" style="vertical-align: middle;">
+										<span style="margin-left: 12px; font-size: 18px; font-weight: 700; color: #ffffff; vertical-align: middle;">LOG <span style="color: #FF4D2A;">CANNON</span></span>
+									</td>
+									<td align="right">
+										<span style="display: inline-block; padding: 6px 12px; background-color: rgba(255, 77, 42, 0.15); border: 1px solid #FF4D2A; border-radius: 6px; color: #FF4D2A; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Alert Triggered</span>
+									</td>
+								</tr>
+							</table>
+						</td>
+					</tr>
 
-	return sb.String()
+					<!-- Main Content -->
+					<tr>
+						<td style="padding: 32px; background-color: #141416;">
+							<!-- Alert Name -->
+							<h1 style="margin: 0 0 8px 0; font-size: 24px; font-weight: 700; color: #ffffff;">%s</h1>
+							<p style="margin: 0 0 24px 0; font-size: 14px; color: #a0a0a5;">%s</p>
+
+							<!-- Triggered Time -->
+							<table role="presentation" style="width: 100%%; margin-bottom: 24px;">
+								<tr>
+									<td style="padding: 16px; background-color: #1a1a1e; border-radius: 8px; border-left: 3px solid #FF4D2A;">
+										<p style="margin: 0 0 4px 0; font-size: 12px; color: #a0a0a5; text-transform: uppercase; letter-spacing: 0.5px;">Triggered</p>
+										<p style="margin: 0; font-size: 16px; color: #ffffff; font-weight: 500;">%s</p>
+									</td>
+								</tr>
+							</table>
+
+							<!-- Query Results -->
+							<h2 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #a0a0a5; text-transform: uppercase; letter-spacing: 0.5px;">Query Results</h2>
+							<table role="presentation" style="width: 100%%; border-collapse: collapse; background-color: #1a1a1e; border-radius: 8px; overflow: hidden; margin-bottom: 24px;">
+								<tr>
+									<th style="padding: 10px 12px; text-align: left; background-color: #222226; color: #a0a0a5; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Field</th>
+									<th style="padding: 10px 12px; text-align: left; background-color: #222226; color: #a0a0a5; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Value</th>
+								</tr>
+								%s
+							</table>
+
+							<!-- Query -->
+							<h2 style="margin: 0 0 12px 0; font-size: 14px; font-weight: 600; color: #a0a0a5; text-transform: uppercase; letter-spacing: 0.5px;">Query</h2>
+							<div style="padding: 16px; background-color: #0a0a0b; border-radius: 8px; border: 1px solid #2a2a2e; margin-bottom: 24px;">
+								<code style="font-family: 'JetBrains Mono', Monaco, 'Courier New', monospace; font-size: 12px; color: #e0e0e5; white-space: pre-wrap; word-break: break-all;">%s</code>
+							</div>
+
+							<!-- Action Buttons -->
+							<table role="presentation" style="width: 100%%;">
+								<tr>
+									<td style="padding-right: 8px;">
+										<a href="%s" style="display: block; padding: 14px 24px; background-color: #FF4D2A; color: #ffffff; text-decoration: none; text-align: center; font-weight: 600; font-size: 14px; border-radius: 8px;">View Alert Settings</a>
+									</td>
+									<td style="padding-left: 8px;">
+										<a href="%s" style="display: block; padding: 14px 24px; background-color: #1a1a1e; color: #ffffff; text-decoration: none; text-align: center; font-weight: 600; font-size: 14px; border-radius: 8px; border: 1px solid #2a2a2e;">Search Logs</a>
+									</td>
+								</tr>
+							</table>
+						</td>
+					</tr>
+
+					<!-- Footer -->
+					<tr>
+						<td style="padding: 24px 32px; background-color: #0e0e10; border-radius: 0 0 12px 12px; border-top: 1px solid #2a2a2e;">
+							<p style="margin: 0; font-size: 12px; color: #6b6b70; text-align: center;">
+								This alert was sent by <a href="%s" style="color: #FF4D2A; text-decoration: none;">Log Cannon</a>.
+								<br>Manage your alerts at <a href="%s" style="color: #FF4D2A; text-decoration: none;">%s/alerts</a>
+							</p>
+						</td>
+					</tr>
+				</table>
+			</td>
+		</tr>
+	</table>
+</body>
+</html>`,
+		escapeHTML(alert.Subject),
+		escapeHTML(alert.Name),
+		escapeHTML(alert.Description),
+		triggeredTime,
+		resultsHTML.String(),
+		escapeHTML(alert.Query),
+		alertURL,
+		logsURL,
+		dashboardURL,
+		alertURL,
+		dashboardURL,
+	)
+
+	return text.String(), html
 }
 
-func sendEmail(apiKey, from, to, subject, body string) error {
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "'", "&#39;")
+	return s
+}
+
+func sendEmail(apiKey, from, to, subject, textBody, htmlBody string) error {
 	payload := map[string]interface{}{
 		"from":    from,
 		"to":      []string{to},
 		"subject": subject,
-		"text":    body,
+		"text":    textBody,
+		"html":    htmlBody,
 	}
 
 	jsonBody, err := json.Marshal(payload)
