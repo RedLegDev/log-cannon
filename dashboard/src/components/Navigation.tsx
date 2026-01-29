@@ -19,6 +19,7 @@ const navLinks = [
   { href: '/queries', label: 'Saved Queries' },
   { href: '/endpoints', label: 'Endpoints' },
   { href: '/keys', label: 'API Keys' },
+  { href: '/llms.txt', label: 'LLMs.txt' },
 ]
 
 export function Navigation() {
