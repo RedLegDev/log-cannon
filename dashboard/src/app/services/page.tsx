@@ -198,7 +198,7 @@ export default async function ServicesPage() {
                     return (
                       <div
                         key={i}
-                        className="flex-1 flex flex-col justify-end group cursor-pointer"
+                        className="flex-1 h-full flex flex-col justify-end group cursor-pointer"
                         title={`${point.minute}: ${point.count} logs, ${point.errors} errors`}
                       >
                         <div
