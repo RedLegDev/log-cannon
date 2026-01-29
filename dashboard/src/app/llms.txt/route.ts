@@ -399,6 +399,52 @@ POST /api/v1/saved-queries          # Create
 DELETE /api/v1/saved-queries/:id    # Delete
 \`\`\`
 
+#### Alerts
+
+Manage alerting rules that monitor log conditions and send email notifications.
+
+\`\`\`bash
+GET /api/v1/alerts                  # List all alerts
+POST /api/v1/alerts                 # Create new alert
+PATCH /api/v1/alerts                # Update alert (pass id in body)
+DELETE /api/v1/alerts               # Delete alert (pass id in body)
+POST /api/v1/alerts/:id/test        # Test alert query (returns results without triggering)
+\`\`\`
+
+**Create Alert Request:**
+\`\`\`json
+{
+  "name": "High Error Rate",
+  "description": "Triggers when errors exceed threshold",
+  "query": "SELECT count(*) as cnt FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 5 MINUTE",
+  "condition": "cnt > 50",
+  "interval_seconds": 60,
+  "cooldown_seconds": 300,
+  "recipients": ["ops@example.com"],
+  "subject": "[ALERT] High error rate detected"
+}
+\`\`\`
+
+**Alert Fields:**
+- **name**: Human-readable alert name (required)
+- **description**: Optional description of what the alert monitors
+- **query**: SELECT query that returns numeric values for condition evaluation (required)
+- **condition**: Expression like \`cnt > 50\`, \`errors == 0\`, \`total >= 100 && errors > 5\` (required)
+- **interval_seconds**: How often to check (minimum 30 seconds, default 60)
+- **cooldown_seconds**: Minimum time between repeated alerts (default 300)
+- **recipients**: Array of email addresses to notify (required, at least one)
+- **subject**: Email subject line (required)
+
+**Condition Syntax:**
+- Comparisons: \`>\`, \`<\`, \`>=\`, \`<=\`, \`==\`, \`!=\`
+- Logical: \`&&\` (AND), \`||\` (OR)
+- Variables: Use column names from your query (e.g., \`cnt\`, \`errors\`, \`total\`)
+
+**Example Conditions:**
+- \`cnt > 0\` - Trigger if any matching rows
+- \`errors >= 10 && total > 100\` - Compound condition
+- \`cnt == 0\` - Trigger if no logs found (service went quiet)
+
 #### API Keys (admin scope required)
 
 \`\`\`bash
