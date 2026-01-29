@@ -4,8 +4,8 @@ const isPublicRoute = createRouteMatcher([
   '/',              // Allow root with query params through - handle auth in page
   '/sign-in(.*)',
   '/sign-up(.*)',
-  '/llms.txt',
-  '/api/v1/(.*)',  // API v1 uses its own API key auth
+  '/llms.txt(.*)',  // LLM-friendly docs (main + sub-routes like /llms.txt/logger)
+  '/api/v1/(.*)',   // API v1 uses its own API key auth
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
