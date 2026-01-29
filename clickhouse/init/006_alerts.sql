@@ -12,4 +12,4 @@ CREATE TABLE IF NOT EXISTS logs.alerts (
     created_at DateTime64(3) DEFAULT now(),
     last_triggered_at DateTime64(3) DEFAULT toDateTime64('1970-01-01 00:00:00', 3)
 ) ENGINE = MergeTree
-ORDER BY name;
+ORDER BY id;
