@@ -251,19 +251,79 @@ func executeQuery(conn driver.Conn, query string) (map[string]interface{}, error
 	// Get column info
 	columnTypes := rows.ColumnTypes()
 	values := make([]interface{}, len(columnTypes))
-	valuePtrs := make([]interface{}, len(columnTypes))
 
-	for i := range columnTypes {
-		valuePtrs[i] = &values[i]
+	// Allocate concrete typed values based on ClickHouse column types
+	for i, col := range columnTypes {
+		dbType := col.DatabaseTypeName()
+		switch {
+		case strings.HasPrefix(dbType, "UInt64"):
+			values[i] = new(uint64)
+		case strings.HasPrefix(dbType, "UInt32"):
+			values[i] = new(uint32)
+		case strings.HasPrefix(dbType, "UInt16"):
+			values[i] = new(uint16)
+		case strings.HasPrefix(dbType, "UInt8"):
+			values[i] = new(uint8)
+		case strings.HasPrefix(dbType, "Int64"):
+			values[i] = new(int64)
+		case strings.HasPrefix(dbType, "Int32"):
+			values[i] = new(int32)
+		case strings.HasPrefix(dbType, "Int16"):
+			values[i] = new(int16)
+		case strings.HasPrefix(dbType, "Int8"):
+			values[i] = new(int8)
+		case strings.HasPrefix(dbType, "Float64"):
+			values[i] = new(float64)
+		case strings.HasPrefix(dbType, "Float32"):
+			values[i] = new(float32)
+		case strings.HasPrefix(dbType, "String"), strings.HasPrefix(dbType, "FixedString"):
+			values[i] = new(string)
+		case strings.HasPrefix(dbType, "DateTime"):
+			values[i] = new(time.Time)
+		case strings.HasPrefix(dbType, "Date"):
+			values[i] = new(time.Time)
+		default:
+			// Fallback for other types - try string
+			values[i] = new(string)
+		}
 	}
 
-	if err := rows.Scan(valuePtrs...); err != nil {
+	if err := rows.Scan(values...); err != nil {
 		return nil, err
 	}
 
+	// Dereference pointers and build result map
 	result := make(map[string]interface{})
 	for i, col := range columnTypes {
-		result[col.Name()] = values[i]
+		// Dereference the pointer to get the actual value
+		switch v := values[i].(type) {
+		case *uint64:
+			result[col.Name()] = *v
+		case *uint32:
+			result[col.Name()] = *v
+		case *uint16:
+			result[col.Name()] = *v
+		case *uint8:
+			result[col.Name()] = *v
+		case *int64:
+			result[col.Name()] = *v
+		case *int32:
+			result[col.Name()] = *v
+		case *int16:
+			result[col.Name()] = *v
+		case *int8:
+			result[col.Name()] = *v
+		case *float64:
+			result[col.Name()] = *v
+		case *float32:
+			result[col.Name()] = *v
+		case *string:
+			result[col.Name()] = *v
+		case *time.Time:
+			result[col.Name()] = *v
+		default:
+			result[col.Name()] = v
+		}
 	}
 
 	return result, nil
