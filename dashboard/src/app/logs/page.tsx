@@ -1,17 +1,22 @@
 import { Suspense } from 'react'
 import { auth } from '@clerk/nextjs/server'
-import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue } from '@/lib/clickhouse'
+import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue, TimeFilter } from '@/lib/clickhouse'
 import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
 import { DeleteLogsButton } from '@/components/DeleteLogsButton'
 import { AuthGate } from '@/components/AuthGate'
+import { TimeRangeFilter } from '@/components/TimeRangeFilter'
+import { parseTimeRangeFromParams, resolveTimeRange, formatTimeRangeDisplay } from '@/lib/timeRange'
 import { Search, ChevronDown, AlertCircle } from 'lucide-react'
 
 interface SearchParams {
   source?: string
   level?: string
   search?: string
+  time?: string
+  from?: string
+  to?: string
   [key: string]: string | undefined
 }
 
@@ -56,6 +61,18 @@ export default async function LogExplorerPage({
   const resolvedParams = await searchParams
   const propertyFilters = parsePropertyFilters(resolvedParams)
 
+  // Parse time range from URL params
+  const urlParams = new URLSearchParams()
+  if (resolvedParams.time) urlParams.set('time', resolvedParams.time)
+  if (resolvedParams.from) urlParams.set('from', resolvedParams.from)
+  if (resolvedParams.to) urlParams.set('to', resolvedParams.to)
+  const timeRange = parseTimeRangeFromParams(urlParams)
+  const timeBounds = resolveTimeRange(timeRange)
+  const timeFilter: TimeFilter = {
+    start: timeBounds.start,
+    end: timeBounds.end,
+  }
+
   // Only fetch data if we have a userId (server-side auth succeeded)
   if (userId) {
     try {
@@ -64,14 +81,17 @@ export default async function LogExplorerPage({
           resolvedParams.source,
           resolvedParams.level,
           resolvedParams.search,
-          propertyFilters
+          propertyFilters,
+          timeFilter
         ),
-        getSources()
+        getSources(timeFilter)
       ])
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to fetch logs'
     }
   }
+
+  const timeDescription = formatTimeRangeDisplay(timeRange)
 
   const levels = ['Debug', 'Information', 'Warning', 'Error', 'Fatal']
 
@@ -84,7 +104,7 @@ export default async function LogExplorerPage({
           Log <span className="text-cannon-fire">Explorer</span>
         </h1>
         <p className="text-text-secondary text-sm mt-1">
-          Search and filter logs from the last 24 hours
+          Search and filter logs &middot; {timeDescription}
         </p>
       </div>
 
@@ -99,6 +119,11 @@ export default async function LogExplorerPage({
         }
         <div className="card-cannon p-4">
           <div className="flex flex-col md:flex-row gap-3">
+            {/* Time Range Filter */}
+            <Suspense fallback={null}>
+              <TimeRangeFilter />
+            </Suspense>
+
             {/* Source Select */}
             <div className="relative md:w-48">
               <select

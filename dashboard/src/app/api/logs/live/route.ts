@@ -50,12 +50,30 @@ function parseOperatorFromValue(rawValue: string): { operator: PropertyOperator;
   return { operator: '=', value: rawValue }
 }
 
+function getIntervalFromPreset(preset: string): string {
+  switch (preset) {
+    case '30m': return '30 MINUTE'
+    case '1h': return '1 HOUR'
+    case '4h': return '4 HOUR'
+    case '6h': return '6 HOUR'
+    case '1d': return '24 HOUR'
+    case 'today': return '24 HOUR'
+    case 'week': return '7 DAY'
+    case 'all': return '365 DAY'
+    case 'now': return '5 MINUTE'
+    default: return '24 HOUR'
+  }
+}
+
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
   const since = searchParams.get('since')
   const source = searchParams.get('source')
   const level = searchParams.get('level')
   const search = searchParams.get('search')
+  const time = searchParams.get('time')
+  const from = searchParams.get('from')
+  const to = searchParams.get('to')
 
   // Parse property filters (prop.key=value format)
   const propertyFilters: { key: string; value: string; operator: PropertyOperator }[] = []
@@ -67,8 +85,21 @@ export async function GET(request: NextRequest) {
     }
   })
 
-  const conditions = ['e.timestamp > now() - INTERVAL 5 MINUTE']
+  const conditions: string[] = []
 
+  // Time filtering - support absolute range or preset
+  if (from) {
+    conditions.push(`e.timestamp >= parseDateTimeBestEffort('${escapeString(from)}')`)
+  }
+  if (to) {
+    conditions.push(`e.timestamp <= parseDateTimeBestEffort('${escapeString(to)}')`)
+  }
+  if (!from && !to) {
+    const interval = getIntervalFromPreset(time || '1d')
+    conditions.push(`e.timestamp > now() - INTERVAL ${interval}`)
+  }
+
+  // For live tailing, also filter by since timestamp
   if (since) {
     conditions.push(`e.timestamp > parseDateTimeBestEffort('${escapeString(since)}')`)
   }

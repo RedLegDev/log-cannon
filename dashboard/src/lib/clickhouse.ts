@@ -55,6 +55,11 @@ export interface PropertyFilter {
   operator: PropertyOperator;
 }
 
+export interface TimeFilter {
+  start?: Date | null;
+  end?: Date | null;
+}
+
 // Parse operator from value string (e.g., ">5" -> { operator: ">", value: "5" })
 export function parseOperatorFromValue(rawValue: string): { operator: PropertyOperator; value: string } {
   if (rawValue.startsWith('>=')) return { operator: '>=', value: rawValue.slice(2) };
@@ -114,9 +119,24 @@ export async function getRecentLogs(
   level?: string,
   search?: string,
   propertyFilters?: PropertyFilter[],
+  timeFilter?: TimeFilter,
   limit: number = 100
 ): Promise<LogEvent[]> {
-  let conditions = ['e.timestamp > now() - INTERVAL 24 HOUR'];
+  const conditions: string[] = [];
+
+  // Time filtering
+  if (timeFilter?.start) {
+    const startTs = timeFilter.start.toISOString().replace('T', ' ').slice(0, 19);
+    conditions.push(`e.timestamp >= parseDateTimeBestEffort('${startTs}')`);
+  }
+  if (timeFilter?.end) {
+    const endTs = timeFilter.end.toISOString().replace('T', ' ').slice(0, 19);
+    conditions.push(`e.timestamp <= parseDateTimeBestEffort('${endTs}')`);
+  }
+  // Default to last 24 hours if no time filter
+  if (!timeFilter || (!timeFilter.start && !timeFilter.end)) {
+    conditions.push('e.timestamp > now() - INTERVAL 24 HOUR');
+  }
 
   if (source) {
     conditions.push(`e.source = '${escapeString(source)}'`);
@@ -198,11 +218,25 @@ export async function getTimeSeries(minutes: number = 60): Promise<TimeSeriesPoi
   return queryClickHouse<TimeSeriesPoint>(sql);
 }
 
-export async function getSources(): Promise<string[]> {
+export async function getSources(timeFilter?: TimeFilter): Promise<string[]> {
+  const conditions: string[] = [];
+
+  if (timeFilter?.start) {
+    const startTs = timeFilter.start.toISOString().replace('T', ' ').slice(0, 19);
+    conditions.push(`e.timestamp >= parseDateTimeBestEffort('${startTs}')`);
+  }
+  if (timeFilter?.end) {
+    const endTs = timeFilter.end.toISOString().replace('T', ' ').slice(0, 19);
+    conditions.push(`e.timestamp <= parseDateTimeBestEffort('${endTs}')`);
+  }
+  if (conditions.length === 0) {
+    conditions.push('e.timestamp > now() - INTERVAL 24 HOUR');
+  }
+
   const sql = `
     SELECT DISTINCT e.source as source
     FROM logs.events e
-    WHERE e.timestamp > now() - INTERVAL 24 HOUR
+    WHERE ${conditions.join(' AND ')}
     ORDER BY source
   `;
 

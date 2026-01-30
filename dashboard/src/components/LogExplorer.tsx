@@ -32,6 +32,9 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
   const topSentinelRef = useRef<HTMLDivElement>(null)
   const logsRef = useRef<LogEvent[]>(initialLogs)
 
+  // Check if viewing historical data (custom range with end date)
+  const isHistoricalView = searchParams.has('to')
+
   // Build query string from current search params for the live API
   const buildQueryParams = useCallback(() => {
     const params = new URLSearchParams()
@@ -48,6 +51,16 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
 
     const search = searchParams.get('search')
     if (search) params.set('search', search)
+
+    // Copy time range params
+    const time = searchParams.get('time')
+    if (time) params.set('time', time)
+
+    const from = searchParams.get('from')
+    if (from) params.set('from', from)
+
+    const to = searchParams.get('to')
+    if (to) params.set('to', to)
 
     // Copy property filters
     searchParams.forEach((value, key) => {
@@ -116,6 +129,13 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
     setNewLogCount(0)
   }, [initialLogs])
 
+  // Disable tailing when viewing historical data
+  useEffect(() => {
+    if (isHistoricalView && isTailing) {
+      setIsTailing(false)
+    }
+  }, [isHistoricalView, isTailing])
+
   // Intersection observer for scroll detection
   useEffect(() => {
     if (!topSentinelRef.current) return
@@ -160,12 +180,15 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
 
         <button
           onClick={() => setIsTailing(!isTailing)}
+          disabled={isHistoricalView}
+          title={isHistoricalView ? 'Tailing disabled for historical time ranges' : undefined}
           className={`
             flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all
             ${isTailing
               ? 'bg-cannon-tracer/20 text-cannon-tracer border border-cannon-tracer/30 animate-pulse-slow'
               : 'bg-cannon-steel text-text-secondary hover:text-text-primary hover:bg-cannon-graphite border border-cannon-graphite'
             }
+            ${isHistoricalView ? 'opacity-50 cursor-not-allowed' : ''}
           `}
         >
           <Radio className="w-4 h-4" />
