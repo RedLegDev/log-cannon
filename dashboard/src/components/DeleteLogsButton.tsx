@@ -1,12 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { Trash2 } from 'lucide-react';
 
 export function DeleteLogsButton() {
   const searchParams = useSearchParams();
-  const router = useRouter();
   const [showModal, setShowModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [counting, setCounting] = useState(false);
@@ -71,7 +70,7 @@ export function DeleteLogsButton() {
       if (!res.ok) throw new Error(data.error || 'Failed to delete logs');
 
       setShowModal(false);
-      router.refresh();
+      window.location.reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to delete logs');
     } finally {
