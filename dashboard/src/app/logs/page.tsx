@@ -4,6 +4,7 @@ import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromV
 import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
+import { DeleteLogsButton } from '@/components/DeleteLogsButton'
 import { AuthGate } from '@/components/AuthGate'
 import { Search, ChevronDown, AlertCircle } from 'lucide-react'
 
@@ -152,6 +153,11 @@ export default async function LogExplorerPage({
             {/* Save Query Button */}
             <Suspense fallback={null}>
               <SaveQueryButton />
+            </Suspense>
+
+            {/* Delete Logs Button */}
+            <Suspense fallback={null}>
+              <DeleteLogsButton />
             </Suspense>
           </div>
         </div>

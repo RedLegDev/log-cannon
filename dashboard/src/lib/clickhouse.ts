@@ -1058,6 +1058,51 @@ export async function getTopServicesByErrors(limit: number = 5): Promise<TopServ
   return queryClickHouse<TopService>(sql);
 }
 
+// Count logs by filters
+export async function countLogs(
+  source?: string,
+  level?: string,
+  search?: string,
+  propertyFilters?: PropertyFilter[]
+): Promise<number> {
+  const conditions: string[] = [];
+
+  if (source) {
+    conditions.push(`source = '${escapeString(source)}'`);
+  }
+
+  if (level) {
+    conditions.push(`level = '${escapeString(level)}'`);
+  }
+
+  if (search) {
+    conditions.push(`message LIKE '%${escapeString(search)}%'`);
+  }
+
+  if (propertyFilters && propertyFilters.length > 0) {
+    for (const filter of propertyFilters) {
+      const isNumeric = isNumericValue(filter.value);
+      const jsonExtract = buildJsonExtractSql('properties', filter.key, isNumeric ? 'number' : 'string');
+      const escapedValue = escapeString(filter.value);
+
+      if (isNumeric) {
+        conditions.push(`${jsonExtract} ${filter.operator} ${escapedValue}`);
+      } else {
+        const op = filter.operator === '!=' ? '!=' : '=';
+        conditions.push(`${jsonExtract} ${op} '${escapedValue}'`);
+      }
+    }
+  }
+
+  if (conditions.length === 0) {
+    throw new Error('At least one filter is required to count logs');
+  }
+
+  const countSql = `SELECT count(*) as count FROM logs.events WHERE ${conditions.join(' AND ')}`;
+  const countResult = await queryClickHouse<{ count: number }>(countSql);
+  return countResult[0]?.count || 0;
+}
+
 // Delete logs by filters
 export async function deleteLogs(
   source?: string,
