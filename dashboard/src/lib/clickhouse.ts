@@ -1048,31 +1048,43 @@ export interface AlertWithStatus {
 export async function getAlertsWithStatus(): Promise<AlertWithStatus[]> {
   // Get all enabled alerts with their trigger status
   // Status: 'firing' = triggered within cooldown, 'recent' = triggered in last 24h, 'ok' = not triggered recently
+  // Use subquery to compute status before formatting timestamp (avoid alias shadowing)
   const sql = `
     SELECT
-      toString(id) as id,
+      id,
       name,
       description,
       enabled,
-      formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
+      formatDateTime(triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
       cooldown_seconds,
-      CASE
-        WHEN last_triggered_at > now() - toIntervalSecond(cooldown_seconds)
-             AND last_triggered_at > toDateTime('1970-01-02 00:00:00')
-        THEN 'firing'
-        WHEN last_triggered_at > now() - INTERVAL 24 HOUR
-             AND last_triggered_at > toDateTime('1970-01-02 00:00:00')
-        THEN 'recent'
-        ELSE 'ok'
-      END as status,
-      if(last_triggered_at > toDateTime('1970-01-02 00:00:00'),
-         toInt32(dateDiff('minute', last_triggered_at, now())),
-         NULL) as minutes_ago
-    FROM logs.alerts
-    WHERE enabled = 1
+      status,
+      minutes_ago
+    FROM (
+      SELECT
+        toString(id) as id,
+        name,
+        description,
+        enabled,
+        last_triggered_at as triggered_at,
+        cooldown_seconds,
+        multiIf(
+          last_triggered_at > now() - toIntervalSecond(cooldown_seconds)
+            AND last_triggered_at > toDateTime('1970-01-02 00:00:00'),
+          'firing',
+          last_triggered_at > now() - INTERVAL 24 HOUR
+            AND last_triggered_at > toDateTime('1970-01-02 00:00:00'),
+          'recent',
+          'ok'
+        ) as status,
+        if(last_triggered_at > toDateTime('1970-01-02 00:00:00'),
+           toInt32(dateDiff('minute', last_triggered_at, now())),
+           NULL) as minutes_ago
+      FROM logs.alerts
+      WHERE enabled = 1
+    )
     ORDER BY
-      CASE status WHEN 'firing' THEN 1 WHEN 'recent' THEN 2 ELSE 3 END,
-      last_triggered_at DESC
+      multiIf(status = 'firing', 1, status = 'recent', 2, 3),
+      triggered_at DESC
   `;
 
   return queryClickHouse<AlertWithStatus>(sql);
