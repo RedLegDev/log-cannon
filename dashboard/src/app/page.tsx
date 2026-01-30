@@ -15,6 +15,7 @@ import {
 import { AuthGate } from '@/components/AuthGate'
 import { MetricCard } from '@/components/MetricCard'
 import { AlertStatusCard } from '@/components/AlertStatusCard'
+import { DashboardCard } from '@/components/DashboardCard'
 import {
   Activity,
   FileText,
@@ -108,7 +109,7 @@ export default async function HomePage() {
       errorRateSeries = errorRateData
       topServices = servicesData
       savedQueries = queriesData.slice(0, 4)
-      dashboards = dashboardsData.filter(d => d.enabled).slice(0, 4)
+      dashboards = dashboardsData.filter(d => d.enabled)
       alertsWithStatus = alertsStatusData
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load dashboard data'
@@ -215,7 +216,7 @@ export default async function HomePage() {
             )}
 
             {/* Two Column Layout */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
               {/* Services Section - takes 2 columns */}
               <div className="lg:col-span-2" id="services">
                 <div className="flex items-center justify-between mb-4">
@@ -292,91 +293,74 @@ export default async function HomePage() {
                 )}
               </div>
 
-              {/* Quick Access Section - takes 1 column */}
-              <div className="space-y-6">
-                {/* Saved Queries */}
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
-                      <Search className="w-5 h-5 text-cannon-fire" />
-                      Saved Queries
-                    </h2>
-                    <Link
-                      href="/queries"
-                      className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
-                    >
-                      View all <ChevronRight className="w-4 h-4" />
-                    </Link>
-                  </div>
-
-                  <div className="card-cannon divide-y divide-cannon-graphite">
-                    {savedQueries.length === 0 ? (
-                      <div className="p-4 text-center text-text-secondary text-sm">
-                        No saved queries yet
-                      </div>
-                    ) : (
-                      savedQueries.map(query => (
-                        <Link
-                          key={query.id}
-                          href={buildQueryUrl(query)}
-                          className="block px-4 py-3 hover:bg-cannon-steel/50 transition-colors"
-                        >
-                          <div className="text-text-primary font-medium text-sm truncate">
-                            {query.name}
-                          </div>
-                          {query.description && (
-                            <div className="text-text-muted text-xs truncate mt-0.5">
-                              {query.description}
-                            </div>
-                          )}
-                        </Link>
-                      ))
-                    )}
-                  </div>
+              {/* Saved Queries Section - takes 1 column */}
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                    <Search className="w-5 h-5 text-cannon-fire" />
+                    Saved Queries
+                  </h2>
+                  <Link
+                    href="/queries"
+                    className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
+                  >
+                    View all <ChevronRight className="w-4 h-4" />
+                  </Link>
                 </div>
 
-                {/* Dashboards */}
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
-                      <LayoutDashboard className="w-5 h-5 text-cannon-fire" />
-                      Dashboards
-                    </h2>
-                    <Link
-                      href="/dashboards"
-                      className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
-                    >
-                      View all <ChevronRight className="w-4 h-4" />
-                    </Link>
-                  </div>
-
-                  <div className="card-cannon divide-y divide-cannon-graphite">
-                    {dashboards.length === 0 ? (
-                      <div className="p-4 text-center text-text-secondary text-sm">
-                        No dashboards yet
-                      </div>
-                    ) : (
-                      dashboards.map(dashboard => (
-                        <Link
-                          key={dashboard.id}
-                          href={`/dashboards/${dashboard.name}`}
-                          className="block px-4 py-3 hover:bg-cannon-steel/50 transition-colors"
-                        >
-                          <div className="text-text-primary font-medium text-sm truncate">
-                            {dashboard.name}
+                <div className="card-cannon divide-y divide-cannon-graphite">
+                  {savedQueries.length === 0 ? (
+                    <div className="p-4 text-center text-text-secondary text-sm">
+                      No saved queries yet
+                    </div>
+                  ) : (
+                    savedQueries.map(query => (
+                      <Link
+                        key={query.id}
+                        href={buildQueryUrl(query)}
+                        className="block px-4 py-3 hover:bg-cannon-steel/50 transition-colors"
+                      >
+                        <div className="text-text-primary font-medium text-sm truncate">
+                          {query.name}
+                        </div>
+                        {query.description && (
+                          <div className="text-text-muted text-xs truncate mt-0.5">
+                            {query.description}
                           </div>
-                          {dashboard.description && (
-                            <div className="text-text-muted text-xs truncate mt-0.5">
-                              {dashboard.description}
-                            </div>
-                          )}
-                        </Link>
-                      ))
-                    )}
-                  </div>
+                        )}
+                      </Link>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
+
+            {/* Dashboards Section - as cards below */}
+            {dashboards.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                    <LayoutDashboard className="w-5 h-5 text-cannon-fire" />
+                    Dashboards
+                  </h2>
+                  <Link
+                    href="/dashboards"
+                    className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
+                  >
+                    Manage <ChevronRight className="w-4 h-4" />
+                  </Link>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {dashboards.map(dashboard => (
+                    <DashboardCard
+                      key={dashboard.id}
+                      name={dashboard.name}
+                      description={dashboard.description}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>
