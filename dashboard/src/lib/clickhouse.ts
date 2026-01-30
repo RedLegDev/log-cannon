@@ -1103,6 +1103,139 @@ export async function countLogs(
   return countResult[0]?.count || 0;
 }
 
+// System Observability Metrics
+
+export interface SystemMetrics {
+  total_logs: number;
+  total_logs_24h: number;
+  oldest_log: string | null;
+  newest_log: string | null;
+  table_size_bytes: number;
+  table_size_formatted: string;
+  rows_per_partition: { partition: string; rows: number; size_bytes: number }[];
+  disk_total_bytes: number;
+  disk_free_bytes: number;
+  disk_used_bytes: number;
+  disk_used_percent: number;
+  active_parts: number;
+  tables: { table: string; rows: number; size_bytes: number }[];
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+export async function getSystemMetrics(): Promise<SystemMetrics> {
+  // Run all queries in parallel
+  const [
+    totalLogsResult,
+    logs24hResult,
+    timeRangeResult,
+    tableSizeResult,
+    partitionsResult,
+    diskResult,
+    partsCountResult,
+    tablesResult
+  ] = await Promise.all([
+    // Total log count
+    queryClickHouse<{ count: number }>(`SELECT count(*) as count FROM logs.events`),
+
+    // Logs in last 24h
+    queryClickHouse<{ count: number }>(`
+      SELECT count(*) as count FROM logs.events
+      WHERE timestamp > now() - INTERVAL 24 HOUR
+    `),
+
+    // Oldest and newest log timestamps
+    queryClickHouse<{ oldest: string; newest: string }>(`
+      SELECT
+        formatDateTime(min(timestamp), '%Y-%m-%d %H:%i:%S') as oldest,
+        formatDateTime(max(timestamp), '%Y-%m-%d %H:%i:%S') as newest
+      FROM logs.events
+    `),
+
+    // Table size from system.parts
+    queryClickHouse<{ size_bytes: number }>(`
+      SELECT sum(bytes) as size_bytes
+      FROM system.parts
+      WHERE database = 'logs' AND table = 'events' AND active = 1
+    `),
+
+    // Rows and size per partition
+    queryClickHouse<{ partition: string; rows: number; size_bytes: number }>(`
+      SELECT
+        partition,
+        sum(rows) as rows,
+        sum(bytes) as size_bytes
+      FROM system.parts
+      WHERE database = 'logs' AND table = 'events' AND active = 1
+      GROUP BY partition
+      ORDER BY partition DESC
+      LIMIT 30
+    `),
+
+    // Disk usage
+    queryClickHouse<{ total: number; free: number }>(`
+      SELECT
+        total_space as total,
+        free_space as free
+      FROM system.disks
+      WHERE name = 'default'
+    `),
+
+    // Active parts count
+    queryClickHouse<{ count: number }>(`
+      SELECT count() as count
+      FROM system.parts
+      WHERE database = 'logs' AND table = 'events' AND active = 1
+    `),
+
+    // All tables in logs database with sizes
+    queryClickHouse<{ table: string; rows: number; size_bytes: number }>(`
+      SELECT
+        table,
+        sum(rows) as rows,
+        sum(bytes) as size_bytes
+      FROM system.parts
+      WHERE database = 'logs' AND active = 1
+      GROUP BY table
+      ORDER BY size_bytes DESC
+    `)
+  ]);
+
+  const totalLogs = totalLogsResult[0]?.count || 0;
+  const logs24h = logs24hResult[0]?.count || 0;
+  const timeRange = timeRangeResult[0] || { oldest: null, newest: null };
+  const tableSizeBytes = tableSizeResult[0]?.size_bytes || 0;
+  const diskInfo = diskResult[0] || { total: 0, free: 0 };
+  const activeParts = partsCountResult[0]?.count || 0;
+
+  const diskUsedBytes = diskInfo.total - diskInfo.free;
+  const diskUsedPercent = diskInfo.total > 0
+    ? Math.round((diskUsedBytes / diskInfo.total) * 100 * 10) / 10
+    : 0;
+
+  return {
+    total_logs: totalLogs,
+    total_logs_24h: logs24h,
+    oldest_log: timeRange.oldest || null,
+    newest_log: timeRange.newest || null,
+    table_size_bytes: tableSizeBytes,
+    table_size_formatted: formatBytes(tableSizeBytes),
+    rows_per_partition: partitionsResult,
+    disk_total_bytes: diskInfo.total,
+    disk_free_bytes: diskInfo.free,
+    disk_used_bytes: diskUsedBytes,
+    disk_used_percent: diskUsedPercent,
+    active_parts: activeParts,
+    tables: tablesResult
+  };
+}
+
 // Delete logs by filters
 export async function deleteLogs(
   source?: string,
