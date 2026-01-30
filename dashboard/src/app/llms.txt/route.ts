@@ -98,7 +98,9 @@ Visualization options:
 
 ### line_chart - Time Series
 
-Shows values over time. Best for trends and patterns.
+Shows values over time. Best for trends and patterns. Supports multiple data series on the same chart.
+
+#### Single Series Example
 
 \`\`\`json
 {
@@ -116,10 +118,37 @@ Shows values over time. Best for trends and patterns.
 }
 \`\`\`
 
+#### Multi-Series Example
+
+Compare multiple metrics on the same chart by using an array for yField:
+
+\`\`\`json
+{
+  "id": "events-by-level",
+  "type": "line_chart",
+  "title": "Events by Level Over Time",
+  "dataSource": {
+    "type": "inline",
+    "sql": "SELECT toStartOfMinute(timestamp) as time, countIf(level = 'Error') as errors, countIf(level = 'Warning') as warnings, countIf(level = 'Information') as info FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR GROUP BY time ORDER BY time"
+  },
+  "visualization": {
+    "xField": "time",
+    "yField": ["errors", "warnings", "info"],
+    "colors": ["#FF4D2A", "#F59E0B", "#3B82F6"]
+  }
+}
+\`\`\`
+
 Visualization options:
 - **xField**: Field for X axis (typically time)
-- **yField**: Field(s) for Y axis - string or array of strings for multiple lines
-- **colors**: Optional array of colors for lines
+- **yField**: Field(s) for Y axis - string for single line, or array of strings for multiple lines
+- **colors**: Optional array of colors for lines (defaults to a preset palette)
+
+Tips for multi-series charts:
+- Use \`countIf(condition)\` to create multiple metrics in one query
+- Each field in yField array becomes a separate line
+- Legend appears automatically when multiple series are present
+- Colors cycle through palette if fewer colors than series provided
 
 ### bar_chart - Categorical Comparison
 

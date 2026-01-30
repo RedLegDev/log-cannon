@@ -17,6 +17,17 @@ import { Widget } from '@/lib/clickhouse';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
+const DEFAULT_COLORS = [
+  '#FF4D2A', // Orange-red (primary)
+  '#3B82F6', // Blue
+  '#10B981', // Green
+  '#F59E0B', // Amber
+  '#8B5CF6', // Purple
+  '#EC4899', // Pink
+  '#06B6D4', // Cyan
+  '#84CC16', // Lime
+];
+
 interface LineChartWidgetProps {
   data: unknown[];
   widget: Widget;
@@ -26,37 +37,37 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   const config = widget.visualization;
   const xField = config?.xField || 'x';
   const yField = config?.yField;
-  const color = config?.colors?.[0] || '#FF4D2A';
 
   const chartData = useMemo(() => {
     if (!yField) return null;
 
     const yFields = Array.isArray(yField) ? yField : [yField];
-    const yKey = yFields[0];
+    const colors = config?.colors || DEFAULT_COLORS;
+    const dataArray = Array.isArray(data) ? data : [];
 
-    const items = (Array.isArray(data) ? data : []).map((item) => {
+    const labels = dataArray.map((item) => {
       const record = item as Record<string, unknown>;
-      const label = String(record[xField] ?? '');
+      return formatLabel(String(record[xField] ?? ''));
+    });
+
+    const datasets = yFields.map((field, index) => {
+      const fieldColor = colors[index % colors.length];
       return {
-        label: formatLabel(label),
-        value: Number(record[yKey]) || 0,
+        label: field,
+        data: dataArray.map((item) => {
+          const record = item as Record<string, unknown>;
+          return Number(record[field]) || 0;
+        }),
+        borderColor: fieldColor,
+        backgroundColor: fieldColor + '20',
+        fill: yFields.length === 1,
+        tension: 0.3,
+        pointRadius: dataArray.length > 30 ? 0 : 3,
       };
     });
 
-    return {
-      labels: items.map((i) => i.label),
-      datasets: [
-        {
-          data: items.map((i) => i.value),
-          borderColor: color,
-          backgroundColor: color + '20',
-          fill: true,
-          tension: 0.3,
-          pointRadius: items.length > 30 ? 0 : 3,
-        },
-      ],
-    };
-  }, [data, xField, yField, color]);
+    return { labels, datasets };
+  }, [data, xField, yField, config?.colors]);
 
   if (!yField) {
     return (
@@ -74,6 +85,8 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
     );
   }
 
+  const showLegend = chartData.datasets.length > 1;
+
   return (
     <div className="w-full h-full">
       <Line
@@ -82,7 +95,11 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
           responsive: true,
           maintainAspectRatio: false,
           plugins: {
-            legend: { display: false },
+            legend: {
+              display: showLegend,
+              position: 'top',
+              labels: { color: '#888', boxWidth: 12, padding: 8 },
+            },
           },
           scales: {
             x: {
