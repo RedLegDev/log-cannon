@@ -5,9 +5,7 @@ import {
   getHourOverHourTrend,
   getTimeSeries,
   getErrorRateTimeSeries,
-  getFiringAlerts,
   getTopServicesByErrors,
-  getAlerts,
   getSavedQueries,
   getDashboards,
   getAlertsWithStatus,
@@ -15,13 +13,11 @@ import {
   AlertWithStatus
 } from '@/lib/clickhouse'
 import { AuthGate } from '@/components/AuthGate'
-import { AlertBanner } from '@/components/AlertBanner'
 import { MetricCard } from '@/components/MetricCard'
 import { AlertStatusCard } from '@/components/AlertStatusCard'
 import {
   Activity,
   FileText,
-  AlertTriangle,
   Server,
   Percent,
   Search,
@@ -79,8 +75,6 @@ export default async function HomePage() {
   let trend = { current_hour_count: 0, previous_hour_count: 0, trend_percent: 0 }
   let timeSeries: { minute: string; count: number; errors: number }[] = []
   let errorRateSeries: { minute: string; error_rate: number }[] = []
-  let firingAlerts: Awaited<ReturnType<typeof getFiringAlerts>> = []
-  let totalAlerts = 0
   let topServices: Awaited<ReturnType<typeof getTopServicesByErrors>> = []
   let savedQueries: SavedQuery[] = []
   let dashboards: Awaited<ReturnType<typeof getDashboards>> = []
@@ -93,8 +87,6 @@ export default async function HomePage() {
         trendData,
         timeSeriesData,
         errorRateData,
-        firingData,
-        allAlerts,
         servicesData,
         queriesData,
         dashboardsData,
@@ -104,8 +96,6 @@ export default async function HomePage() {
         getHourOverHourTrend(),
         getTimeSeries(60),
         getErrorRateTimeSeries(60),
-        getFiringAlerts(),
-        getAlerts(),
         getTopServicesByErrors(5),
         getSavedQueries(),
         getDashboards(),
@@ -116,8 +106,6 @@ export default async function HomePage() {
       trend = trendData
       timeSeries = timeSeriesData
       errorRateSeries = errorRateData
-      firingAlerts = firingData
-      totalAlerts = allAlerts.filter(a => a.enabled).length
       topServices = servicesData
       savedQueries = queriesData.slice(0, 4)
       dashboards = dashboardsData.filter(d => d.enabled).slice(0, 4)
@@ -159,9 +147,6 @@ export default async function HomePage() {
           </div>
         ) : (
           <>
-            {/* Alert Banner */}
-            <AlertBanner firingAlerts={firingAlerts} totalConfigured={totalAlerts} />
-
             {/* Metrics Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
               <MetricCard
