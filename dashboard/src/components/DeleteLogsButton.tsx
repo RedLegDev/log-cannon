@@ -83,11 +83,10 @@ export function DeleteLogsButton() {
       <button
         type="button"
         onClick={handleOpenModal}
-        className="bg-red-600/20 hover:bg-red-600/30 text-red-400 hover:text-red-300 border border-red-600/30 px-4 py-2 rounded flex items-center gap-2 transition-colors"
+        className="text-gray-500 hover:text-red-400 p-2 rounded transition-colors"
         title="Delete matching logs"
       >
         <Trash2 className="w-4 h-4" />
-        <span className="hidden md:inline">Delete</span>
       </button>
 
       {showModal && (
