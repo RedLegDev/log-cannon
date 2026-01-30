@@ -10,11 +10,14 @@ import {
   getAlerts,
   getSavedQueries,
   getDashboards,
-  SavedQuery
+  getAlertsWithStatus,
+  SavedQuery,
+  AlertWithStatus
 } from '@/lib/clickhouse'
 import { AuthGate } from '@/components/AuthGate'
 import { AlertBanner } from '@/components/AlertBanner'
 import { MetricCard } from '@/components/MetricCard'
+import { AlertStatusCard } from '@/components/AlertStatusCard'
 import {
   Activity,
   FileText,
@@ -24,7 +27,8 @@ import {
   Search,
   LayoutDashboard,
   ChevronRight,
-  AlertCircle
+  AlertCircle,
+  Bell
 } from 'lucide-react'
 
 function formatNumber(num: number): string {
@@ -80,6 +84,7 @@ export default async function HomePage() {
   let topServices: Awaited<ReturnType<typeof getTopServicesByErrors>> = []
   let savedQueries: SavedQuery[] = []
   let dashboards: Awaited<ReturnType<typeof getDashboards>> = []
+  let alertsWithStatus: AlertWithStatus[] = []
 
   if (userId) {
     try {
@@ -92,7 +97,8 @@ export default async function HomePage() {
         allAlerts,
         servicesData,
         queriesData,
-        dashboardsData
+        dashboardsData,
+        alertsStatusData
       ] = await Promise.all([
         getCurrentMetrics(),
         getHourOverHourTrend(),
@@ -102,7 +108,8 @@ export default async function HomePage() {
         getAlerts(),
         getTopServicesByErrors(5),
         getSavedQueries(),
-        getDashboards()
+        getDashboards(),
+        getAlertsWithStatus()
       ])
 
       metrics = metricsData
@@ -114,6 +121,7 @@ export default async function HomePage() {
       topServices = servicesData
       savedQueries = queriesData.slice(0, 4)
       dashboards = dashboardsData.filter(d => d.enabled).slice(0, 4)
+      alertsWithStatus = alertsStatusData
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to load dashboard data'
     }
@@ -190,6 +198,36 @@ export default async function HomePage() {
                 color={errorRateColor}
               />
             </div>
+
+            {/* Alert Status Cards */}
+            {alertsWithStatus.length > 0 && (
+              <div className="mb-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                    <Bell className="w-5 h-5 text-cannon-fire" />
+                    Alert Status
+                  </h2>
+                  <Link
+                    href="/alerts"
+                    className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
+                  >
+                    Manage alerts <ChevronRight className="w-4 h-4" />
+                  </Link>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {alertsWithStatus.map(alert => (
+                    <AlertStatusCard
+                      key={alert.id}
+                      id={alert.id}
+                      name={alert.name}
+                      description={alert.description}
+                      status={alert.status}
+                      minutesAgo={alert.minutes_ago}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Two Column Layout */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

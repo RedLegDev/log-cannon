@@ -1032,6 +1032,52 @@ export async function getFiringAlerts(): Promise<FiringAlert[]> {
   return queryClickHouse<FiringAlert>(sql);
 }
 
+export type AlertStatus = 'firing' | 'recent' | 'ok';
+
+export interface AlertWithStatus {
+  id: string;
+  name: string;
+  description: string;
+  enabled: number;
+  last_triggered_at: string;
+  cooldown_seconds: number;
+  status: AlertStatus;
+  minutes_ago: number | null;
+}
+
+export async function getAlertsWithStatus(): Promise<AlertWithStatus[]> {
+  // Get all enabled alerts with their trigger status
+  // Status: 'firing' = triggered within cooldown, 'recent' = triggered in last 24h, 'ok' = not triggered recently
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      enabled,
+      formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
+      cooldown_seconds,
+      CASE
+        WHEN last_triggered_at > now() - toIntervalSecond(cooldown_seconds)
+             AND last_triggered_at > toDateTime('1970-01-02 00:00:00')
+        THEN 'firing'
+        WHEN last_triggered_at > now() - INTERVAL 24 HOUR
+             AND last_triggered_at > toDateTime('1970-01-02 00:00:00')
+        THEN 'recent'
+        ELSE 'ok'
+      END as status,
+      if(last_triggered_at > toDateTime('1970-01-02 00:00:00'),
+         toInt32(dateDiff('minute', last_triggered_at, now())),
+         NULL) as minutes_ago
+    FROM logs.alerts
+    WHERE enabled = 1
+    ORDER BY
+      CASE status WHEN 'firing' THEN 1 WHEN 'recent' THEN 2 ELSE 3 END,
+      last_triggered_at DESC
+  `;
+
+  return queryClickHouse<AlertWithStatus>(sql);
+}
+
 export interface TopService {
   source: string;
   total_count: number;
