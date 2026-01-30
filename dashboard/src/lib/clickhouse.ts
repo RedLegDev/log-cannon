@@ -1021,9 +1021,10 @@ export async function getFiringAlerts(): Promise<FiringAlert[]> {
       name,
       description,
       formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
-      dateDiff('minute', last_triggered_at, now()) as minutes_ago
+      toInt32(dateDiff('minute', toDateTime(last_triggered_at), now())) as minutes_ago
     FROM logs.alerts
     WHERE enabled = 1
+      AND last_triggered_at > toDateTime('1970-01-02 00:00:00')
       AND last_triggered_at > now() - toIntervalSecond(cooldown_seconds)
     ORDER BY last_triggered_at DESC
   `;
