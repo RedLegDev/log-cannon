@@ -1017,16 +1017,16 @@ export async function getFiringAlerts(): Promise<FiringAlert[]> {
   // This avoids re-evaluating all alert queries on every page load
   const sql = `
     SELECT
-      toString(id) as id,
-      name,
-      description,
-      formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
-      toInt32(dateDiff('minute', toDateTime(last_triggered_at), now())) as minutes_ago
-    FROM logs.alerts
-    WHERE enabled = 1
-      AND last_triggered_at > toDateTime('1970-01-02 00:00:00')
-      AND last_triggered_at > now() - toIntervalSecond(cooldown_seconds)
-    ORDER BY last_triggered_at DESC
+      toString(a.id) as id,
+      a.name,
+      a.description,
+      formatDateTime(a.last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
+      toInt32(dateDiff('minute', a.last_triggered_at, now())) as minutes_ago
+    FROM logs.alerts a
+    WHERE a.enabled = 1
+      AND a.last_triggered_at > toDateTime('1970-01-02 00:00:00')
+      AND a.last_triggered_at > now() - toIntervalSecond(a.cooldown_seconds)
+    ORDER BY a.last_triggered_at DESC
   `;
 
   return queryClickHouse<FiringAlert>(sql);
