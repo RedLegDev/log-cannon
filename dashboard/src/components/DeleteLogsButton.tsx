@@ -82,6 +82,7 @@ export function DeleteLogsButton() {
   return (
     <>
       <button
+        type="button"
         onClick={handleOpenModal}
         className="bg-red-600/20 hover:bg-red-600/30 text-red-400 hover:text-red-300 border border-red-600/30 px-4 py-2 rounded flex items-center gap-2 transition-colors"
         title="Delete matching logs"
