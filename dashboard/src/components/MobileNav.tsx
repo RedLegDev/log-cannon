@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, Home } from 'lucide-react'
+import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell } from 'lucide-react'
 import {
   SignInButton,
   SignUpButton,
@@ -12,7 +12,6 @@ import {
 } from '@clerk/nextjs'
 
 const navLinks = [
-  { href: '/', label: 'Dashboard', icon: Home },
   { href: '/logs', label: 'Log Explorer', icon: Search },
   { href: '/services', label: 'Services', icon: Server },
   { href: '/dashboards', label: 'Dashboards', icon: LayoutDashboard },
