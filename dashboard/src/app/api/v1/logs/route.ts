@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const logs = await getRecentLogs(source, level, search, propertyFilters, limit);
+    const logs = await getRecentLogs(source, level, search, propertyFilters, undefined, limit);
 
     // Transform to API format
     const data = logs.map(log => ({
