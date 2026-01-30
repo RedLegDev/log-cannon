@@ -398,14 +398,15 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
                     key={col.property}
                     title={tooltip}
                     className={`
-                      hidden md:inline-block text-xs px-2 py-0.5 rounded font-mono truncate max-w-[120px]
+                      hidden md:inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded font-mono max-w-[200px]
                       ${isMissing
                         ? 'bg-cannon-graphite/50 text-text-muted italic'
-                        : 'bg-cannon-steel text-text-code'
+                        : 'bg-cannon-steel text-text-secondary'
                       }
                     `}
                   >
-                    {displayValue}
+                    <span className="text-text-muted truncate max-w-[60px]">{col.property}:</span>
+                    <span className="truncate">{displayValue}</span>
                   </span>
                 )
               })}
