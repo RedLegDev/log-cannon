@@ -164,10 +164,7 @@ function isFilterableValue(value: unknown): boolean {
 
 function formatColumnValue(value: unknown): string {
   if (value === null || value === undefined) return '—'
-  if (typeof value === 'string') {
-    if (value.length > 15) return value.slice(0, 15) + '…'
-    return value
-  }
+  if (typeof value === 'string') return value
   if (typeof value === 'number') return value.toLocaleString()
   if (typeof value === 'boolean') return value.toString()
   return '—'
