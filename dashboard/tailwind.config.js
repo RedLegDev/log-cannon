@@ -20,6 +20,7 @@ module.exports = {
           tracer: '#00D4AA',
           warning: '#FFB020',
           critical: '#FF3366',
+          success: '#22C55E',
         },
         text: {
           primary: '#F9FAFB',

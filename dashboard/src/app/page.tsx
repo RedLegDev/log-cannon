@@ -1,182 +1,362 @@
-import { Suspense } from 'react'
 import { auth } from '@clerk/nextjs/server'
-import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue } from '@/lib/clickhouse'
-import { LogExplorer } from '@/components/LogExplorer'
-import { FilterBar } from '@/components/FilterBar'
-import { SaveQueryButton } from '@/components/SaveQueryButton'
+import Link from 'next/link'
+import {
+  getCurrentMetrics,
+  getHourOverHourTrend,
+  getTimeSeries,
+  getErrorRateTimeSeries,
+  getFiringAlerts,
+  getTopServicesByErrors,
+  getAlerts,
+  getSavedQueries,
+  getDashboards,
+  SavedQuery
+} from '@/lib/clickhouse'
 import { AuthGate } from '@/components/AuthGate'
-import { Search, ChevronDown, AlertCircle } from 'lucide-react'
+import { AlertBanner } from '@/components/AlertBanner'
+import { MetricCard } from '@/components/MetricCard'
+import {
+  Activity,
+  FileText,
+  AlertTriangle,
+  Server,
+  Percent,
+  Search,
+  LayoutDashboard,
+  ChevronRight,
+  AlertCircle
+} from 'lucide-react'
 
-interface SearchParams {
-  source?: string
-  level?: string
-  search?: string
-  [key: string]: string | undefined
+function formatNumber(num: number): string {
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1) + 'M'
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1) + 'K'
+  }
+  return num.toLocaleString()
 }
 
-function parsePropertyFilters(searchParams: SearchParams): PropertyFilter[] {
-  const filters: PropertyFilter[] = []
+function buildQueryUrl(query: SavedQuery): string {
+  const params = new URLSearchParams()
+  if (query.source) params.set('source', query.source)
+  if (query.level) params.set('level', query.level)
+  if (query.search) params.set('search', query.search)
 
-  for (const [key, value] of Object.entries(searchParams)) {
-    if (key.startsWith('prop.') && value) {
-      // Handle legacy exclude format: prop.key!
-      const isLegacyExclude = key.endsWith('!')
-      const propKey = isLegacyExclude
-        ? key.slice(5, -1)  // Remove 'prop.' and '!'
-        : key.slice(5)      // Remove 'prop.'
-
-      if (isLegacyExclude) {
-        // Legacy format: prop.key! with value
-        filters.push({ key: propKey, value, operator: '!=' })
-      } else {
-        // New format: parse operator from value (e.g., ">5", ">=10", "!=foo")
-        const { operator, value: parsedValue } = parseOperatorFromValue(value)
-        filters.push({ key: propKey, value: parsedValue, operator })
-      }
+  try {
+    const filters = JSON.parse(query.property_filters)
+    for (const filter of filters) {
+      const key = `prop.${filter.key}`
+      const value = filter.operator && filter.operator !== '='
+        ? `${filter.operator}${filter.value}`
+        : filter.value
+      params.set(key, value)
     }
+  } catch {
+    // Ignore parse errors
   }
 
-  return filters
+  const queryString = params.toString()
+  return queryString ? `/logs?${queryString}` : '/logs'
 }
 
-export default async function LogExplorerPage({
-  searchParams,
-}: {
-  searchParams: Promise<SearchParams>
-}) {
-  // Try to get auth state - if authenticated, fetch logs server-side for performance
-  // If not authenticated (e.g., cross-app deep link), AuthGate will handle it client-side
+export default async function HomePage() {
   const { userId } = await auth()
 
-  let logs: LogEvent[] = []
-  let sources: string[] = []
   let error: string | null = null
+  let metrics = {
+    logs_per_minute: 0,
+    total_logs_24h: 0,
+    total_errors_24h: 0,
+    error_rate_24h: 0,
+    active_services: 0,
+    services_with_errors: 0
+  }
+  let trend = { current_hour_count: 0, previous_hour_count: 0, trend_percent: 0 }
+  let timeSeries: { minute: string; count: number; errors: number }[] = []
+  let errorRateSeries: { minute: string; error_rate: number }[] = []
+  let firingAlerts: Awaited<ReturnType<typeof getFiringAlerts>> = []
+  let totalAlerts = 0
+  let topServices: Awaited<ReturnType<typeof getTopServicesByErrors>> = []
+  let savedQueries: SavedQuery[] = []
+  let dashboards: Awaited<ReturnType<typeof getDashboards>> = []
 
-  const resolvedParams = await searchParams
-  const propertyFilters = parsePropertyFilters(resolvedParams)
-
-  // Only fetch data if we have a userId (server-side auth succeeded)
   if (userId) {
     try {
-      [logs, sources] = await Promise.all([
-        getRecentLogs(
-          resolvedParams.source,
-          resolvedParams.level,
-          resolvedParams.search,
-          propertyFilters
-        ),
-        getSources()
+      const [
+        metricsData,
+        trendData,
+        timeSeriesData,
+        errorRateData,
+        firingData,
+        allAlerts,
+        servicesData,
+        queriesData,
+        dashboardsData
+      ] = await Promise.all([
+        getCurrentMetrics(),
+        getHourOverHourTrend(),
+        getTimeSeries(60),
+        getErrorRateTimeSeries(60),
+        getFiringAlerts(),
+        getAlerts(),
+        getTopServicesByErrors(5),
+        getSavedQueries(),
+        getDashboards()
       ])
+
+      metrics = metricsData
+      trend = trendData
+      timeSeries = timeSeriesData
+      errorRateSeries = errorRateData
+      firingAlerts = firingData
+      totalAlerts = allAlerts.filter(a => a.enabled).length
+      topServices = servicesData
+      savedQueries = queriesData.slice(0, 4)
+      dashboards = dashboardsData.filter(d => d.enabled).slice(0, 4)
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to fetch logs'
+      error = e instanceof Error ? e.message : 'Failed to load dashboard data'
     }
   }
 
-  const levels = ['Debug', 'Information', 'Warning', 'Error', 'Fatal']
+  // Prepare sparkline data
+  const logsSparkline = timeSeries.map(p => Number(p.count))
+  const errorRateSparkline = errorRateSeries.map(p => Number(p.error_rate))
+
+  // Determine error rate color
+  const errorRateColor = metrics.error_rate_24h > 5 ? 'critical' : metrics.error_rate_24h > 1 ? 'warning' : 'success'
 
   return (
     <AuthGate hasServerData={!!userId}>
-    <div className="animate-fade-in">
-      {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary font-mono">
-          Log <span className="text-cannon-fire">Explorer</span>
-        </h1>
-        <p className="text-text-secondary text-sm mt-1">
-          Search and filter logs from the last 24 hours
-        </p>
-      </div>
+      <div className="animate-fade-in">
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold text-text-primary font-mono">
+            <span className="text-cannon-fire">Dashboard</span>
+          </h1>
+          <p className="text-text-secondary text-sm mt-1">
+            System overview and quick access
+          </p>
+        </div>
 
-      {/* Search Form */}
-      <form className="mb-6" key={`${resolvedParams.source || ''}-${resolvedParams.level || ''}-${resolvedParams.search || ''}`}>
-        {/* Preserve property filters as hidden inputs */}
-        {Object.entries(resolvedParams)
-          .filter(([key]) => key.startsWith('prop.'))
-          .map(([key, value]) => (
-            <input key={key} type="hidden" name={key} value={value || ''} />
-          ))
-        }
-        <div className="card-cannon p-4">
-          <div className="flex flex-col md:flex-row gap-3">
-            {/* Source Select */}
-            <div className="relative md:w-48">
-              <select
-                name="source"
-                defaultValue={resolvedParams.source || ''}
-                className="select-cannon w-full appearance-none pr-10"
-              >
-                <option value="">All Sources</option>
-                {sources.map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" />
+        {error ? (
+          <div className="card-cannon border-cannon-critical/50 bg-cannon-critical/10 p-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-cannon-critical flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-medium text-cannon-critical">Error loading dashboard</h3>
+                <p className="text-text-secondary text-sm mt-1">{error}</p>
+              </div>
             </div>
+          </div>
+        ) : (
+          <>
+            {/* Alert Banner */}
+            <AlertBanner firingAlerts={firingAlerts} totalConfigured={totalAlerts} />
 
-            {/* Level Select */}
-            <div className="relative md:w-44">
-              <select
-                name="level"
-                defaultValue={resolvedParams.level || ''}
-                className="select-cannon w-full appearance-none pr-10"
-              >
-                <option value="">All Levels</option>
-                {levels.map(l => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted pointer-events-none" />
-            </div>
+            {/* Metrics Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+              <MetricCard
+                icon={Activity}
+                label="Logs per minute"
+                value={formatNumber(metrics.logs_per_minute)}
+                trend={{ value: trend.trend_percent, label: 'vs last hour' }}
+                sparkline={logsSparkline}
+                color="fire"
+              />
 
-            {/* Search Input */}
-            <div className="relative flex-grow">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-              <input
-                type="text"
-                name="search"
-                placeholder="Search messages..."
-                defaultValue={resolvedParams.search || ''}
-                className="input-cannon pl-10 w-full"
+              <MetricCard
+                icon={FileText}
+                label="Logs today (24h)"
+                value={formatNumber(metrics.total_logs_24h)}
+                secondaryText={`${formatNumber(metrics.total_errors_24h)} errors (${metrics.error_rate_24h}%)`}
+                color="fire"
+              />
+
+              <MetricCard
+                icon={Server}
+                label="Active services"
+                value={metrics.active_services}
+                secondaryText={metrics.services_with_errors > 0 ? `${metrics.services_with_errors} with errors` : undefined}
+                secondaryLink={metrics.services_with_errors > 0 ? '#services' : undefined}
+                color="tracer"
+              />
+
+              <MetricCard
+                icon={Percent}
+                label="Error rate (24h)"
+                value={`${metrics.error_rate_24h}%`}
+                sparkline={errorRateSparkline}
+                color={errorRateColor}
               />
             </div>
 
-            {/* Submit Button */}
-            <button
-              type="submit"
-              className="btn-cannon whitespace-nowrap"
-            >
-              <Search className="w-4 h-4 md:hidden" />
-              <span className="hidden md:inline">Search Logs</span>
-            </button>
+            {/* Two Column Layout */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Services Section - takes 2 columns */}
+              <div className="lg:col-span-2" id="services">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                    <Server className="w-5 h-5 text-cannon-fire" />
+                    Top Services by Errors
+                  </h2>
+                  <Link
+                    href="/services"
+                    className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
+                  >
+                    View all <ChevronRight className="w-4 h-4" />
+                  </Link>
+                </div>
 
-            {/* Save Query Button */}
-            <Suspense fallback={null}>
-              <SaveQueryButton />
-            </Suspense>
-          </div>
-        </div>
-      </form>
+                {topServices.length === 0 ? (
+                  <div className="card-cannon p-8 text-center">
+                    <div className="w-16 h-16 rounded-full bg-cannon-steel flex items-center justify-center mx-auto mb-4">
+                      <Server className="w-8 h-8 text-text-muted" />
+                    </div>
+                    <h3 className="text-lg font-medium text-text-primary mb-2">No services found</h3>
+                    <p className="text-text-secondary text-sm">
+                      Start sending logs to see service stats here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="card-cannon overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-cannon-steel">
+                          <tr className="text-left text-text-secondary text-sm">
+                            <th className="px-4 py-3 font-medium">Service</th>
+                            <th className="px-4 py-3 text-right font-medium">Logs (24h)</th>
+                            <th className="px-4 py-3 text-right font-medium">Errors</th>
+                            <th className="px-4 py-3 text-right font-medium">Error Rate</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {topServices.map(s => (
+                            <tr key={s.source} className="border-t border-cannon-graphite hover:bg-cannon-steel/50 transition-colors">
+                              <td className="px-4 py-3">
+                                <Link
+                                  href={`/logs?source=${encodeURIComponent(s.source)}`}
+                                  className="text-text-primary font-medium font-mono hover:text-cannon-fire transition-colors"
+                                >
+                                  {s.source}
+                                </Link>
+                              </td>
+                              <td className="px-4 py-3 text-right text-text-code font-mono tabular-nums">
+                                {Number(s.total_count).toLocaleString()}
+                              </td>
+                              <td className="px-4 py-3 text-right text-cannon-critical font-mono tabular-nums">
+                                {Number(s.error_count).toLocaleString()}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                <div className="flex items-center justify-end gap-2">
+                                  <div className="w-16 h-2 bg-cannon-graphite rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all ${Number(s.error_rate) > 5 ? 'bg-cannon-critical' : 'bg-cannon-tracer'}`}
+                                      style={{ width: `${Math.min(Number(s.error_rate), 100)}%` }}
+                                    />
+                                  </div>
+                                  <span className={`font-mono tabular-nums text-sm ${Number(s.error_rate) > 5 ? 'text-cannon-critical' : 'text-text-code'}`}>
+                                    {s.error_rate}%
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-      {/* Active Filters */}
-      <Suspense fallback={null}>
-        <FilterBar />
-      </Suspense>
+              {/* Quick Access Section - takes 1 column */}
+              <div className="space-y-6">
+                {/* Saved Queries */}
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                      <Search className="w-5 h-5 text-cannon-fire" />
+                      Saved Queries
+                    </h2>
+                    <Link
+                      href="/queries"
+                      className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
+                    >
+                      View all <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </div>
 
-      {/* Results */}
-      {error ? (
-        <div className="card-cannon border-cannon-critical/50 bg-cannon-critical/10 p-4">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-cannon-critical flex-shrink-0 mt-0.5" />
-            <div>
-              <h3 className="font-medium text-cannon-critical">Error loading logs</h3>
-              <p className="text-text-secondary text-sm mt-1">{error}</p>
+                  <div className="card-cannon divide-y divide-cannon-graphite">
+                    {savedQueries.length === 0 ? (
+                      <div className="p-4 text-center text-text-secondary text-sm">
+                        No saved queries yet
+                      </div>
+                    ) : (
+                      savedQueries.map(query => (
+                        <Link
+                          key={query.id}
+                          href={buildQueryUrl(query)}
+                          className="block px-4 py-3 hover:bg-cannon-steel/50 transition-colors"
+                        >
+                          <div className="text-text-primary font-medium text-sm truncate">
+                            {query.name}
+                          </div>
+                          {query.description && (
+                            <div className="text-text-muted text-xs truncate mt-0.5">
+                              {query.description}
+                            </div>
+                          )}
+                        </Link>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Dashboards */}
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
+                      <LayoutDashboard className="w-5 h-5 text-cannon-fire" />
+                      Dashboards
+                    </h2>
+                    <Link
+                      href="/dashboards"
+                      className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
+                    >
+                      View all <ChevronRight className="w-4 h-4" />
+                    </Link>
+                  </div>
+
+                  <div className="card-cannon divide-y divide-cannon-graphite">
+                    {dashboards.length === 0 ? (
+                      <div className="p-4 text-center text-text-secondary text-sm">
+                        No dashboards yet
+                      </div>
+                    ) : (
+                      dashboards.map(dashboard => (
+                        <Link
+                          key={dashboard.id}
+                          href={`/dashboards/${dashboard.name}`}
+                          className="block px-4 py-3 hover:bg-cannon-steel/50 transition-colors"
+                        >
+                          <div className="text-text-primary font-medium text-sm truncate">
+                            {dashboard.name}
+                          </div>
+                          {dashboard.description && (
+                            <div className="text-text-muted text-xs truncate mt-0.5">
+                              {dashboard.description}
+                            </div>
+                          )}
+                        </Link>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      ) : (
-        <LogExplorer initialLogs={logs} />
-      )}
-    </div>
+          </>
+        )}
+      </div>
     </AuthGate>
   )
 }

@@ -917,3 +917,142 @@ export async function testAlertQuery(query: string): Promise<Record<string, unkn
 
   return queryClickHouse<Record<string, unknown>>(query);
 }
+
+// Landing Page Metrics
+
+export interface CurrentMetrics {
+  logs_per_minute: number;
+  total_logs_24h: number;
+  total_errors_24h: number;
+  error_rate_24h: number;
+  active_services: number;
+  services_with_errors: number;
+}
+
+export async function getCurrentMetrics(): Promise<CurrentMetrics> {
+  const sql = `
+    SELECT
+      (SELECT count(*) FROM logs.events WHERE timestamp > now() - INTERVAL 1 MINUTE) as logs_per_minute,
+      count(*) as total_logs_24h,
+      countIf(level IN ('Error', 'Fatal')) as total_errors_24h,
+      if(count(*) > 0, round(countIf(level IN ('Error', 'Fatal')) * 100.0 / count(*), 2), 0) as error_rate_24h,
+      uniqExact(source) as active_services,
+      uniqExactIf(source, level IN ('Error', 'Fatal')) as services_with_errors
+    FROM logs.events
+    WHERE timestamp > now() - INTERVAL 24 HOUR
+  `;
+
+  const results = await queryClickHouse<CurrentMetrics>(sql);
+  return results[0] || {
+    logs_per_minute: 0,
+    total_logs_24h: 0,
+    total_errors_24h: 0,
+    error_rate_24h: 0,
+    active_services: 0,
+    services_with_errors: 0
+  };
+}
+
+export interface HourTrend {
+  current_hour_count: number;
+  previous_hour_count: number;
+  trend_percent: number;
+}
+
+export async function getHourOverHourTrend(): Promise<HourTrend> {
+  const sql = `
+    SELECT
+      countIf(timestamp > now() - INTERVAL 1 HOUR) as current_hour_count,
+      countIf(timestamp <= now() - INTERVAL 1 HOUR AND timestamp > now() - INTERVAL 2 HOUR) as previous_hour_count,
+      if(
+        countIf(timestamp <= now() - INTERVAL 1 HOUR AND timestamp > now() - INTERVAL 2 HOUR) > 0,
+        round(
+          (countIf(timestamp > now() - INTERVAL 1 HOUR) - countIf(timestamp <= now() - INTERVAL 1 HOUR AND timestamp > now() - INTERVAL 2 HOUR))
+          * 100.0 / countIf(timestamp <= now() - INTERVAL 1 HOUR AND timestamp > now() - INTERVAL 2 HOUR),
+          1
+        ),
+        0
+      ) as trend_percent
+    FROM logs.events
+    WHERE timestamp > now() - INTERVAL 2 HOUR
+  `;
+
+  const results = await queryClickHouse<HourTrend>(sql);
+  return results[0] || {
+    current_hour_count: 0,
+    previous_hour_count: 0,
+    trend_percent: 0
+  };
+}
+
+export interface ErrorRatePoint {
+  minute: string;
+  error_rate: number;
+}
+
+export async function getErrorRateTimeSeries(minutes: number = 60): Promise<ErrorRatePoint[]> {
+  const sql = `
+    SELECT
+      formatDateTime(toStartOfMinute(timestamp), '%Y-%m-%d %H:%i:%S') as minute,
+      if(count(*) > 0, round(countIf(level IN ('Error', 'Fatal')) * 100.0 / count(*), 2), 0) as error_rate
+    FROM logs.events
+    WHERE timestamp > now() - INTERVAL ${minutes} MINUTE
+    GROUP BY toStartOfMinute(timestamp)
+    ORDER BY toStartOfMinute(timestamp)
+  `;
+
+  return queryClickHouse<ErrorRatePoint>(sql);
+}
+
+export interface FiringAlert {
+  id: string;
+  name: string;
+  description: string;
+  last_triggered_at: string;
+  minutes_ago: number;
+}
+
+export async function getFiringAlerts(): Promise<FiringAlert[]> {
+  // An alert is considered "firing" if it was triggered within its cooldown period
+  // This avoids re-evaluating all alert queries on every page load
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      description,
+      formatDateTime(last_triggered_at, '%Y-%m-%d %H:%i:%S') as last_triggered_at,
+      dateDiff('minute', last_triggered_at, now()) as minutes_ago
+    FROM logs.alerts
+    WHERE enabled = 1
+      AND last_triggered_at > now() - toIntervalSecond(cooldown_seconds)
+    ORDER BY last_triggered_at DESC
+  `;
+
+  return queryClickHouse<FiringAlert>(sql);
+}
+
+export interface TopService {
+  source: string;
+  total_count: number;
+  error_count: number;
+  error_rate: number;
+  last_log: string;
+}
+
+export async function getTopServicesByErrors(limit: number = 5): Promise<TopService[]> {
+  const sql = `
+    SELECT
+      source,
+      count(*) as total_count,
+      countIf(level IN ('Error', 'Fatal')) as error_count,
+      if(count(*) > 0, round(countIf(level IN ('Error', 'Fatal')) * 100.0 / count(*), 2), 0) as error_rate,
+      formatDateTime(max(timestamp), '%Y-%m-%d %H:%i:%S') as last_log
+    FROM logs.events
+    WHERE timestamp > now() - INTERVAL 24 HOUR
+    GROUP BY source
+    ORDER BY error_count DESC
+    LIMIT ${limit}
+  `;
+
+  return queryClickHouse<TopService>(sql);
+}

@@ -74,7 +74,7 @@ export default function QueriesPage() {
     }
 
     const queryString = params.toString();
-    return queryString ? `/?${queryString}` : '/';
+    return queryString ? `/logs?${queryString}` : '/logs';
   }
 
   if (loading) {

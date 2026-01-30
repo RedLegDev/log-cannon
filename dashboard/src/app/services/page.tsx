@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { getServiceStats, getTimeSeries } from '@/lib/clickhouse'
 import { FileText, AlertTriangle, Server, Clock, AlertCircle } from 'lucide-react'
 
@@ -141,7 +142,12 @@ export default async function ServicesPage() {
                         return (
                           <tr key={s.source} className="border-t border-cannon-graphite hover:bg-cannon-steel/50 transition-colors">
                             <td className="px-4 py-3">
-                              <span className="text-text-primary font-medium font-mono">{s.source}</span>
+                              <Link
+                                href={`/logs?source=${encodeURIComponent(s.source)}`}
+                                className="text-text-primary font-medium font-mono hover:text-cannon-fire transition-colors"
+                              >
+                                {s.source}
+                              </Link>
                             </td>
                             <td className="px-4 py-3 text-right text-text-code font-mono tabular-nums">
                               {Number(s.total_count).toLocaleString()}
