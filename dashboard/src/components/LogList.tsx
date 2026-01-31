@@ -80,8 +80,8 @@ export function LogList({ logs, highlightedLogId }: LogListProps) {
     }
   }
 
-  // Check if highlighted log exists in current logs
-  const highlightedLogExists = highlightedLogId ? logs.some(log => log.id === highlightedLogId) : true
+  // Check if highlighted log exists in current logs (only check if we have logs loaded)
+  const highlightedLogExists = !highlightedLogId || logs.length === 0 || logs.some(log => log.id === highlightedLogId)
 
   const toggleExpanded = (id: string) => {
     setExpandedId(current => current === id ? null : id)
