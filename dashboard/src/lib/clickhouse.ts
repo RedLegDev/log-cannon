@@ -114,6 +114,27 @@ function isNumericValue(value: string): boolean {
   return !isNaN(Number(value)) && value.trim() !== '';
 }
 
+export async function getLogById(id: string): Promise<LogEvent | null> {
+  const sql = `
+    SELECT
+      toString(e.id) as id,
+      formatDateTime(e.timestamp, '%Y-%m-%d %H:%i:%S') as timestamp,
+      e.level,
+      e.message_template,
+      e.message,
+      e.exception,
+      e.event_type,
+      e.source,
+      e.properties
+    FROM logs.events e
+    WHERE e.id = '${escapeString(id)}'
+    LIMIT 1
+  `;
+
+  const results = await queryClickHouse<LogEvent>(sql);
+  return results.length > 0 ? results[0] : null;
+}
+
 export async function getRecentLogs(
   source?: string,
   level?: string,

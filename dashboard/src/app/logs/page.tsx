@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import { auth } from '@clerk/nextjs/server'
-import { getRecentLogs, getSources, LogEvent, PropertyFilter, parseOperatorFromValue, TimeFilter } from '@/lib/clickhouse'
+import { getRecentLogs, getLogById, getSources, LogEvent, PropertyFilter, parseOperatorFromValue, TimeFilter } from '@/lib/clickhouse'
 import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
@@ -87,6 +87,18 @@ export default async function LogExplorerPage({
         ),
         getSources(timeFilter)
       ])
+
+      // If a specific log ID is requested, ensure it's included in the results
+      if (resolvedParams.id) {
+        const logExists = logs.some(log => log.id === resolvedParams.id)
+        if (!logExists) {
+          const specificLog = await getLogById(resolvedParams.id)
+          if (specificLog) {
+            // Prepend the specific log so it's visible at the top
+            logs = [specificLog, ...logs]
+          }
+        }
+      }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to fetch logs'
     }
