@@ -17,9 +17,10 @@ interface LogEvent {
 
 interface LogExplorerProps {
   initialLogs: LogEvent[]
+  highlightedLogId?: string | null
 }
 
-export function LogExplorer({ initialLogs }: LogExplorerProps) {
+export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps) {
   const searchParams = useSearchParams()
   const [logs, setLogs] = useState<LogEvent[]>(initialLogs)
   const [isTailing, setIsTailing] = useState(false)
@@ -207,7 +208,7 @@ export function LogExplorer({ initialLogs }: LogExplorerProps) {
         </button>
       )}
 
-      <LogList logs={logsWithNewFlag} />
+      <LogList logs={logsWithNewFlag} highlightedLogId={highlightedLogId} />
     </div>
   )
 }

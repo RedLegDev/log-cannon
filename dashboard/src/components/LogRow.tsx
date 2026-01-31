@@ -2,8 +2,116 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ChevronRight, ChevronDown, Check, X, AlertTriangle, Columns, MoreVertical } from 'lucide-react'
+import { ChevronRight, ChevronDown, Check, X, AlertTriangle, Columns, MoreVertical, Copy, FileText, Link } from 'lucide-react'
 import { ColumnConfig } from '@/hooks/useColumns'
+
+// ===== Expandable Text Component =====
+
+interface ExpandableTextProps {
+  text: string
+  threshold?: number
+  className?: string
+  preformatted?: boolean
+}
+
+function ExpandableText({ text, threshold = 200, className = '', preformatted = false }: ExpandableTextProps) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const shouldTruncate = text.length > threshold
+
+  if (!shouldTruncate) {
+    return preformatted ? (
+      <pre className={className}>{text}</pre>
+    ) : (
+      <span className={className}>{text}</span>
+    )
+  }
+
+  const displayText = isExpanded ? text : text.slice(0, threshold - 50) + '...'
+  const content = preformatted ? (
+    <pre className={className}>{displayText}</pre>
+  ) : (
+    <span className={className}>{displayText}</span>
+  )
+
+  return (
+    <span className="inline">
+      {content}
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          setIsExpanded(!isExpanded)
+        }}
+        className="ml-2 text-cannon-tracer hover:text-cannon-glow text-xs font-medium transition-colors"
+      >
+        {isExpanded ? 'Show less' : 'Show more'}
+      </button>
+    </span>
+  )
+}
+
+// ===== Copy Toast Component =====
+
+interface CopyToastProps {
+  message: string
+  onDone: () => void
+}
+
+function CopyToast({ message, onDone }: CopyToastProps) {
+  useEffect(() => {
+    const timer = setTimeout(onDone, 2000)
+    return () => clearTimeout(timer)
+  }, [onDone])
+
+  return (
+    <span className="text-cannon-tracer text-xs font-medium animate-fade-in">
+      {message}
+    </span>
+  )
+}
+
+// ===== Format Log as Text Helper =====
+
+function formatLogAsText(log: {
+  timestamp: string
+  level: string
+  message: string
+  source: string
+  exception?: string
+  properties: string
+}): string {
+  const lines: string[] = []
+
+  // Header line
+  lines.push(`[${log.timestamp}] ${log.level.toUpperCase()} - ${log.message}`)
+  lines.push('')
+
+  // Properties
+  try {
+    const props = JSON.parse(log.properties)
+    if (props && typeof props === 'object') {
+      Object.entries(props)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([key, value]) => {
+          if (typeof value === 'object') {
+            lines.push(`${key}: ${JSON.stringify(value, null, 2)}`)
+          } else {
+            lines.push(`${key}: ${value}`)
+          }
+        })
+    }
+  } catch {
+    // Skip properties if can't parse
+  }
+
+  // Exception
+  if (log.exception) {
+    lines.push('')
+    lines.push('Exception:')
+    lines.push(log.exception)
+  }
+
+  return lines.join('\n')
+}
 
 interface LogRowProps {
   log: {
@@ -135,12 +243,9 @@ function formatValue(value: unknown): React.ReactNode {
       )
     }
 
-    if (value.length > 100) {
+    if (value.length > 200) {
       return (
-        <span title={value} className="text-text-code">
-          {value.slice(0, 100)}
-          <span className="text-text-muted">...</span>
-        </span>
+        <ExpandableText text={value} threshold={200} className="text-text-code" />
       )
     }
 
@@ -331,6 +436,103 @@ function PropertyMenu({ property, value, isColumn, onToggleColumn, onFilter, isF
   )
 }
 
+// ===== Action Bar Component =====
+
+interface ActionBarProps {
+  log: {
+    id: string
+    timestamp: string
+    level: string
+    message: string
+    source: string
+    exception?: string
+    properties: string
+  }
+}
+
+function ActionBar({ log }: ActionBarProps) {
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+
+  const copyAsJson = async () => {
+    try {
+      const logData = {
+        id: log.id,
+        timestamp: log.timestamp,
+        level: log.level,
+        message: log.message,
+        source: log.source,
+        exception: log.exception,
+        properties: JSON.parse(log.properties),
+      }
+      await navigator.clipboard.writeText(JSON.stringify(logData, null, 2))
+      setToastMessage('Copied as JSON')
+    } catch {
+      setToastMessage('Failed to copy')
+    }
+  }
+
+  const copyAsText = async () => {
+    try {
+      await navigator.clipboard.writeText(formatLogAsText(log))
+      setToastMessage('Copied as text')
+    } catch {
+      setToastMessage('Failed to copy')
+    }
+  }
+
+  const copyShareLink = async () => {
+    try {
+      const url = `${window.location.origin}${window.location.pathname}?id=${log.id}`
+      await navigator.clipboard.writeText(url)
+      setToastMessage('Link copied')
+    } catch {
+      setToastMessage('Failed to copy')
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 border-b border-cannon-graphite bg-cannon-steel/30">
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          copyAsJson()
+        }}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-cannon-steel rounded transition-colors"
+        title="Copy as JSON"
+      >
+        <Copy size={14} />
+        <span>JSON</span>
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          copyAsText()
+        }}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-cannon-steel rounded transition-colors"
+        title="Copy as formatted text"
+      >
+        <FileText size={14} />
+        <span>Text</span>
+      </button>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          copyShareLink()
+        }}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-text-primary hover:bg-cannon-steel rounded transition-colors"
+        title="Copy share link"
+      >
+        <Link size={14} />
+        <span>Share</span>
+      </button>
+
+      {toastMessage && (
+        <CopyToast message={toastMessage} onDone={() => setToastMessage(null)} />
+      )}
+    </div>
+  )
+}
+
 export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggleColumn, hasColumn }: LogRowProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -419,15 +621,18 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
 
       {isExpanded && (
         <div className="border-t border-cannon-graphite bg-cannon-black/50 animate-slide-down">
+          {/* Action bar */}
+          <ActionBar log={log} />
+
           {log.exception && (
             <div className="border-b border-cannon-graphite">
               <div className="px-4 py-2 bg-red-900/20 border-b border-red-900/30 flex items-center gap-2">
                 <AlertTriangle className="text-cannon-critical" size={14} />
                 <span className="text-red-400 text-xs font-semibold uppercase tracking-wide">Exception</span>
               </div>
-              <pre className="p-4 text-red-400 text-xs font-mono overflow-x-auto scrollbar-hide">
-                {log.exception}
-              </pre>
+              <div className="p-4 text-red-400 text-xs font-mono overflow-x-auto scrollbar-hide whitespace-pre-wrap">
+                <ExpandableText text={log.exception} threshold={500} className="text-red-400" preformatted />
+              </div>
             </div>
           )}
 

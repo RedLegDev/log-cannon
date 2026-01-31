@@ -17,6 +17,7 @@ interface SearchParams {
   time?: string
   from?: string
   to?: string
+  id?: string
   [key: string]: string | undefined
 }
 
@@ -205,7 +206,7 @@ export default async function LogExplorerPage({
           </div>
         </div>
       ) : (
-        <LogExplorer initialLogs={logs} />
+        <LogExplorer initialLogs={logs} highlightedLogId={resolvedParams.id} />
       )}
     </div>
     </AuthGate>

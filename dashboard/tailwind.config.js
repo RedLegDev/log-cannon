@@ -40,6 +40,7 @@ module.exports = {
         'slide-in-left': 'slideInLeft 300ms ease-out',
         'fade-in': 'fadeIn 200ms ease-out',
         'glow-pulse': 'glowPulse 2s ease-in-out infinite',
+        'highlight-glow': 'highlightGlow 3s ease-out forwards',
       },
       keyframes: {
         flash: {
@@ -61,6 +62,11 @@ module.exports = {
         glowPulse: {
           '0%, 100%': { boxShadow: '0 0 20px rgba(255, 77, 42, 0.3)' },
           '50%': { boxShadow: '0 0 30px rgba(255, 77, 42, 0.5)' },
+        },
+        highlightGlow: {
+          '0%': { boxShadow: '0 0 0 2px rgba(0, 212, 170, 0.8), 0 0 20px rgba(0, 212, 170, 0.4)' },
+          '50%': { boxShadow: '0 0 0 2px rgba(0, 212, 170, 0.6), 0 0 15px rgba(0, 212, 170, 0.3)' },
+          '100%': { boxShadow: '0 0 0 0px rgba(0, 212, 170, 0), 0 0 0px rgba(0, 212, 170, 0)' },
         },
       },
       boxShadow: {
