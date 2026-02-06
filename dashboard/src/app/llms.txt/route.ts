@@ -2,498 +2,148 @@ import { getDashboards, getEndpoints, queryClickHouse } from '@/lib/clickhouse';
 
 const STATIC_DOCS = `# Log Cannon - Dashboard Builder
 
-This document describes how to create dashboards for Log Cannon, a log ingestion and visualization system built on ClickHouse.
+> Sub-pages: /llms.txt/api (REST API reference), /llms.txt/logger (logger integration)
+
+Log Cannon is a log ingestion and visualization system built on ClickHouse.
 
 ## Dashboard Schema
 
-A dashboard has a name, description, and config object:
-
 \`\`\`json
-{
-  "name": "my-dashboard",
-  "description": "What this dashboard shows",
-  "config": {
-    "layout": "auto",
-    "widgets": [...]
-  }
-}
+{ "name": "my-dashboard", "description": "What this dashboard shows", "config": { "layout": "auto", "widgets": [...] } }
 \`\`\`
 
-- **name**: URL-safe identifier (used in URLs like /dashboards/my-dashboard)
-- **description**: Human-readable description
+- **name**: URL-safe identifier (used in /dashboards/my-dashboard)
 - **config.layout**: "auto" (responsive grid) or "grid" (manually positioned)
-- **config.widgets**: Array of widget configurations
+- **config.widgets**: Array of widget objects
 
 ## Widget Structure
 
-Each widget requires:
-
 \`\`\`json
-{
-  "id": "unique-widget-id",
-  "type": "stat",
-  "title": "Display Title",
-  "dataSource": { ... },
-  "visualization": { ... }
-}
+{ "id": "unique-id", "type": "stat", "title": "Display Title", "dataSource": { ... }, "visualization": { ... } }
 \`\`\`
 
-- **id**: Unique identifier within the dashboard
 - **type**: One of "stat", "line_chart", "bar_chart", "pie_chart", "doughnut_chart", "scatter_chart", "table"
-- **title**: Display title shown above the widget
-- **dataSource**: Where to get data (required)
-- **visualization**: How to render it (optional, type-specific defaults apply)
+- **dataSource**: Required. Either an endpoint reference or inline SQL.
+- **visualization**: Optional, type-specific defaults apply.
 
-## Data Source Options
+## Data Sources
 
-### Option 1: Reference an existing endpoint
+**Endpoint reference:** \`{ "type": "endpoint", "endpointName": "my-endpoint", "params": { "source": "MyApp" }, "refreshInterval": 30 }\`
 
-\`\`\`json
-{
-  "type": "endpoint",
-  "endpointName": "my-endpoint",
-  "params": { "source": "MyApp" },
-  "refreshInterval": 30
-}
-\`\`\`
+**Inline SQL:** \`{ "type": "inline", "sql": "SELECT count() as value FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR", "refreshInterval": 60 }\`
 
-### Option 2: Inline SQL query
-
-\`\`\`json
-{
-  "type": "inline",
-  "sql": "SELECT count() as value FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR",
-  "refreshInterval": 60
-}
-\`\`\`
-
-- **refreshInterval**: Optional, seconds between auto-refresh (omit for no auto-refresh)
-- Inline SQL must be SELECT statements only (security restriction)
+refreshInterval is optional (seconds). Inline SQL must be SELECT only.
 
 ## Widget Types
 
-### stat - Single Metric Display
+### stat
 
-Shows a single number prominently. Best for KPIs and counts.
-
-\`\`\`json
-{
-  "id": "error-count",
-  "type": "stat",
-  "title": "Errors (24h)",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT count() as value FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR"
-  },
-  "visualization": {
-    "valueField": "value",
-    "format": "number"
-  }
-}
-\`\`\`
-
-Visualization options:
-- **valueField**: Which result field to display (default: "value")
-- **format**: "number" (with commas), "percent" (adds %), "duration" (formats as time)
-
-### line_chart - Time Series
-
-Shows values over time. Best for trends and patterns. Supports multiple data series on the same chart.
-
-#### Single Series Example
+Single metric display. Visualization: **valueField** (default "value"), **format** ("number", "percent", "duration").
 
 \`\`\`json
 {
-  "id": "errors-over-time",
-  "type": "line_chart",
-  "title": "Errors Over Time",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT toStartOfMinute(timestamp) as time, count() as errors FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 1 HOUR GROUP BY time ORDER BY time"
-  },
-  "visualization": {
-    "xField": "time",
-    "yField": "errors"
-  }
+  "id": "error-count", "type": "stat", "title": "Errors (24h)",
+  "dataSource": { "type": "inline", "sql": "SELECT count() as value FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR" },
+  "visualization": { "valueField": "value", "format": "number" }
 }
 \`\`\`
 
-#### Multi-Series Example
+### line_chart
 
-Compare multiple metrics on the same chart by using an array for yField:
+Time series. Visualization: **xField**, **yField** (string or array for multi-series), **colors** (optional array).
+
+For multi-series, use an array for yField (e.g. \`["errors", "warnings"]\`) with \`countIf()\` in your query.
 
 \`\`\`json
 {
-  "id": "events-by-level",
-  "type": "line_chart",
-  "title": "Events by Level Over Time",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT toStartOfMinute(timestamp) as time, countIf(level = 'Error') as errors, countIf(level = 'Warning') as warnings, countIf(level = 'Information') as info FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR GROUP BY time ORDER BY time"
-  },
-  "visualization": {
-    "xField": "time",
-    "yField": ["errors", "warnings", "info"],
-    "colors": ["#FF4D2A", "#F59E0B", "#3B82F6"]
-  }
+  "id": "errors-over-time", "type": "line_chart", "title": "Errors Over Time",
+  "dataSource": { "type": "inline", "sql": "SELECT toStartOfMinute(timestamp) as time, count() as errors FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 1 HOUR GROUP BY time ORDER BY time" },
+  "visualization": { "xField": "time", "yField": "errors" }
 }
 \`\`\`
 
-Visualization options:
-- **xField**: Field for X axis (typically time)
-- **yField**: Field(s) for Y axis - string for single line, or array of strings for multiple lines
-- **colors**: Optional array of colors for lines (defaults to a preset palette)
+### bar_chart
 
-Tips for multi-series charts:
-- Use \`countIf(condition)\` to create multiple metrics in one query
-- Each field in yField array becomes a separate line
-- Legend appears automatically when multiple series are present
-- Colors cycle through palette if fewer colors than series provided
-
-### bar_chart - Categorical Comparison
-
-Shows values across categories. Best for comparisons.
+Categorical comparison. Visualization: **xField**, **yField**, **colors** (optional).
 
 \`\`\`json
 {
-  "id": "errors-by-source",
-  "type": "bar_chart",
-  "title": "Errors by Service",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT source, count() as errors FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY errors DESC LIMIT 10"
-  },
-  "visualization": {
-    "xField": "source",
-    "yField": "errors"
-  }
+  "id": "errors-by-source", "type": "bar_chart", "title": "Errors by Service",
+  "dataSource": { "type": "inline", "sql": "SELECT source, count() as errors FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY errors DESC LIMIT 10" },
+  "visualization": { "xField": "source", "yField": "errors" }
 }
 \`\`\`
 
-Visualization options:
-- **xField**: Field for categories (X axis)
-- **yField**: Field for values (Y axis)
-- **colors**: Optional array of colors for bars
+### pie_chart / doughnut_chart
 
-### pie_chart - Proportional Distribution
-
-Shows data as proportional slices. Best for showing composition and relative sizes.
+Proportional slices (doughnut_chart is identical but with a hollow center). Visualization: **xField** (labels), **yField** (values, single field), **colors** (optional). Limit to 8 slices.
 
 \`\`\`json
 {
-  "id": "errors-by-source",
-  "type": "pie_chart",
-  "title": "Errors by Source",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT source as name, count() as count FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY count DESC LIMIT 8"
-  },
-  "visualization": {
-    "xField": "name",
-    "yField": "count"
-  }
+  "id": "errors-by-source", "type": "pie_chart", "title": "Errors by Source",
+  "dataSource": { "type": "inline", "sql": "SELECT source as name, count() as count FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY count DESC LIMIT 8" },
+  "visualization": { "xField": "name", "yField": "count" }
 }
 \`\`\`
 
-Visualization options:
-- **xField**: Field for slice labels (e.g., category names)
-- **yField**: Field for slice values (must be a single field, not an array)
-- **colors**: Optional array of colors for slices (defaults to a preset palette)
+### scatter_chart
 
-Tips for pie charts:
-- Limit to 8 or fewer slices for readability
-- Use ORDER BY and LIMIT in your query to show top categories
-- Zero values are automatically filtered out
-- Labels show both name and percentage
-
-### doughnut_chart - Proportional Distribution with Center Hole
-
-Like a pie chart but with a hollow center. Best for showing composition when you want space for a center label or cleaner aesthetic.
+Two numeric variables. Visualization: **xField**, **yField** (both numeric, single field), **colors** (optional). Use LIMIT 500-1000.
 
 \`\`\`json
 {
-  "id": "logs-by-level",
-  "type": "doughnut_chart",
-  "title": "Logs by Level",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT level as name, count() as count FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR GROUP BY level ORDER BY count DESC"
-  },
-  "visualization": {
-    "xField": "name",
-    "yField": "count"
-  }
+  "id": "response-time-vs-size", "type": "scatter_chart", "title": "Response Time vs Payload Size",
+  "dataSource": { "type": "inline", "sql": "SELECT JSONExtractFloat(properties, 'PayloadSize') as size, JSONExtractFloat(properties, 'ResponseTime') as time FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR AND JSONHas(properties, 'PayloadSize') LIMIT 500" },
+  "visualization": { "xField": "size", "yField": "time" }
 }
 \`\`\`
 
-Visualization options:
-- **xField**: Field for slice labels (e.g., category names)
-- **yField**: Field for slice values (must be a single field, not an array)
-- **colors**: Optional array of colors for slices (defaults to a preset palette)
+### table
 
-### scatter_chart - Correlation Analysis
-
-Shows relationship between two numeric variables. Best for identifying patterns, outliers, and correlations in log data.
+Tabular data. Visualization: **columns** (array of field names), **sortBy** (default sort field).
 
 \`\`\`json
 {
-  "id": "response-time-vs-size",
-  "type": "scatter_chart",
-  "title": "Response Time vs Payload Size",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT JSONExtractFloat(properties, 'PayloadSize') as size, JSONExtractFloat(properties, 'ResponseTime') as time FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR AND JSONHas(properties, 'PayloadSize') LIMIT 500"
-  },
-  "visualization": {
-    "xField": "size",
-    "yField": "time"
-  }
+  "id": "recent-errors", "type": "table", "title": "Recent Errors",
+  "dataSource": { "type": "inline", "sql": "SELECT formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as time, source, message FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 1 HOUR ORDER BY timestamp DESC LIMIT 20" },
+  "visualization": { "columns": ["time", "source", "message"], "sortBy": "time" }
 }
 \`\`\`
 
-Visualization options:
-- **xField**: Field for X axis (must be numeric)
-- **yField**: Field for Y axis (must be numeric, single field only)
-- **colors**: Optional array with single color for points
+## Data Model (logs.events)
 
-Tips for scatter charts:
-- Both xField and yField must contain numeric values
-- Use LIMIT to prevent overloading with too many points (500-1000 max recommended)
-- Great for analyzing: response times vs request size, error rates vs load, memory vs CPU usage
-
-### table - Tabular Data
-
-Shows data in rows and columns. Best for detailed views.
-
-\`\`\`json
-{
-  "id": "recent-errors",
-  "type": "table",
-  "title": "Recent Errors",
-  "dataSource": {
-    "type": "inline",
-    "sql": "SELECT formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as time, source, message FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 1 HOUR ORDER BY timestamp DESC LIMIT 20"
-  },
-  "visualization": {
-    "columns": ["time", "source", "message"],
-    "sortBy": "time"
-  }
-}
-\`\`\`
-
-Visualization options:
-- **columns**: Which fields to display (in order)
-- **sortBy**: Default sort field
-
-## Data Model
-
-### Events Table (logs.events)
-
-| Column           | Type              | Description                                    |
-|------------------|-------------------|------------------------------------------------|
-| id               | UUID              | Unique event identifier                        |
-| timestamp        | DateTime64(3)     | When the event occurred                        |
-| level            | String            | Log level (Information, Warning, Error, Debug) |
-| message_template | String            | Template with placeholders                     |
-| message          | String            | Rendered message                               |
-| exception        | String            | Exception details if any                       |
-| event_type       | String            | Event classification                           |
-| source           | String            | Application/service name                       |
-| properties       | String            | JSON object with structured data               |
+| Column | Type | Description |
+|---|---|---|
+| id | UUID | Unique event identifier |
+| timestamp | DateTime64(3) | When the event occurred |
+| level | String | Information, Warning, Error, Debug |
+| message_template | String | Template with placeholders |
+| message | String | Rendered message |
+| exception | String | Exception details |
+| event_type | String | Event classification |
+| source | String | Application/service name |
+| properties | String | JSON object with structured data |
 
 ### Querying Properties
 
-The properties column contains a JSON string with structured data. Use ClickHouse JSON functions:
+\`\`\`sql
+JSONExtractString(properties, 'key')         -- string value
+JSONExtractFloat(properties, 'key')          -- numeric value
+JSONExtractString(properties, 'outer', 'inner') -- nested
+JSONHas(properties, 'key')                   -- existence check
+\`\`\`
+
+### Common Patterns
 
 \`\`\`sql
--- Extract string value
-JSONExtractString(properties, 'key')
-
--- Extract numeric value
-JSONExtractFloat(properties, 'key')
-
--- Nested extraction
-JSONExtractString(properties, 'outer', 'inner')
-
--- Check if property exists
-JSONHas(properties, 'key')
+WHERE source = 'MyApp'                                    -- filter by source
+WHERE level = 'Error'                                     -- filter by level
+WHERE timestamp > now() - INTERVAL 24 HOUR                -- time range
+WHERE message ILIKE '%error%'                             -- search messages
+GROUP BY toStartOfMinute(timestamp)                       -- time buckets (also: toStartOfHour, toStartOfDay)
+WHERE JSONExtractString(properties, 'Environment') = 'Production'  -- property filter
+formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as time   -- time formatting
 \`\`\`
-
-### Common Query Patterns
-
-\`\`\`sql
--- Filter by source
-WHERE source = 'MyApp'
-
--- Filter by level
-WHERE level = 'Error'
-
--- Time ranges
-WHERE timestamp > now() - INTERVAL 24 HOUR
-WHERE timestamp > now() - INTERVAL 1 HOUR
-WHERE timestamp > today()
-
--- Search messages
-WHERE message LIKE '%timeout%'
-WHERE message ILIKE '%error%'  -- case insensitive
-
--- Group by time buckets
-GROUP BY toStartOfMinute(timestamp)
-GROUP BY toStartOfHour(timestamp)
-GROUP BY toStartOfDay(timestamp)
-
--- Filter by property value
-WHERE JSONExtractString(properties, 'Environment') = 'Production'
-WHERE JSONExtractFloat(properties, 'Duration') > 1000
-\`\`\`
-
-### Time Formatting
-
-Use formatDateTime for display:
-\`\`\`sql
-formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as formatted_time
-\`\`\`
-
-## API v1 - Programmatic Access
-
-Log Cannon provides a REST API for programmatic access. Authenticate with an API key.
-
-### Authentication
-
-Include your API key in requests:
-
-\`\`\`bash
-# Header method (preferred)
-curl -H "X-Api-Key: your-key-here" https://your-instance/api/v1/logs
-
-# Bearer token method
-curl -H "Authorization: Bearer your-key-here" https://your-instance/api/v1/logs
-\`\`\`
-
-### Scopes
-
-API keys have permission scopes:
-- **ingest**: Write logs only (default for existing keys)
-- **read**: Query logs, view dashboards/endpoints/queries
-- **write**: Everything in read + create/update/delete resources
-- **admin**: Everything in write + manage API keys
-
-### Endpoints
-
-#### Logs
-
-\`\`\`bash
-# Search logs
-GET /api/v1/logs?source=MyApp&level=Error&search=timeout&limit=100
-
-# Property filters
-GET /api/v1/logs?prop.userId=123&prop.duration=>500
-\`\`\`
-
-#### Query
-
-\`\`\`bash
-# Execute arbitrary SELECT query
-POST /api/v1/query
-Content-Type: application/json
-
-{"sql": "SELECT source, count() as count FROM logs.events GROUP BY source"}
-\`\`\`
-
-#### Dashboards
-
-\`\`\`bash
-GET /api/v1/dashboards              # List all
-GET /api/v1/dashboards/:name        # Get one
-POST /api/v1/dashboards             # Create
-PATCH /api/v1/dashboards/:name      # Update
-DELETE /api/v1/dashboards/:name     # Delete
-\`\`\`
-
-#### Endpoints (Stored Queries)
-
-\`\`\`bash
-GET /api/v1/endpoints               # List all
-GET /api/v1/endpoints/:name?param=value  # Execute with params
-POST /api/v1/endpoints              # Create
-PATCH /api/v1/endpoints/:name       # Update
-DELETE /api/v1/endpoints/:name      # Delete
-\`\`\`
-
-#### Saved Queries
-
-\`\`\`bash
-GET /api/v1/saved-queries           # List all
-POST /api/v1/saved-queries          # Create
-DELETE /api/v1/saved-queries/:id    # Delete
-\`\`\`
-
-#### Alerts
-
-Manage alerting rules that monitor log conditions and send email notifications.
-
-\`\`\`bash
-GET /api/v1/alerts                  # List all alerts
-POST /api/v1/alerts                 # Create new alert
-PATCH /api/v1/alerts                # Update alert (pass id in body)
-DELETE /api/v1/alerts               # Delete alert (pass id in body)
-POST /api/v1/alerts/:id/test        # Test alert query (returns results without triggering)
-\`\`\`
-
-**Create Alert Request:**
-\`\`\`json
-{
-  "name": "High Error Rate",
-  "description": "Triggers when errors exceed threshold",
-  "query": "SELECT count(*) as cnt FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 5 MINUTE",
-  "condition": "cnt > 50",
-  "interval_seconds": 60,
-  "cooldown_seconds": 300,
-  "recipients": ["ops@example.com"],
-  "subject": "[ALERT] High error rate detected"
-}
-\`\`\`
-
-**Alert Fields:**
-- **name**: Human-readable alert name (required)
-- **description**: Optional description of what the alert monitors
-- **query**: SELECT query that returns numeric values for condition evaluation (required)
-- **condition**: Expression like \`cnt > 50\`, \`errors == 0\`, \`total >= 100 && errors > 5\` (required)
-- **interval_seconds**: How often to check (minimum 30 seconds, default 60)
-- **cooldown_seconds**: Minimum time between repeated alerts (default 300)
-- **recipients**: Array of email addresses to notify (required, at least one)
-- **subject**: Email subject line (required)
-
-**Condition Syntax:**
-- Comparisons: \`>\`, \`<\`, \`>=\`, \`<=\`, \`==\`, \`!=\`
-- Logical: \`&&\` (AND), \`||\` (OR)
-- Variables: Use column names from your query (e.g., \`cnt\`, \`errors\`, \`total\`)
-
-**Example Conditions:**
-- \`cnt > 0\` - Trigger if any matching rows
-- \`errors >= 10 && total > 100\` - Compound condition
-- \`cnt == 0\` - Trigger if no logs found (service went quiet)
-
-#### API Keys (admin scope required)
-
-\`\`\`bash
-GET /api/v1/keys                    # List all (keys masked)
-POST /api/v1/keys                   # Create (returns key once)
-PATCH /api/v1/keys/:id              # Update name/scopes/enabled
-DELETE /api/v1/keys/:id             # Revoke
-\`\`\`
-
-### Error Responses
-
-\`\`\`json
-{
-  "error": "error_code",
-  "message": "Human-readable description",
-  "details": { "fields": { "name": "Required field" } }
-}
-\`\`\`
-
-Error codes: \`unauthorized\`, \`forbidden\`, \`not_found\`, \`validation_error\`, \`query_error\`, \`query_timeout\`, \`internal_error\`
 
 `;
 
@@ -614,125 +264,28 @@ export async function GET() {
 
     // Build dynamic sections
     const dynamicDocs = `
-## Available Data (Live)
-
-This section shows what data is currently available in your Log Cannon instance.
+## Live Data
 
 ### Active Sources
-Applications currently sending logs:
-${sources.length > 0 ? sources.map(s => `- ${s}`).join('\n') : '- No sources found in the last 24 hours'}
+${sources.length > 0 ? sources.map(s => `- ${s}`).join('\n') : '- None in last 24 hours'}
 
-### Log Levels in Use
-${levels.length > 0 ? levels.map(l => `- ${l}`).join('\n') : '- No logs found in the last 24 hours'}
+### Log Levels
+${levels.length > 0 ? levels.map(l => `- ${l}`).join('\n') : '- None in last 24 hours'}
 
-### Discovered Property Keys
-Common properties found in recent logs (last hour):
+### Property Keys (last hour)
 ${propertyKeys.length > 0
   ? propertyKeys.map(p => `- **${p.key}**: e.g. "${p.sampleValue}"`).join('\n')
-  : '- No properties discovered (logs may not have structured properties)'}
+  : '- No properties discovered'}
 
 ## Existing Endpoints
 
-These are reusable SQL queries you can reference in widgets by name:
+Reusable SQL queries you can reference in widgets by name:
 
 ${formatEndpoints(endpoints)}
 
-## Example Dashboards
-
-These are dashboards currently configured in the system:
+## Existing Dashboards
 
 ${formatDashboards(dashboards)}
-
-## Tips for Creating Dashboards
-
-1. **Start simple**: Begin with a few stat widgets showing key metrics
-2. **Use existing endpoints**: Reference endpoints when possible for consistency
-3. **Add time context**: Include time-based charts to show trends
-4. **Group related widgets**: Use descriptive titles and logical ordering
-5. **Set refresh intervals**: For real-time monitoring, use 30-60 second refresh
-6. **Test queries first**: Run SQL in ClickHouse or use the Endpoints page to validate queries
-
-## Complete Dashboard Example
-
-Here's a comprehensive example combining multiple widget types:
-
-\`\`\`json
-{
-  "name": "service-overview",
-  "description": "Overview metrics for a specific service",
-  "config": {
-    "layout": "auto",
-    "widgets": [
-      {
-        "id": "total-events",
-        "type": "stat",
-        "title": "Total Events (24h)",
-        "dataSource": {
-          "type": "inline",
-          "sql": "SELECT count() as value FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR",
-          "refreshInterval": 60
-        },
-        "visualization": { "valueField": "value", "format": "number" }
-      },
-      {
-        "id": "error-count",
-        "type": "stat",
-        "title": "Errors (24h)",
-        "dataSource": {
-          "type": "inline",
-          "sql": "SELECT count() as value FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 24 HOUR",
-          "refreshInterval": 60
-        },
-        "visualization": { "valueField": "value", "format": "number" }
-      },
-      {
-        "id": "events-over-time",
-        "type": "line_chart",
-        "title": "Events Over Time",
-        "dataSource": {
-          "type": "inline",
-          "sql": "SELECT toStartOfMinute(timestamp) as time, count() as events FROM logs.events WHERE timestamp > now() - INTERVAL 1 HOUR GROUP BY time ORDER BY time",
-          "refreshInterval": 30
-        },
-        "visualization": { "xField": "time", "yField": "events" }
-      },
-      {
-        "id": "by-level",
-        "type": "bar_chart",
-        "title": "Events by Level",
-        "dataSource": {
-          "type": "inline",
-          "sql": "SELECT level, count() as count FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR GROUP BY level ORDER BY count DESC",
-          "refreshInterval": 60
-        },
-        "visualization": { "xField": "level", "yField": "count" }
-      },
-      {
-        "id": "by-source",
-        "type": "pie_chart",
-        "title": "Distribution by Source",
-        "dataSource": {
-          "type": "inline",
-          "sql": "SELECT source as name, count() as count FROM logs.events WHERE timestamp > now() - INTERVAL 24 HOUR GROUP BY source ORDER BY count DESC LIMIT 8",
-          "refreshInterval": 60
-        },
-        "visualization": { "xField": "name", "yField": "count" }
-      },
-      {
-        "id": "recent-errors",
-        "type": "table",
-        "title": "Recent Errors",
-        "dataSource": {
-          "type": "inline",
-          "sql": "SELECT formatDateTime(timestamp, '%H:%i:%S') as time, source, substring(message, 1, 100) as message FROM logs.events WHERE level = 'Error' AND timestamp > now() - INTERVAL 1 HOUR ORDER BY timestamp DESC LIMIT 10",
-          "refreshInterval": 30
-        },
-        "visualization": { "columns": ["time", "source", "message"] }
-      }
-    ]
-  }
-}
-\`\`\`
 `;
 
     const fullDocument = STATIC_DOCS + dynamicDocs;
