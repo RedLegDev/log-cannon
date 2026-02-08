@@ -2,6 +2,8 @@ const API_DOCS = `# Log Cannon - API v1
 
 REST API for programmatic access. Authenticate with an API key.
 
+All endpoints are under \`/api/v1/\`.
+
 ## Authentication
 
 Include your API key in requests:

@@ -6,6 +6,17 @@ const STATIC_DOCS = `# Log Cannon - Dashboard Builder
 
 Log Cannon is a log ingestion and visualization system built on ClickHouse.
 
+## API Access
+
+All programmatic access uses \`/api/v1/\` endpoints with an API key.
+
+Quick reference (see /llms.txt/api for full details):
+- **Query logs:** \`GET /api/v1/logs?source=MyApp&level=Error\` with \`X-Api-Key\` header
+- **Run SQL:** \`POST /api/v1/query\` with \`{"sql": "SELECT ..."}\` body and \`X-Api-Key\` header
+- **Dashboards:** \`GET/POST /api/v1/dashboards\`
+- **Endpoints:** \`GET/POST /api/v1/endpoints\`
+- **Ingest logs:** \`POST /ingest/clef\` with \`X-Seq-ApiKey\` header (see /llms.txt/logger)
+
 ## Dashboard Schema
 
 \`\`\`json
