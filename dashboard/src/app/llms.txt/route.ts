@@ -1,4 +1,4 @@
-import { getDashboards, getEndpoints, queryClickHouse } from '@/lib/clickhouse';
+import { getEndpoints, queryClickHouse } from '@/lib/clickhouse';
 
 const STATIC_DOCS = `# Log Cannon - Dashboard Builder
 
@@ -236,37 +236,15 @@ To use in a widget:
 `).join('\n');
 }
 
-function formatDashboards(dashboards: { name: string; description: string; config: string; enabled: number }[]): string {
-  const enabledDashboards = dashboards.filter(d => d.enabled);
-
-  if (enabledDashboards.length === 0) {
-    return 'No dashboards configured yet. See the examples above to create your first dashboard.';
-  }
-
-  const list = enabledDashboards.map(d => {
-    let widgetCount = 0;
-    try {
-      const parsed = JSON.parse(d.config);
-      widgetCount = parsed.widgets?.length ?? 0;
-    } catch { /* ignore */ }
-
-    return `- **${d.name}**: ${d.description || 'No description'} (${widgetCount} widget${widgetCount !== 1 ? 's' : ''})`;
-  }).join('\n');
-
-  return `${list}
-
-Retrieve full dashboard configs via \`GET /api/v1/dashboards\` or \`GET /api/v1/dashboards/{name}\` (requires API key).`;
-}
 
 export async function GET() {
   try {
     // Fetch dynamic data
-    const [sources, levels, propertyKeys, endpoints, dashboards] = await Promise.all([
+    const [sources, levels, propertyKeys, endpoints] = await Promise.all([
       getActiveSources(),
       getActiveLevels(),
       discoverPropertyKeys(),
-      getEndpoints(),
-      getDashboards()
+      getEndpoints()
     ]);
 
     // Build dynamic sections
