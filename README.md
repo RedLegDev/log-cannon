@@ -204,6 +204,40 @@ Create custom dashboards with configurable widgets for visualizing your log data
 | `/ingest/clef` | POST | Primary CLEF ingestion endpoint |
 | `/api/events/raw?clef` | POST | Legacy Seq-compatible endpoint |
 | `/health` | GET | Health check |
+| `/api/v1/*` | Various | REST API (see `/llms.txt/api` for full reference) |
+| `/api/mcp` | POST | MCP server (Model Context Protocol) |
+
+## MCP Server
+
+Log Cannon exposes its API as an [MCP](https://modelcontextprotocol.io) server at `/api/mcp`, allowing AI assistants and other MCP-compatible clients to discover and use Log Cannon's tools directly.
+
+### MCP Client Configuration
+
+**Claude Code** (`~/.claude.json`):
+```json
+{
+  "mcpServers": {
+    "log-cannon": {
+      "url": "https://your-instance/api/mcp",
+      "headers": { "X-Api-Key": "your-api-key" }
+    }
+  }
+}
+```
+
+**Cursor** (`.cursor/mcp.json`):
+```json
+{
+  "mcpServers": {
+    "log-cannon": {
+      "url": "https://your-instance/api/mcp",
+      "headers": { "X-Api-Key": "your-api-key" }
+    }
+  }
+}
+```
+
+The MCP endpoint uses the same API key auth as the REST API. Tools are scoped to your key's permissions (`read` or `write`). See the **MCP** page in the dashboard for interactive setup instructions.
 
 ## Tech Stack
 

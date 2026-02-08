@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive } from 'lucide-react'
+import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug } from 'lucide-react'
 import {
   SignInButton,
   SignUpButton,
@@ -22,6 +22,7 @@ const navLinks = [
   { href: '/keys', label: 'API Keys', icon: Key },
   { href: '/system', label: 'System', icon: HardDrive },
   { href: '/llms.txt', label: 'LLMs.txt', icon: Bot },
+  { href: '/mcp-setup', label: 'MCP', icon: Plug },
 ]
 
 interface MobileNavProps {

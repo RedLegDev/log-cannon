@@ -22,6 +22,7 @@ const navLinks = [
   { href: '/keys', label: 'API Keys' },
   { href: '/system', label: 'System' },
   { href: '/llms.txt', label: 'LLMs.txt' },
+  { href: '/mcp-setup', label: 'MCP' },
 ]
 
 export function Navigation() {

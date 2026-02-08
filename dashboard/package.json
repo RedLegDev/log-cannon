@@ -10,12 +10,14 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^6.36.10",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "chart.js": "^4.5.1",
     "lucide-react": "^0.563.0",
     "next": "^16.1.4",
     "react": "18.2.0",
     "react-chartjs-2": "^5.3.1",
-    "react-dom": "18.2.0"
+    "react-dom": "18.2.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "20.11.0",
