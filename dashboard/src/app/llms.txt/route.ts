@@ -243,23 +243,19 @@ function formatDashboards(dashboards: { name: string; description: string; confi
     return 'No dashboards configured yet. See the examples above to create your first dashboard.';
   }
 
-  return enabledDashboards.map(d => {
-    let configPretty: string;
+  const list = enabledDashboards.map(d => {
+    let widgetCount = 0;
     try {
       const parsed = JSON.parse(d.config);
-      configPretty = JSON.stringify(parsed, null, 2);
-    } catch {
-      configPretty = d.config;
-    }
+      widgetCount = parsed.widgets?.length ?? 0;
+    } catch { /* ignore */ }
 
-    return `### ${d.name}
-${d.description || 'No description'}
-
-\`\`\`json
-${configPretty}
-\`\`\`
-`;
+    return `- **${d.name}**: ${d.description || 'No description'} (${widgetCount} widget${widgetCount !== 1 ? 's' : ''})`;
   }).join('\n');
+
+  return `${list}
+
+Retrieve full dashboard configs via \`GET /api/v1/dashboards\` or \`GET /api/v1/dashboards/{name}\` (requires API key).`;
 }
 
 export async function GET() {
