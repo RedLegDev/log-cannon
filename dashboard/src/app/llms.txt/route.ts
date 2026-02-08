@@ -270,7 +270,7 @@ ${formatEndpoints(endpoints)}
 
 ## Existing Dashboards
 
-${formatDashboards(dashboards)}
+List and retrieve dashboards via \`GET /api/v1/dashboards\` (all) or \`GET /api/v1/dashboards/{name}\` (single). Requires API key.
 `;
 
     const fullDocument = STATIC_DOCS + dynamicDocs;
