@@ -71,7 +71,18 @@ export async function POST(request: Request) {
   await server.connect(transport);
 
   try {
-    return await transport.handleRequest(request);
+    // The MCP SDK transport requires Accept to include both application/json and
+    // text/event-stream, but many clients omit the SSE type. Since we use
+    // enableJsonResponse (stateless, JSON-only), SSE is never sent — so we
+    // normalize the header to satisfy the SDK check.
+    const accept = request.headers.get('accept') || '';
+    let normalizedRequest = request;
+    if (!accept.includes('text/event-stream')) {
+      const headers = new Headers(request.headers);
+      headers.set('accept', 'application/json, text/event-stream');
+      normalizedRequest = new Request(request, { headers });
+    }
+    return await transport.handleRequest(normalizedRequest);
   } finally {
     await server.close();
   }
