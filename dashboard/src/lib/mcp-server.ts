@@ -31,6 +31,7 @@ import {
   getErrorSummary,
   getLogVolume,
   getFiringAlerts,
+  insertLogEvent,
 } from './clickhouse';
 import type { PropertyFilter } from './clickhouse';
 
@@ -59,8 +60,42 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
     version: '1.0.0',
   });
 
+  const canIngest = hasScope(scopes, 'ingest');
   const canRead = hasScope(scopes, 'read');
   const canWrite = hasScope(scopes, 'write');
+
+  // ── Ingest tools ───────────────────────────────────────────
+
+  if (canIngest) {
+    server.registerTool('create_log', {
+      title: 'Create Log Entry',
+      description: 'Create a log entry in Log Cannon. Use this to record agent activity, task progress, errors, or any structured event. The entry appears immediately in the log explorer.',
+      inputSchema: {
+        level: z.enum(['Verbose', 'Debug', 'Information', 'Warning', 'Error', 'Fatal']).describe('Log level'),
+        message: z.string().describe('Log message text'),
+        source: z.string().describe('Source/service name (e.g. "my-agent", "build-bot")'),
+        message_template: z.string().optional().describe('Structured message template with {Placeholder} tokens (e.g. "Task {TaskName} completed in {Duration}ms")'),
+        exception: z.string().optional().describe('Exception/stack trace text'),
+        event_type: z.string().optional().describe('Event type identifier'),
+        properties: z.record(z.string(), z.any()).optional().describe('Structured properties as key-value pairs (e.g. {"TaskName": "deploy", "Duration": 1234})'),
+      },
+    }, async (args) => {
+      try {
+        await insertLogEvent({
+          level: args.level,
+          message: args.message,
+          source: args.source,
+          message_template: args.message_template,
+          exception: args.exception,
+          event_type: args.event_type,
+          properties: args.properties as Record<string, unknown> | undefined,
+        });
+        return jsonResult({ success: true, message: 'Log entry created' });
+      } catch (e) {
+        return errorResult(`Failed to create log entry: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+  }
 
   // ── Read tools ─────────────────────────────────────────────
 

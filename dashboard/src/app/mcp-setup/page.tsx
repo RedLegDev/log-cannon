@@ -5,6 +5,7 @@ import { Copy, Check, ChevronDown, ChevronRight, ExternalLink, Key } from 'lucid
 import Link from 'next/link';
 
 const TOOLS = [
+  { name: 'create_log', scope: 'ingest', description: 'Create a log entry — record agent activity, task progress, errors, or structured events' },
   { name: 'search_logs', scope: 'read', description: 'Search and filter log events by source, level, text, and property filters' },
   { name: 'execute_query', scope: 'read', description: 'Execute a read-only SQL SELECT query against the ClickHouse logs database' },
   { name: 'list_dashboards', scope: 'read', description: 'List all configured dashboards with their widget configurations' },
@@ -76,6 +77,7 @@ export default function MCPSetupPage() {
   const claudeConfig = JSON.stringify({
     mcpServers: {
       'log-cannon': {
+        type: 'http',
         url: mcpUrl,
         headers: { 'X-Api-Key': 'your-api-key' },
       },
@@ -85,12 +87,14 @@ export default function MCPSetupPage() {
   const cursorConfig = JSON.stringify({
     mcpServers: {
       'log-cannon': {
+        type: 'http',
         url: mcpUrl,
         headers: { 'X-Api-Key': 'your-api-key' },
       },
     },
   }, null, 2);
 
+  const ingestTools = TOOLS.filter(t => t.scope === 'ingest');
   const readTools = TOOLS.filter(t => t.scope === 'read');
   const writeTools = TOOLS.filter(t => t.scope === 'write');
 
@@ -132,10 +136,14 @@ export default function MCPSetupPage() {
             Manage API Keys <ExternalLink className="w-3 h-3" />
           </Link>
         </div>
-        <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+        <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+          <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
+            <span className="text-gray-500 block text-xs mb-1">ingest scope</span>
+            <span className="text-gray-300">Create log entries</span>
+          </div>
           <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
             <span className="text-gray-500 block text-xs mb-1">read scope</span>
-            <span className="text-gray-300">Query logs, list dashboards, endpoints, alerts</span>
+            <span className="text-gray-300">Ingest + query logs, dashboards, endpoints, alerts</span>
           </div>
           <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
             <span className="text-gray-500 block text-xs mb-1">write scope</span>
@@ -174,6 +182,17 @@ export default function MCPSetupPage() {
 
         {toolsExpanded && (
           <div className="mt-4 space-y-6">
+            <div>
+              <h3 className="text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Ingest Tools ({ingestTools.length})</h3>
+              <div className="space-y-1">
+                {ingestTools.map(tool => (
+                  <div key={tool.name} className="flex items-start gap-3 px-3 py-2 rounded-md hover:bg-cannon-charcoal transition-colors">
+                    <code className="text-cannon-fire text-sm font-mono shrink-0 mt-0.5">{tool.name}</code>
+                    <span className="text-gray-400 text-sm">{tool.description}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
             <div>
               <h3 className="text-sm font-medium text-gray-400 mb-2 uppercase tracking-wider">Read Tools ({readTools.length})</h3>
               <div className="space-y-1">

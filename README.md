@@ -218,6 +218,7 @@ Log Cannon exposes its API as an [MCP](https://modelcontextprotocol.io) server a
 {
   "mcpServers": {
     "log-cannon": {
+      "type": "http",
       "url": "https://your-instance/api/mcp",
       "headers": { "X-Api-Key": "your-api-key" }
     }
@@ -230,6 +231,7 @@ Log Cannon exposes its API as an [MCP](https://modelcontextprotocol.io) server a
 {
   "mcpServers": {
     "log-cannon": {
+      "type": "http",
       "url": "https://your-instance/api/mcp",
       "headers": { "X-Api-Key": "your-api-key" }
     }

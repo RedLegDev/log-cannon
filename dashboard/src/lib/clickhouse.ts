@@ -1484,3 +1484,43 @@ export async function getLogVolume(
 
   return queryClickHouse<LogVolumeRow>(sql);
 }
+
+// ── Log Ingestion ─────────────────────────────────────────────
+
+export async function insertLogEvent(params: {
+  level: string;
+  message: string;
+  message_template?: string;
+  source: string;
+  exception?: string;
+  event_type?: string;
+  properties?: Record<string, unknown>;
+}): Promise<void> {
+  const now = new Date();
+  const ts = now.toISOString().replace('T', ' ').replace('Z', '');
+
+  const row = {
+    timestamp: ts,
+    level: params.level,
+    message_template: params.message_template || params.message,
+    message: params.message,
+    exception: params.exception || '',
+    event_type: params.event_type || '',
+    source: params.source,
+    properties: params.properties ? JSON.stringify(params.properties) : '{}',
+  };
+
+  const response = await fetch(
+    `${CLICKHOUSE_URL}/?query=${encodeURIComponent('INSERT INTO logs.events FORMAT JSONEachRow')}`,
+    {
+      method: 'POST',
+      body: JSON.stringify(row),
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`ClickHouse insert failed: ${errorText}`);
+  }
+}
