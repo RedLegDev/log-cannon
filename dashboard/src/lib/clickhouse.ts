@@ -1404,3 +1404,83 @@ export async function deleteLogs(
 
   return count;
 }
+
+// MCP investigation helpers
+
+export interface ErrorSummaryRow {
+  message_template: string;
+  level: string;
+  count: number;
+  latest_timestamp: string;
+  sample_message: string;
+}
+
+export async function getErrorSummary(
+  source?: string,
+  hours: number = 24,
+  limit: number = 20
+): Promise<ErrorSummaryRow[]> {
+  const conditions = [
+    `level IN ('Error', 'Fatal', 'Warning')`,
+    `timestamp > now() - INTERVAL ${Math.max(1, Math.min(hours, 168))} HOUR`,
+  ];
+  if (source) {
+    conditions.push(`source = '${escapeString(source)}'`);
+  }
+
+  const sql = `
+    SELECT
+      message_template,
+      level,
+      count(*) as count,
+      formatDateTime(max(timestamp), '%Y-%m-%d %H:%i:%S') as latest_timestamp,
+      any(message) as sample_message
+    FROM logs.events
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY message_template, level
+    ORDER BY count DESC
+    LIMIT ${Math.min(limit, 100)}
+  `;
+
+  return queryClickHouse<ErrorSummaryRow>(sql);
+}
+
+export interface LogVolumeRow {
+  bucket: string;
+  total: number;
+  errors: number;
+  warnings: number;
+  info: number;
+}
+
+export async function getLogVolume(
+  source?: string,
+  hours: number = 24,
+  granularity: 'minute' | 'hour' | 'day' = 'hour'
+): Promise<LogVolumeRow[]> {
+  const truncFn = granularity === 'minute' ? 'toStartOfMinute' :
+                  granularity === 'day' ? 'toStartOfDay' : 'toStartOfHour';
+  const safeHours = Math.max(1, Math.min(hours, 168));
+
+  const conditions = [
+    `timestamp > now() - INTERVAL ${safeHours} HOUR`,
+  ];
+  if (source) {
+    conditions.push(`source = '${escapeString(source)}'`);
+  }
+
+  const sql = `
+    SELECT
+      formatDateTime(${truncFn}(timestamp), '%Y-%m-%d %H:%i:%S') as bucket,
+      count(*) as total,
+      countIf(level IN ('Error', 'Fatal')) as errors,
+      countIf(level = 'Warning') as warnings,
+      countIf(level = 'Information') as info
+    FROM logs.events
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY ${truncFn}(timestamp)
+    ORDER BY ${truncFn}(timestamp)
+  `;
+
+  return queryClickHouse<LogVolumeRow>(sql);
+}

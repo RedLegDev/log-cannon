@@ -25,6 +25,12 @@ import {
   updateAlert,
   deleteAlert,
   testAlertQuery,
+  getCurrentMetrics,
+  getServiceStats,
+  getTopServicesByErrors,
+  getErrorSummary,
+  getLogVolume,
+  getFiringAlerts,
 } from './clickhouse';
 import type { PropertyFilter } from './clickhouse';
 
@@ -236,6 +242,87 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         return jsonResult({ data });
       } catch (e) {
         return errorResult(`Failed to list alerts: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    // ── Investigation tools ────────────────────────────────────
+
+    server.registerTool('get_overview', {
+      title: 'Get Overview',
+      description: 'One-shot investigation starter. Returns current metrics (logs/min, error rate, active services), service breakdown with error counts, and top error message templates — all for the last 24 hours. Start here before drilling into specific issues.',
+      inputSchema: {},
+    }, async () => {
+      try {
+        const [metrics, services, topErrors] = await Promise.all([
+          getCurrentMetrics(),
+          getServiceStats(),
+          getErrorSummary(undefined, 24, 10),
+        ]);
+        return jsonResult({ metrics, services, top_errors: topErrors });
+      } catch (e) {
+        return errorResult(`Failed to get overview: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    server.registerTool('get_service_overview', {
+      title: 'Get Service Overview',
+      description: 'List all sources/services with log counts, error counts, error rates, and last seen timestamp. Sorted by error count descending.',
+      inputSchema: {
+        limit: z.number().min(1).max(100).optional().describe('Max services to return (default 20)'),
+      },
+    }, async (args) => {
+      try {
+        const data = await getTopServicesByErrors(args.limit || 20);
+        return jsonResult({ data });
+      } catch (e) {
+        return errorResult(`Failed to get service overview: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    server.registerTool('get_error_summary', {
+      title: 'Get Error Summary',
+      description: 'Errors and warnings grouped by message template with counts, latest timestamp, and a sample message. Much more compact than searching raw error logs. Use this instead of search_logs when you want to understand what types of errors are occurring.',
+      inputSchema: {
+        source: z.string().optional().describe('Filter to a specific source/service'),
+        hours: z.number().min(1).max(168).optional().describe('Lookback period in hours (default 24, max 168)'),
+        limit: z.number().min(1).max(100).optional().describe('Max error groups to return (default 20)'),
+      },
+    }, async (args) => {
+      try {
+        const data = await getErrorSummary(args.source, args.hours || 24, args.limit || 20);
+        return jsonResult({ data });
+      } catch (e) {
+        return errorResult(`Failed to get error summary: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    server.registerTool('get_log_volume', {
+      title: 'Get Log Volume',
+      description: 'Time-series log volume broken down by level (total, errors, warnings, info). Use granularity parameter to control bucket size: "minute" for last-hour detail, "hour" for daily trends, "day" for weekly view.',
+      inputSchema: {
+        source: z.string().optional().describe('Filter to a specific source/service'),
+        hours: z.number().min(1).max(168).optional().describe('Lookback period in hours (default 24, max 168)'),
+        granularity: z.enum(['minute', 'hour', 'day']).optional().describe('Time bucket size (default "hour")'),
+      },
+    }, async (args) => {
+      try {
+        const data = await getLogVolume(args.source, args.hours || 24, args.granularity || 'hour');
+        return jsonResult({ data });
+      } catch (e) {
+        return errorResult(`Failed to get log volume: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    server.registerTool('get_firing_alerts', {
+      title: 'Get Firing Alerts',
+      description: 'Check if any alert rules are currently firing (triggered within their cooldown period). Quick way to identify active incidents.',
+      inputSchema: {},
+    }, async () => {
+      try {
+        const data = await getFiringAlerts();
+        return jsonResult({ data, firing_count: data.length });
+      } catch (e) {
+        return errorResult(`Failed to get firing alerts: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
   }
