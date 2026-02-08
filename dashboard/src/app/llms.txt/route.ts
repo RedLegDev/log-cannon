@@ -1,8 +1,11 @@
 import { getEndpoints, queryClickHouse } from '@/lib/clickhouse';
 
-const STATIC_DOCS = `# Log Cannon - Dashboard Builder
+const STATIC_DOCS = `# Log Cannon
 
-> Sub-pages: /llms.txt/api (REST API reference), /llms.txt/dashboards (dashboard & widget schema), /llms.txt/logger (logger integration)
+> Sub-pages: 
+ - /llms.txt/api (REST API reference)
+ - /llms.txt/dashboards (dashboard & widget schema)
+ - /llms.txt/logger (logger integration)
 
 Log Cannon is a log ingestion and visualization system built on ClickHouse.
 
@@ -185,7 +188,7 @@ List and retrieve dashboards via \`GET /api/v1/dashboards\` (all) or \`GET /api/
 
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(`# Log Cannon - Dashboard Builder\n\nError generating documentation: ${errorMessage}\n\nPlease ensure ClickHouse is running and accessible.`, {
+    return new Response(`# Log Cannon \n\nError generating documentation: ${errorMessage}\n\nPlease ensure ClickHouse is running and accessible.`, {
       status: 500,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8'
