@@ -77,7 +77,7 @@ export default function MCPSetupPage() {
   const claudeConfig = JSON.stringify({
     mcpServers: {
       'log-cannon': {
-        type: 'streamable-http',
+        type: 'http',
         url: mcpUrl,
         headers: { 'X-Api-Key': 'your-api-key' },
       },
@@ -87,7 +87,7 @@ export default function MCPSetupPage() {
   const cursorConfig = JSON.stringify({
     mcpServers: {
       'log-cannon': {
-        type: 'streamable-http',
+        type: 'http',
         url: mcpUrl,
         headers: { 'X-Api-Key': 'your-api-key' },
       },
