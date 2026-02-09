@@ -5,26 +5,15 @@ import {
   queryClickHouse,
   getRecentLogs,
   deleteLogs,
-  parseOperatorFromValue,
   getDashboards,
   getDashboardByName,
   createDashboard,
   updateDashboard,
   deleteDashboard,
-  getEndpoints,
-  getEndpointByName,
-  createEndpoint,
-  updateEndpoint,
-  deleteEndpoint,
-  executeEndpointQuery,
-  getSavedQueries,
-  createSavedQuery,
-  deleteSavedQuery,
   getAlerts,
   createAlert,
   updateAlert,
   deleteAlert,
-  testAlertQuery,
   getCurrentMetrics,
   getServiceStats,
   getTopServicesByErrors,
@@ -198,64 +187,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         });
       } catch (e) {
         return errorResult(`Failed to get dashboard: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('list_endpoints', {
-      title: 'List Endpoints',
-      description: 'List all stored query endpoints (reusable parameterized SQL queries).',
-      inputSchema: {},
-    }, async () => {
-      try {
-        const endpoints = await getEndpoints();
-        const data = endpoints.map(ep => ({
-          id: ep.id, name: ep.name, description: ep.description,
-          sql_query: ep.sql_query,
-          parameters: (ep.sql_query.match(/@[a-zA-Z_][a-zA-Z0-9_]*/g) || []).map(m => m.slice(1)),
-          cache_ttl_seconds: ep.cache_ttl_seconds,
-          enabled: Boolean(ep.enabled), created_at: ep.created_at,
-        }));
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to list endpoints: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('execute_endpoint', {
-      title: 'Execute Endpoint',
-      description: 'Execute a stored query endpoint by name with optional parameters. Parameters are substituted into @param placeholders in the SQL.',
-      inputSchema: {
-        name: z.string().describe('Endpoint name'),
-        params: z.record(z.string(), z.string()).optional().describe('Key-value parameters to substitute into @param placeholders'),
-      },
-    }, async (args) => {
-      try {
-        const endpoint = await getEndpointByName(args.name);
-        if (!endpoint) return errorResult(`Endpoint not found: ${args.name}`);
-        if (!endpoint.enabled) return errorResult(`Endpoint is disabled: ${args.name}`);
-        const data = await executeEndpointQuery(endpoint.sql_query, args.params || {});
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to execute endpoint: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('list_saved_queries', {
-      title: 'List Saved Queries',
-      description: 'List all saved query filter combinations.',
-      inputSchema: {},
-    }, async () => {
-      try {
-        const queries = await getSavedQueries();
-        const data = queries.map(q => ({
-          id: q.id, name: q.name, description: q.description,
-          source: q.source, level: q.level, search: q.search,
-          property_filters: q.property_filters ? JSON.parse(q.property_filters) : [],
-          created_at: q.created_at,
-        }));
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to list saved queries: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
 
@@ -462,126 +393,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
       }
     });
 
-    server.registerTool('create_endpoint', {
-      title: 'Create Endpoint',
-      description: 'Create a stored query endpoint. Use @param placeholders in SQL for parameterized queries.',
-      inputSchema: {
-        name: z.string().regex(/^[a-zA-Z0-9_-]+$/).describe('URL-safe endpoint name'),
-        description: z.string().optional().describe('Endpoint description'),
-        sql_query: z.string().describe('SELECT query with optional @param placeholders'),
-        cache_ttl_seconds: z.number().min(0).optional().describe('Cache duration in seconds (default 0)'),
-      },
-    }, async (args) => {
-      try {
-        const trimmed = args.sql_query.trim().toLowerCase();
-        if (!trimmed.startsWith('select')) return errorResult('sql_query must be a SELECT statement');
-        await createEndpoint(args);
-        const params = (args.sql_query.match(/@[a-zA-Z_][a-zA-Z0-9_]*/g) || []).map(m => m.slice(1));
-        return jsonResult({ success: true, name: args.name, parameters: params });
-      } catch (e) {
-        return errorResult(`Failed to create endpoint: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('update_endpoint', {
-      title: 'Update Endpoint',
-      description: 'Update a stored query endpoint by name. Only provided fields are updated.',
-      inputSchema: {
-        name: z.string().describe('Endpoint name to update'),
-        new_name: z.string().regex(/^[a-zA-Z0-9_-]+$/).optional().describe('New name'),
-        description: z.string().optional().describe('New description'),
-        sql_query: z.string().optional().describe('New SELECT query'),
-        cache_ttl_seconds: z.number().min(0).optional().describe('New cache TTL'),
-        enabled: z.boolean().optional().describe('Enable/disable'),
-      },
-    }, async (args) => {
-      try {
-        const ep = await getEndpointByName(args.name);
-        if (!ep) return errorResult(`Endpoint not found: ${args.name}`);
-        const updates: Record<string, unknown> = {};
-        if (args.new_name !== undefined) updates.name = args.new_name;
-        if (args.description !== undefined) updates.description = args.description;
-        if (args.sql_query !== undefined) {
-          if (!args.sql_query.trim().toLowerCase().startsWith('select')) {
-            return errorResult('sql_query must be a SELECT statement');
-          }
-          updates.sql_query = args.sql_query;
-        }
-        if (args.cache_ttl_seconds !== undefined) updates.cache_ttl_seconds = args.cache_ttl_seconds;
-        if (args.enabled !== undefined) updates.enabled = args.enabled;
-        if (Object.keys(updates).length === 0) return errorResult('No fields to update');
-        await updateEndpoint(ep.id, updates);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to update endpoint: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('delete_endpoint', {
-      title: 'Delete Endpoint',
-      description: 'Delete a stored query endpoint by name.',
-      inputSchema: {
-        name: z.string().describe('Endpoint name to delete'),
-      },
-      annotations: { destructiveHint: true },
-    }, async (args) => {
-      try {
-        const ep = await getEndpointByName(args.name);
-        if (!ep) return errorResult(`Endpoint not found: ${args.name}`);
-        await deleteEndpoint(ep.id);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to delete endpoint: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('create_saved_query', {
-      title: 'Create Saved Query',
-      description: 'Save a query filter combination for later reuse.',
-      inputSchema: {
-        name: z.string().describe('Query name'),
-        description: z.string().optional().describe('Query description'),
-        source: z.string().optional().describe('Source filter'),
-        level: z.string().optional().describe('Level filter'),
-        search: z.string().optional().describe('Search text filter'),
-        property_filters: z.array(z.object({
-          key: z.string(),
-          value: z.string(),
-          operator: z.enum(['=', '!=', '>', '>=', '<', '<=']).optional(),
-        })).optional().describe('Property filters'),
-      },
-    }, async (args) => {
-      try {
-        const propFilters = (args.property_filters || []).map(f => ({
-          key: f.key, value: f.value, operator: (f.operator || '=') as PropertyFilter['operator'],
-        }));
-        await createSavedQuery({
-          name: args.name, description: args.description,
-          source: args.source, level: args.level, search: args.search,
-          propertyFilters: propFilters,
-        });
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to create saved query: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('delete_saved_query', {
-      title: 'Delete Saved Query',
-      description: 'Delete a saved query by ID.',
-      inputSchema: {
-        id: z.string().describe('Saved query ID'),
-      },
-      annotations: { destructiveHint: true },
-    }, async (args) => {
-      try {
-        await deleteSavedQuery(args.id);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to delete saved query: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
     server.registerTool('create_alert', {
       title: 'Create Alert',
       description: 'Create a threshold alert rule. The query must be a SELECT returning numeric values. The condition evaluates column names from query results (e.g. "cnt > 50", "errors >= 100 && total > 1000").',
@@ -659,20 +470,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
       }
     });
 
-    server.registerTool('test_alert', {
-      title: 'Test Alert Query',
-      description: 'Test an alert query by executing it and returning the raw results. Useful for validating a query before creating an alert.',
-      inputSchema: {
-        query: z.string().describe('SELECT query to test'),
-      },
-    }, async (args) => {
-      try {
-        const data = await testAlertQuery(args.query);
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Alert query test failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
   }
 
   return server;

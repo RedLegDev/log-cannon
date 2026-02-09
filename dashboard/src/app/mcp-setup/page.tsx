@@ -10,9 +10,6 @@ const TOOLS = [
   { name: 'execute_query', scope: 'read', description: 'Execute a read-only SQL SELECT query against the ClickHouse logs database' },
   { name: 'list_dashboards', scope: 'read', description: 'List all configured dashboards with their widget configurations' },
   { name: 'get_dashboard', scope: 'read', description: 'Get a specific dashboard by name' },
-  { name: 'list_endpoints', scope: 'read', description: 'List all stored query endpoints (reusable parameterized SQL queries)' },
-  { name: 'execute_endpoint', scope: 'read', description: 'Execute a stored query endpoint by name with optional parameters' },
-  { name: 'list_saved_queries', scope: 'read', description: 'List all saved query filter combinations' },
   { name: 'list_alerts', scope: 'read', description: 'List all alert rules with their query, condition, and notification settings' },
   { name: 'get_overview', scope: 'read', description: 'One-shot investigation starter: metrics, service breakdown, and top errors for the last 24h' },
   { name: 'get_service_overview', scope: 'read', description: 'All sources/services with log counts, error counts, error rates, and last seen' },
@@ -23,15 +20,9 @@ const TOOLS = [
   { name: 'create_dashboard', scope: 'write', description: 'Create a new dashboard with configurable widgets' },
   { name: 'update_dashboard', scope: 'write', description: 'Update an existing dashboard by name' },
   { name: 'delete_dashboard', scope: 'write', description: 'Delete a dashboard by name' },
-  { name: 'create_endpoint', scope: 'write', description: 'Create a stored query endpoint with @param placeholders' },
-  { name: 'update_endpoint', scope: 'write', description: 'Update a stored query endpoint by name' },
-  { name: 'delete_endpoint', scope: 'write', description: 'Delete a stored query endpoint by name' },
-  { name: 'create_saved_query', scope: 'write', description: 'Save a query filter combination for later reuse' },
-  { name: 'delete_saved_query', scope: 'write', description: 'Delete a saved query by ID' },
   { name: 'create_alert', scope: 'write', description: 'Create a threshold alert rule with email notifications' },
   { name: 'update_alert', scope: 'write', description: 'Update an existing alert rule' },
   { name: 'delete_alert', scope: 'write', description: 'Delete an alert rule by ID' },
-  { name: 'test_alert', scope: 'write', description: 'Test an alert query by executing it and returning raw results' },
 ];
 
 function CopyButton({ text }: { text: string }) {
@@ -143,7 +134,7 @@ export default function MCPSetupPage() {
           </div>
           <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
             <span className="text-gray-500 block text-xs mb-1">read scope</span>
-            <span className="text-gray-300">Ingest + query logs, dashboards, endpoints, alerts</span>
+            <span className="text-gray-300">Ingest + query logs, dashboards, alerts</span>
           </div>
           <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
             <span className="text-gray-500 block text-xs mb-1">write scope</span>
