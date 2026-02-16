@@ -126,7 +126,7 @@ Log.Information("Order {OrderId} placed by {User}", orderId, user);`;
 import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
 
 const exporter = new OTLPLogExporter({
-  url: '${ingestBase}/v1/logs',
+  url: '${ingestBase}/ingest/otlp/logs',
   headers: { 'X-Api-Key': 'your-api-key' },
 });
 
@@ -138,7 +138,7 @@ loggerProvider.addLogRecordProcessor(
 const logger = loggerProvider.getLogger('my-service');
 logger.emit({ body: 'Hello from OTel!' });`;
 
-  const otelCurl = `curl -X POST "${ingestBase}/v1/logs" \\
+  const otelCurl = `curl -X POST "${ingestBase}/ingest/otlp/logs" \\
   -H "Content-Type: application/json" \\
   -H "X-Api-Key: your-api-key" \\
   -d '{
@@ -232,20 +232,21 @@ logger.emit({ body: 'Hello from OTel!' });`;
           <div className="flex items-start gap-3">
             <span className="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-bold bg-green-900/50 text-green-400 border border-green-800">POST</span>
             <div>
-              <code className="text-cannon-fire text-sm font-mono">/v1/logs</code>
+              <code className="text-cannon-fire text-sm font-mono">/ingest/otlp/logs</code>
               <p className="text-gray-400 text-sm mt-0.5">OpenTelemetry log records (protobuf or JSON)</p>
             </div>
           </div>
           <div className="flex items-start gap-3">
             <span className="shrink-0 mt-0.5 px-2 py-0.5 rounded text-xs font-bold bg-green-900/50 text-green-400 border border-green-800">POST</span>
             <div>
-              <code className="text-cannon-fire text-sm font-mono">/v1/traces</code>
+              <code className="text-cannon-fire text-sm font-mono">/ingest/otlp/traces</code>
               <p className="text-gray-400 text-sm mt-0.5">OpenTelemetry trace spans (protobuf or JSON)</p>
             </div>
           </div>
         </div>
         <p className="text-gray-500 text-sm mt-4 pt-4 border-t border-cannon-graphite">
-          Pass your API key via the <code className="text-gray-400">X-Api-Key</code> header on all requests.
+          All endpoints live under <code className="text-gray-400">/ingest/*</code> for easy routing.
+          OTel standard paths <code className="text-gray-400">/v1/logs</code> and <code className="text-gray-400">/v1/traces</code> also work as aliases.
         </p>
       </div>
 

@@ -18,9 +18,9 @@ Quick reference (see /llms.txt/api for full details):
 - **Run SQL:** \`POST /api/v1/query\` with \`{"sql": "SELECT ..."}\` body and \`X-Api-Key\` header
 - **Dashboards:** \`GET/POST /api/v1/dashboards\`
 - **Endpoints:** \`GET/POST /api/v1/endpoints\`
-- **Ingest logs (CLEF):** \`POST /ingest/clef\` with \`X-Seq-ApiKey\` header (see /llms.txt/logger)
+- **Ingest logs (CLEF):** \`POST /ingest/clef\` with \`X-Api-Key\` or \`X-Seq-ApiKey\` header (see /llms.txt/logger)
 - **Ingest logs (Webhook):** \`POST /ingest/webhook?preset=cloudflare\` — ndjson, gzip supported
-- **Ingest logs (OTLP):** \`POST /v1/logs\` and \`POST /v1/traces\` — OpenTelemetry protocol
+- **Ingest logs (OTLP):** \`POST /ingest/otlp/logs\` and \`POST /ingest/otlp/traces\` — OpenTelemetry protocol (also available at \`/v1/logs\` and \`/v1/traces\`)
 
 ## Dashboards
 

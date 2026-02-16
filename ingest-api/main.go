@@ -112,10 +112,14 @@ func main() {
 
 	http.HandleFunc("/health", server.handleHealth)
 	http.HandleFunc("/ingest/clef", server.handleIngest)
-	http.HandleFunc("/api/events/raw", server.handleIngest)
 	http.HandleFunc("/ingest/webhook", server.handleWebhook)
-	http.HandleFunc("/v1/logs", server.handleOTLPLogs)
-	http.HandleFunc("/v1/traces", server.handleOTLPTraces)
+	http.HandleFunc("/ingest/otlp/logs", server.handleOTLPLogs)
+	http.HandleFunc("/ingest/otlp/traces", server.handleOTLPTraces)
+
+	// Aliases for backward compatibility
+	http.HandleFunc("/api/events/raw", server.handleIngest)  // Seq/Serilog clients
+	http.HandleFunc("/v1/logs", server.handleOTLPLogs)       // OTel SDK standard path
+	http.HandleFunc("/v1/traces", server.handleOTLPTraces)   // OTel SDK standard path
 
 	log.Printf("Starting ingest API on port %s", serverPort)
 	log.Fatal(http.ListenAndServe(":"+serverPort, nil))
