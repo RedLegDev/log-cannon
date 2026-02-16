@@ -20,6 +20,7 @@ const navLinks = [
   { href: '/endpoints', label: 'Endpoints' },
   { href: '/alerts', label: 'Alerts' },
   { href: '/keys', label: 'API Keys' },
+  { href: '/integrations', label: 'Integrations' },
   { href: '/system', label: 'System' },
   { href: '/llms.txt', label: 'LLMs.txt' },
   { href: '/mcp-setup', label: 'MCP' },
