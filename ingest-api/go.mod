@@ -1,8 +1,12 @@
 module github.com/logaggregator/ingest-api
 
-go 1.21
+go 1.22
 
-require github.com/ClickHouse/clickhouse-go/v2 v2.18.0
+require (
+	github.com/ClickHouse/clickhouse-go/v2 v2.18.0
+	go.opentelemetry.io/proto/otlp v1.5.0
+	google.golang.org/protobuf v1.36.5
+)
 
 require (
 	github.com/ClickHouse/ch-go v0.61.3 // indirect

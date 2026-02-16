@@ -114,6 +114,8 @@ func main() {
 	http.HandleFunc("/ingest/clef", server.handleIngest)
 	http.HandleFunc("/api/events/raw", server.handleIngest)
 	http.HandleFunc("/ingest/webhook", server.handleWebhook)
+	http.HandleFunc("/v1/logs", server.handleOTLPLogs)
+	http.HandleFunc("/v1/traces", server.handleOTLPTraces)
 
 	log.Printf("Starting ingest API on port %s", serverPort)
 	log.Fatal(http.ListenAndServe(":"+serverPort, nil))
