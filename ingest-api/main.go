@@ -113,6 +113,7 @@ func main() {
 	http.HandleFunc("/health", server.handleHealth)
 	http.HandleFunc("/ingest/clef", server.handleIngest)
 	http.HandleFunc("/api/events/raw", server.handleIngest)
+	http.HandleFunc("/ingest/webhook", server.handleWebhook)
 
 	log.Printf("Starting ingest API on port %s", serverPort)
 	log.Fatal(http.ListenAndServe(":"+serverPort, nil))
@@ -240,6 +241,55 @@ func (s *Server) flushBatch(events []LogEvent) error {
 	return batch.Send()
 }
 
+// validateAPIKey checks the provided API key against known keys using
+// constant-time comparison. In discovery mode, unknown keys are auto-provisioned.
+// Returns the source name associated with the key, or an error.
+func (s *Server) validateAPIKey(apiKey string) (string, error) {
+	s.apiKeysMu.RLock()
+	var matchedKey *APIKey
+	for key, k := range s.apiKeys {
+		if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) == 1 {
+			matchedKey = &k
+			break
+		}
+	}
+	s.apiKeysMu.RUnlock()
+
+	if matchedKey == nil || matchedKey.Enabled == 0 {
+		if s.discoveryMode && matchedKey == nil {
+			newKey, err := s.discoverAPIKey(apiKey)
+			if err != nil {
+				return "", fmt.Errorf("failed to auto-provision key: %w", err)
+			}
+			log.Printf("DISCOVERY: Auto-provisioned API key as source=%s", newKey.Name)
+			return newKey.Name, nil
+		}
+		return "", fmt.Errorf("invalid or disabled API key")
+	}
+
+	return matchedKey.Name, nil
+}
+
+// addEventsToBatch appends events to the internal batch and flushes if the
+// batch reaches 1000 events.
+func (s *Server) addEventsToBatch(events []LogEvent) {
+	s.batchMu.Lock()
+	s.eventBatch = append(s.eventBatch, events...)
+	shouldFlush := len(s.eventBatch) >= 1000
+	if shouldFlush {
+		batch := s.eventBatch
+		s.eventBatch = make([]LogEvent, 0, 1000)
+		s.lastFlush = time.Now()
+		s.batchMu.Unlock()
+
+		if err := s.flushBatch(batch); err != nil {
+			log.Printf("Failed to flush batch: %v", err)
+		}
+	} else {
+		s.batchMu.Unlock()
+	}
+}
+
 func setCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -281,37 +331,12 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate API key with constant-time comparison
-	s.apiKeysMu.RLock()
-	var matchedKey *APIKey
-	for key, k := range s.apiKeys {
-		if subtle.ConstantTimeCompare([]byte(key), []byte(apiKey)) == 1 {
-			matchedKey = &k
-			break
-		}
+	source, err := s.validateAPIKey(apiKey)
+	if err != nil {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"Error": "Invalid or disabled API key"})
+		return
 	}
-	s.apiKeysMu.RUnlock()
-
-	if matchedKey == nil || matchedKey.Enabled == 0 {
-		if s.discoveryMode && matchedKey == nil {
-			// Auto-provision the unknown key
-			newKey, err := s.discoverAPIKey(apiKey)
-			if err != nil {
-				log.Printf("ERROR: Failed to auto-provision key: %v", err)
-				w.WriteHeader(http.StatusForbidden)
-				json.NewEncoder(w).Encode(map[string]string{"Error": "Invalid API key"})
-				return
-			}
-			matchedKey = newKey
-			log.Printf("DISCOVERY: Auto-provisioned API key as source=%s", newKey.Name)
-		} else {
-			w.WriteHeader(http.StatusForbidden)
-			json.NewEncoder(w).Encode(map[string]string{"Error": "Invalid or disabled API key"})
-			return
-		}
-	}
-
-	source := matchedKey.Name
 
 	// Parse CLEF events
 	scanner := bufio.NewScanner(r.Body)
@@ -345,21 +370,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add events to batch
-	s.batchMu.Lock()
-	s.eventBatch = append(s.eventBatch, events...)
-	shouldFlush := len(s.eventBatch) >= 1000
-	if shouldFlush {
-		batch := s.eventBatch
-		s.eventBatch = make([]LogEvent, 0, 1000)
-		s.lastFlush = time.Now()
-		s.batchMu.Unlock()
-
-		if err := s.flushBatch(batch); err != nil {
-			log.Printf("Failed to flush batch: %v", err)
-		}
-	} else {
-		s.batchMu.Unlock()
-	}
+	s.addEventsToBatch(events)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
