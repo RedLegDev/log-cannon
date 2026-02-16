@@ -633,6 +633,8 @@ export interface WidgetVisualization {
   xField?: string;
   yField?: string | string[];
   colors?: string[];
+  xAxisFormat?: 'auto' | 'time' | 'date' | 'datetime' | 'string';
+  seriesField?: string;
 
   // Table
   columns?: string[];

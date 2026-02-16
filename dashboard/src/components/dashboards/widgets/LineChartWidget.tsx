@@ -45,10 +45,12 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
     const colors = config?.colors || DEFAULT_COLORS;
     const dataArray = Array.isArray(data) ? data : [];
 
-    const labels = dataArray.map((item) => {
+    const xAxisFormat = config?.xAxisFormat || 'auto';
+    const rawLabels = dataArray.map((item) => {
       const record = item as Record<string, unknown>;
-      return formatLabel(String(record[xField] ?? ''));
+      return String(record[xField] ?? '');
     });
+    const labels = formatLabels(rawLabels, xAxisFormat);
 
     const datasets = yFields.map((field, index) => {
       const fieldColor = colors[index % colors.length];
@@ -117,14 +119,53 @@ export function LineChartWidget({ data, widget }: LineChartWidgetProps) {
   );
 }
 
-function formatLabel(label: string): string {
-  try {
-    const date = new Date(label);
-    if (!isNaN(date.getTime())) {
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function formatLabels(labels: string[], format: string): string[] {
+  if (format === 'string') return labels;
+
+  // Parse all labels as dates
+  const parsed = labels.map((label) => {
+    try {
+      const date = new Date(label);
+      return !isNaN(date.getTime()) ? date : null;
+    } catch {
+      return null;
     }
-  } catch {
-    // Not a date
+  });
+
+  // If not all labels are valid dates, return as-is
+  if (parsed.some((d) => d === null)) return labels;
+  const dates = parsed as Date[];
+
+  if (format === 'time') {
+    return dates.map((d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   }
-  return label;
+  if (format === 'date') {
+    return dates.map((d) => d.toLocaleDateString([], { month: 'short', day: 'numeric' }));
+  }
+  if (format === 'datetime') {
+    return dates.map((d) =>
+      d.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
+      ' ' +
+      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    );
+  }
+
+  // Auto-detect: check if data spans multiple days
+  if (dates.length >= 2) {
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    const spanMs = Math.abs(last.getTime() - first.getTime());
+    const spanHours = spanMs / (1000 * 60 * 60);
+
+    if (spanHours >= 48) {
+      // Multi-day: show date only
+      return dates.map((d) => d.toLocaleDateString([], { month: 'short', day: 'numeric' }));
+    } else if (spanHours >= 2) {
+      // Same day or spanning overnight: show time
+      return dates.map((d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    }
+  }
+
+  // Default: time only
+  return dates.map((d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 }
