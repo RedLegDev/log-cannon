@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
-import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug } from 'lucide-react'
+import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug, FileText } from 'lucide-react'
 import {
   SignInButton,
   SignUpButton,
@@ -12,18 +12,44 @@ import {
   UserButton,
 } from '@clerk/nextjs'
 
-const navLinks = [
-  { href: '/logs', label: 'Log Explorer', icon: Search },
-  { href: '/services', label: 'Services', icon: Server },
-  { href: '/dashboards', label: 'Dashboards', icon: LayoutDashboard },
-  { href: '/live', label: 'Live Tail', icon: Radio },
-  { href: '/queries', label: 'Saved Queries', icon: Bookmark },
-  { href: '/endpoints', label: 'Endpoints', icon: Zap },
-  { href: '/alerts', label: 'Alerts', icon: Bell },
-  { href: '/keys', label: 'API Keys', icon: Key },
-  { href: '/system', label: 'System', icon: HardDrive },
-  { href: '/llms.txt', label: 'LLMs.txt', icon: Bot },
-  { href: '/mcp-setup', label: 'MCP', icon: Plug },
+interface NavLink {
+  href: string
+  label: string
+  icon: typeof Search
+}
+
+interface NavSection {
+  title?: string
+  links: NavLink[]
+}
+
+const navSections: NavSection[] = [
+  {
+    links: [
+      { href: '/logs', label: 'Log Explorer', icon: Search },
+      { href: '/services', label: 'Services', icon: Server },
+      { href: '/dashboards', label: 'Dashboards', icon: LayoutDashboard },
+      { href: '/live', label: 'Live Tail', icon: Radio },
+      { href: '/alerts', label: 'Alerts', icon: Bell },
+      { href: '/system', label: 'System', icon: HardDrive },
+    ],
+  },
+  {
+    title: 'Tools',
+    links: [
+      { href: '/queries', label: 'Saved Queries', icon: Bookmark },
+      { href: '/endpoints', label: 'Endpoints', icon: Zap },
+    ],
+  },
+  {
+    title: 'Integrations',
+    links: [
+      { href: '/integrations', label: 'Setup Guides', icon: FileText },
+      { href: '/keys', label: 'API Keys', icon: Key },
+      { href: '/llms.txt', label: 'LLMs.txt', icon: Bot },
+      { href: '/mcp-setup', label: 'MCP', icon: Plug },
+    ],
+  },
 ]
 
 interface MobileNavProps {
@@ -33,12 +59,10 @@ interface MobileNavProps {
 export function MobileNav({ currentPath }: MobileNavProps) {
   const [isOpen, setIsOpen] = useState(false)
 
-  // Close menu on route change
   useEffect(() => {
     setIsOpen(false)
   }, [currentPath])
 
-  // Prevent body scroll when menu is open
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden'
@@ -52,7 +76,6 @@ export function MobileNav({ currentPath }: MobileNavProps) {
 
   return (
     <div className="md:hidden">
-      {/* Hamburger Button */}
       <button
         onClick={() => setIsOpen(true)}
         className="p-2 rounded-md text-gray-400 hover:text-white hover:bg-cannon-steel transition-colors touch-target"
@@ -61,10 +84,8 @@ export function MobileNav({ currentPath }: MobileNavProps) {
         <Menu className="w-6 h-6" />
       </button>
 
-      {/* Overlay + Drawer rendered via portal to escape nav's backdrop-filter stacking context */}
       {typeof document !== 'undefined' && createPortal(
         <>
-          {/* Overlay */}
           {isOpen && (
             <div
               className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] animate-fade-in"
@@ -72,7 +93,6 @@ export function MobileNav({ currentPath }: MobileNavProps) {
             />
           )}
 
-          {/* Drawer */}
           <div
             className={`
               fixed top-0 left-0 bottom-0 w-72 bg-cannon-charcoal z-[101]
@@ -110,35 +130,44 @@ export function MobileNav({ currentPath }: MobileNavProps) {
             </div>
 
             {/* Navigation Links */}
-            <nav className="p-4 space-y-2">
-              {navLinks.map((link) => {
-                const isActive = currentPath === link.href
-                const Icon = link.icon
-                return (
-                  <Link
-                    key={link.href}
-                    href={link.href}
-                    onClick={() => setIsOpen(false)}
-                    className={`
-                      flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-all
-                      touch-target
-                      ${isActive
-                        ? 'bg-cannon-fire/10 text-cannon-fire border-l-2 border-cannon-fire'
-                        : 'text-gray-300 hover:bg-cannon-steel hover:text-white'
-                      }
-                    `}
-                  >
-                    <Icon className="w-5 h-5" />
-                    <span>{link.label}</span>
-                    {link.href === '/live' && (
-                      <span className="ml-auto relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cannon-tracer opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-cannon-tracer"></span>
-                      </span>
-                    )}
-                  </Link>
-                )
-              })}
+            <nav className="p-4 space-y-1 overflow-y-auto" style={{ maxHeight: 'calc(100vh - 140px)' }}>
+              {navSections.map((section, sectionIdx) => (
+                <div key={section.title ?? sectionIdx}>
+                  {section.title && (
+                    <div className={`px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 ${sectionIdx > 0 ? 'mt-4 pt-4 border-t border-cannon-graphite' : ''}`}>
+                      {section.title}
+                    </div>
+                  )}
+                  {section.links.map((link) => {
+                    const isActive = currentPath === link.href
+                    const Icon = link.icon
+                    return (
+                      <Link
+                        key={link.href}
+                        href={link.href}
+                        onClick={() => setIsOpen(false)}
+                        className={`
+                          flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-all
+                          touch-target
+                          ${isActive
+                            ? 'bg-cannon-fire/10 text-cannon-fire border-l-2 border-cannon-fire'
+                            : 'text-gray-300 hover:bg-cannon-steel hover:text-white'
+                          }
+                        `}
+                      >
+                        <Icon className="w-5 h-5" />
+                        <span>{link.label}</span>
+                        {link.href === '/live' && (
+                          <span className="ml-auto relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cannon-tracer opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-cannon-tracer"></span>
+                          </span>
+                        )}
+                      </Link>
+                    )
+                  })}
+                </div>
+              ))}
             </nav>
 
             {/* Auth Section */}
