@@ -214,7 +214,7 @@ html {
 
 /* Backdrop blur for nav */
 .nav-blur {
-  @apply backdrop-blur-md bg-cannon-black/90;
+  @apply backdrop-blur-md bg-cannon-black/90 max-md:bg-cannon-black;
 }
 
 /* Touch-friendly targets */
