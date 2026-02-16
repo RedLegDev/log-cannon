@@ -15,6 +15,7 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -222,8 +223,9 @@ func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Try JSON first, fallback to protobuf
-		if err := json.Unmarshal(body, &exportReq); err != nil {
+		// Use protojson for correct proto3 JSON mapping (handles string-encoded uint64, etc.)
+		if err := protojson.Unmarshal(body, &exportReq); err != nil {
+			// Fallback to protobuf binary in case content-type is wrong
 			if err2 := proto.Unmarshal(body, &exportReq); err2 != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				json.NewEncoder(w).Encode(map[string]string{"Error": fmt.Sprintf("Failed to parse body as JSON or protobuf: json=%v, proto=%v", err, err2)})
@@ -351,8 +353,9 @@ func (s *Server) handleOTLPTraces(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// Try JSON first, fallback to protobuf
-		if err := json.Unmarshal(body, &exportReq); err != nil {
+		// Use protojson for correct proto3 JSON mapping (handles string-encoded uint64, etc.)
+		if err := protojson.Unmarshal(body, &exportReq); err != nil {
+			// Fallback to protobuf binary in case content-type is wrong
 			if err2 := proto.Unmarshal(body, &exportReq); err2 != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				json.NewEncoder(w).Encode(map[string]string{"Error": fmt.Sprintf("Failed to parse body as JSON or protobuf: json=%v, proto=%v", err, err2)})
