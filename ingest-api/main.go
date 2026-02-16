@@ -421,6 +421,11 @@ func parseCLEFLine(line string, source string) (*LogEvent, error) {
 		}
 	}
 
+	// Clamp future timestamps to now
+	if ts.After(time.Now()) {
+		ts = time.Now()
+	}
+
 	// Extract optional CLEF fields
 	level := "Information"
 	if l, ok := raw["@l"].(string); ok {
