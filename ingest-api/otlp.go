@@ -170,23 +170,9 @@ func getResourceServiceName(attrs []*commonpb.KeyValue) string {
 	return ""
 }
 
-// extractOTLPAPIKey extracts the API key from headers or query parameters
-// for OTLP endpoints. Checks X-Seq-ApiKey, apiKey query param, and
-// Authorization: Bearer header.
+// extractOTLPAPIKey delegates to the shared extractAPIKey in main.go.
 func extractOTLPAPIKey(r *http.Request) string {
-	apiKey := r.Header.Get("X-Seq-ApiKey")
-	if apiKey != "" {
-		return apiKey
-	}
-	apiKey = r.URL.Query().Get("apiKey")
-	if apiKey != "" {
-		return apiKey
-	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
-	}
-	return ""
+	return extractAPIKey(r)
 }
 
 // handleOTLPLogs handles POST /v1/logs for OTLP log ingestion.

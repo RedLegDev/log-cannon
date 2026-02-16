@@ -295,7 +295,28 @@ func (s *Server) addEventsToBatch(events []LogEvent) {
 func setCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Seq-ApiKey")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Seq-ApiKey, X-Api-Key, Authorization")
+}
+
+// extractAPIKey extracts an API key from the request, checking multiple sources:
+// 1. X-Api-Key header (preferred)
+// 2. X-Seq-ApiKey header (backward compatibility with Seq/Serilog clients)
+// 3. apiKey query parameter
+// 4. Authorization: Bearer header
+func extractAPIKey(r *http.Request) string {
+	if key := r.Header.Get("X-Api-Key"); key != "" {
+		return key
+	}
+	if key := r.Header.Get("X-Seq-ApiKey"); key != "" {
+		return key
+	}
+	if key := r.URL.Query().Get("apiKey"); key != "" {
+		return key
+	}
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+	return ""
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -322,11 +343,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract API key
-	apiKey := r.Header.Get("X-Seq-ApiKey")
-	if apiKey == "" {
-		apiKey = r.URL.Query().Get("apiKey")
-	}
-
+	apiKey := extractAPIKey(r)
 	if apiKey == "" {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]string{"Error": "API key required"})

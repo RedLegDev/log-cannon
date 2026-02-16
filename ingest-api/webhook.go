@@ -25,12 +25,8 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract API key from header or query param
-	apiKey := r.Header.Get("X-Seq-ApiKey")
-	if apiKey == "" {
-		apiKey = r.URL.Query().Get("apiKey")
-	}
-
+	// Extract API key
+	apiKey := extractAPIKey(r)
 	if apiKey == "" {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(map[string]string{"Error": "API key required"})

@@ -100,7 +100,7 @@ Log.Information("Order {OrderId} placed by {User}", orderId, user);`;
   -H "Authorization: Bearer {cf_api_token}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "destination_conf": "${ingestBase}/ingest/webhook?preset=cloudflare&header_X-Seq-ApiKey={your_lc_api_key}",
+    "destination_conf": "${ingestBase}/ingest/webhook?preset=cloudflare&header_X-Api-Key={your_lc_api_key}",
     "dataset": "http_requests",
     "enabled": true,
     "output_options": ${cloudflareOutputOptions}
@@ -127,7 +127,7 @@ import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs
 
 const exporter = new OTLPLogExporter({
   url: '${ingestBase}/v1/logs',
-  headers: { 'X-Seq-ApiKey': 'your-api-key' },
+  headers: { 'X-Api-Key': 'your-api-key' },
 });
 
 const loggerProvider = new LoggerProvider();
@@ -140,7 +140,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
 
   const otelCurl = `curl -X POST "${ingestBase}/v1/logs" \\
   -H "Content-Type: application/json" \\
-  -H "X-Seq-ApiKey: your-api-key" \\
+  -H "X-Api-Key: your-api-key" \\
   -d '{
     "resourceLogs": [{
       "resource": { "attributes": [{ "key": "service.name", "value": { "stringValue": "test" } }] },
@@ -156,7 +156,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
 
   const webhookBasicCurl = `curl -X POST "${ingestBase}/ingest/webhook" \\
   -H "Content-Type: application/json" \\
-  -H "X-Seq-ApiKey: your-api-key" \\
+  -H "X-Api-Key: your-api-key" \\
   -d '{"message": "deploy finished", "level": "Information", "source": "ci-pipeline"}'`;
 
   const webhookGzipCurl = `echo '{"message":"compressed log","level":"Information"}' \\
@@ -164,7 +164,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
   | curl -X POST "${ingestBase}/ingest/webhook" \\
     -H "Content-Type: application/json" \\
     -H "Content-Encoding: gzip" \\
-    -H "X-Seq-ApiKey: your-api-key" \\
+    -H "X-Api-Key: your-api-key" \\
     --data-binary @-`;
 
   return (
@@ -181,9 +181,27 @@ logger.emit({ body: 'Hello from OTel!' });`;
       <div className="bg-cannon-iron border border-cannon-graphite rounded-lg p-6 mb-6">
         <h2 className="text-lg font-semibold text-white mb-3">Authentication</h2>
         <p className="text-gray-400 text-sm mb-3">
-          All endpoints require an API key passed via the <code className="text-cannon-fire bg-cannon-charcoal px-1.5 py-0.5 rounded">X-Seq-ApiKey</code> header.
+          All endpoints require an API key. Use any of these methods:
         </p>
-        <CodeBlock code={`X-Seq-ApiKey: your-api-key`} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+          <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
+            <span className="text-gray-500 block text-xs mb-1">Header (preferred)</span>
+            <code className="text-cannon-fire text-sm">X-Api-Key: your-key</code>
+          </div>
+          <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
+            <span className="text-gray-500 block text-xs mb-1">Seq-compatible header</span>
+            <code className="text-cannon-fire text-sm">X-Seq-ApiKey: your-key</code>
+          </div>
+          <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
+            <span className="text-gray-500 block text-xs mb-1">Bearer token</span>
+            <code className="text-cannon-fire text-sm">Authorization: Bearer your-key</code>
+          </div>
+          <div className="bg-cannon-charcoal border border-cannon-graphite rounded-lg px-3 py-2">
+            <span className="text-gray-500 block text-xs mb-1">Query parameter</span>
+            <code className="text-cannon-fire text-sm">?apiKey=your-key</code>
+          </div>
+        </div>
+        <CodeBlock code={`X-Api-Key: your-api-key`} />
         <div className="flex items-center gap-2 text-sm mt-3">
           <Key className="w-4 h-4 text-gray-400" />
           <span className="text-gray-400">Need an API key?</span>
@@ -227,7 +245,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
           </div>
         </div>
         <p className="text-gray-500 text-sm mt-4 pt-4 border-t border-cannon-graphite">
-          Pass your API key via the <code className="text-gray-400">X-Seq-ApiKey</code> header on all requests.
+          Pass your API key via the <code className="text-gray-400">X-Api-Key</code> header on all requests.
         </p>
       </div>
 
