@@ -100,7 +100,7 @@ Log.Information("Order {OrderId} placed by {User}", orderId, user);`;
   -H "Authorization: Bearer {cf_api_token}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "destination_conf": "${ingestBase}/ingest/webhook?preset=cloudflare&header_X-Api-Key={your_lc_api_key}",
+    "destination_conf": "${ingestBase}/ingest/webhook?preset=cloudflare&header_X-Seq-ApiKey={your_lc_api_key}",
     "dataset": "http_requests",
     "enabled": true,
     "output_options": ${cloudflareOutputOptions}
@@ -127,7 +127,7 @@ import { LoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs
 
 const exporter = new OTLPLogExporter({
   url: '${ingestBase}/v1/logs',
-  headers: { 'X-Api-Key': 'your-api-key' },
+  headers: { 'X-Seq-ApiKey': 'your-api-key' },
 });
 
 const loggerProvider = new LoggerProvider();
@@ -140,7 +140,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
 
   const otelCurl = `curl -X POST "${ingestBase}/v1/logs" \\
   -H "Content-Type: application/json" \\
-  -H "X-Api-Key: your-api-key" \\
+  -H "X-Seq-ApiKey: your-api-key" \\
   -d '{
     "resourceLogs": [{
       "resource": { "attributes": [{ "key": "service.name", "value": { "stringValue": "test" } }] },
@@ -156,7 +156,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
 
   const webhookBasicCurl = `curl -X POST "${ingestBase}/ingest/webhook" \\
   -H "Content-Type: application/json" \\
-  -H "X-Api-Key: your-api-key" \\
+  -H "X-Seq-ApiKey: your-api-key" \\
   -d '{"message": "deploy finished", "level": "Information", "source": "ci-pipeline"}'`;
 
   const webhookGzipCurl = `echo '{"message":"compressed log","level":"Information"}' \\
@@ -164,7 +164,7 @@ logger.emit({ body: 'Hello from OTel!' });`;
   | curl -X POST "${ingestBase}/ingest/webhook" \\
     -H "Content-Type: application/json" \\
     -H "Content-Encoding: gzip" \\
-    -H "X-Api-Key: your-api-key" \\
+    -H "X-Seq-ApiKey: your-api-key" \\
     --data-binary @-`;
 
   return (
@@ -175,6 +175,22 @@ logger.emit({ body: 'Hello from OTel!' });`;
         <p className="text-gray-400">
           Send logs to Log Cannon from any source. All endpoints feed into the same events table and dashboard.
         </p>
+      </div>
+
+      {/* Authentication */}
+      <div className="bg-cannon-iron border border-cannon-graphite rounded-lg p-6 mb-6">
+        <h2 className="text-lg font-semibold text-white mb-3">Authentication</h2>
+        <p className="text-gray-400 text-sm mb-3">
+          All endpoints require an API key passed via the <code className="text-cannon-fire bg-cannon-charcoal px-1.5 py-0.5 rounded">X-Seq-ApiKey</code> header.
+        </p>
+        <CodeBlock code={`X-Seq-ApiKey: your-api-key`} />
+        <div className="flex items-center gap-2 text-sm mt-3">
+          <Key className="w-4 h-4 text-gray-400" />
+          <span className="text-gray-400">Need an API key?</span>
+          <Link href="/keys" className="text-cannon-fire hover:text-cannon-ember transition-colors inline-flex items-center gap-1">
+            Manage API Keys <ExternalLink className="w-3 h-3" />
+          </Link>
+        </div>
       </div>
 
       {/* Endpoints Overview */}
@@ -210,13 +226,9 @@ logger.emit({ body: 'Hello from OTel!' });`;
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2 text-sm mt-4 pt-4 border-t border-cannon-graphite">
-          <Key className="w-4 h-4 text-gray-400" />
-          <span className="text-gray-400">All endpoints require an API key.</span>
-          <Link href="/keys" className="text-cannon-fire hover:text-cannon-ember transition-colors inline-flex items-center gap-1">
-            Manage API Keys <ExternalLink className="w-3 h-3" />
-          </Link>
-        </div>
+        <p className="text-gray-500 text-sm mt-4 pt-4 border-t border-cannon-graphite">
+          Pass your API key via the <code className="text-gray-400">X-Seq-ApiKey</code> header on all requests.
+        </p>
       </div>
 
       <div className="space-y-4">
@@ -326,19 +338,11 @@ logger.emit({ body: 'Hello from OTel!' });`;
                 <tbody className="text-gray-300">
                   <tr className="border-b border-cannon-graphite/50">
                     <td className="px-4 py-2 font-mono text-cannon-fire">cloudflare</td>
-                    <td className="px-4 py-2">Cloudflare Logpush</td>
-                  </tr>
-                  <tr className="border-b border-cannon-graphite/50">
-                    <td className="px-4 py-2 font-mono text-cannon-fire">github</td>
-                    <td className="px-4 py-2">GitHub Webhooks</td>
-                  </tr>
-                  <tr className="border-b border-cannon-graphite/50">
-                    <td className="px-4 py-2 font-mono text-cannon-fire">vercel</td>
-                    <td className="px-4 py-2">Vercel Log Drains</td>
+                    <td className="px-4 py-2">Cloudflare Logpush — maps EdgeStartTimestamp, EdgeResponseStatus, builds request message</td>
                   </tr>
                   <tr>
-                    <td className="px-4 py-2 font-mono text-cannon-fire">generic</td>
-                    <td className="px-4 py-2">Auto-detect (default)</td>
+                    <td className="px-4 py-2 font-mono text-gray-400">(none)</td>
+                    <td className="px-4 py-2">Auto-detect — scans for common timestamp/level field names</td>
                   </tr>
                 </tbody>
               </table>
