@@ -11,6 +11,7 @@ const TOOLS = [
   { name: 'list_dashboards', scope: 'read', description: 'List all configured dashboards with their widget configurations' },
   { name: 'get_dashboard', scope: 'read', description: 'Get a specific dashboard by name' },
   { name: 'list_alerts', scope: 'read', description: 'List all alert rules with their query, condition, and notification settings' },
+  { name: 'list_destinations', scope: 'read', description: 'List all alert destinations (email and webhook notification targets)' },
   { name: 'get_overview', scope: 'read', description: 'One-shot investigation starter: metrics, service breakdown, and top errors for the last 24h' },
   { name: 'get_service_overview', scope: 'read', description: 'All sources/services with log counts, error counts, error rates, and last seen' },
   { name: 'get_error_summary', scope: 'read', description: 'Errors grouped by message template with counts and sample messages (much more compact than raw logs)' },
@@ -20,9 +21,13 @@ const TOOLS = [
   { name: 'create_dashboard', scope: 'write', description: 'Create a new dashboard with configurable widgets' },
   { name: 'update_dashboard', scope: 'write', description: 'Update an existing dashboard by name' },
   { name: 'delete_dashboard', scope: 'write', description: 'Delete a dashboard by name' },
-  { name: 'create_alert', scope: 'write', description: 'Create a threshold alert rule with email notifications' },
+  { name: 'create_alert', scope: 'write', description: 'Create a threshold alert rule with destination-based notifications' },
   { name: 'update_alert', scope: 'write', description: 'Update an existing alert rule' },
   { name: 'delete_alert', scope: 'write', description: 'Delete an alert rule by ID' },
+  { name: 'create_destination', scope: 'write', description: 'Create a reusable alert destination (email or webhook)' },
+  { name: 'update_destination', scope: 'write', description: 'Update an existing alert destination' },
+  { name: 'delete_destination', scope: 'write', description: 'Delete an alert destination by ID' },
+  { name: 'send_to_destination', scope: 'write', description: 'Send a log event to a destination — test webhooks or escalate specific events' },
 ];
 
 function CopyButton({ text }: { text: string }) {
