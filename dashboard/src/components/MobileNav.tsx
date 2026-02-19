@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
-import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug, FileText } from 'lucide-react'
+import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug, FileText, Send } from 'lucide-react'
 import {
   SignInButton,
   SignUpButton,
@@ -31,6 +31,7 @@ const navSections: NavSection[] = [
       { href: '/dashboards', label: 'Dashboards', icon: LayoutDashboard },
       { href: '/live', label: 'Live Tail', icon: Radio },
       { href: '/alerts', label: 'Alerts', icon: Bell },
+      { href: '/destinations', label: 'Destinations', icon: Send },
       { href: '/system', label: 'System', icon: HardDrive },
     ],
   },

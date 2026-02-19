@@ -34,7 +34,13 @@ const navItems: NavItem[] = [
   { href: '/services', label: 'Services' },
   { href: '/dashboards', label: 'Dashboards' },
   { href: '/live', label: 'Live Tail' },
-  { href: '/alerts', label: 'Alerts' },
+  {
+    label: 'Alerts',
+    children: [
+      { href: '/alerts', label: 'Alert Rules' },
+      { href: '/destinations', label: 'Destinations' },
+    ],
+  },
   {
     label: 'Tools',
     children: [

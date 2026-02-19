@@ -831,6 +831,7 @@ export interface Alert {
   interval_seconds: number;
   cooldown_seconds: number;
   recipients: string;  // JSON array string
+  destination_ids: string;  // JSON array string
   subject: string;
   enabled: number;
   created_at: string;
@@ -844,7 +845,8 @@ export interface AlertInput {
   condition: string;
   interval_seconds?: number;
   cooldown_seconds?: number;
-  recipients: string[];
+  recipients?: string[];
+  destination_ids?: string[];
   subject: string;
 }
 
@@ -859,6 +861,7 @@ export async function getAlerts(): Promise<Alert[]> {
       interval_seconds,
       cooldown_seconds,
       recipients,
+      destination_ids,
       subject,
       enabled,
       formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
@@ -881,6 +884,7 @@ export async function getAlertById(id: string): Promise<Alert | null> {
       interval_seconds,
       cooldown_seconds,
       recipients,
+      destination_ids,
       subject,
       enabled,
       formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
@@ -895,9 +899,10 @@ export async function getAlertById(id: string): Promise<Alert | null> {
 }
 
 export async function createAlert(alert: AlertInput): Promise<void> {
-  const recipientsJson = JSON.stringify(alert.recipients);
+  const recipientsJson = JSON.stringify(alert.recipients || []);
+  const destinationIdsJson = JSON.stringify(alert.destination_ids || []);
   const sql = `
-    INSERT INTO logs.alerts (name, description, query, condition, interval_seconds, cooldown_seconds, recipients, subject)
+    INSERT INTO logs.alerts (name, description, query, condition, interval_seconds, cooldown_seconds, recipients, destination_ids, subject)
     VALUES (
       '${escapeString(alert.name)}',
       '${escapeString(alert.description || '')}',
@@ -906,6 +911,7 @@ export async function createAlert(alert: AlertInput): Promise<void> {
       ${alert.interval_seconds || 60},
       ${alert.cooldown_seconds || 300},
       '${escapeString(recipientsJson)}',
+      '${escapeString(destinationIdsJson)}',
       '${escapeString(alert.subject)}'
     )
   `;
@@ -937,6 +943,10 @@ export async function updateAlert(id: string, updates: Partial<AlertInput> & { e
   if (updates.recipients !== undefined) {
     const recipientsJson = JSON.stringify(updates.recipients);
     setClauses.push(`recipients = '${escapeString(recipientsJson)}'`);
+  }
+  if (updates.destination_ids !== undefined) {
+    const destinationIdsJson = JSON.stringify(updates.destination_ids);
+    setClauses.push(`destination_ids = '${escapeString(destinationIdsJson)}'`);
   }
   if (updates.subject !== undefined) {
     setClauses.push(`subject = '${escapeString(updates.subject)}'`);
@@ -973,6 +983,118 @@ export async function testAlertQuery(query: string): Promise<Record<string, unkn
   }
 
   return queryClickHouse<Record<string, unknown>>(query);
+}
+
+// Alert Destinations
+
+export interface AlertDestination {
+  id: string;
+  name: string;
+  type: string;
+  config: string;
+  enabled: number;
+  created_at: string;
+}
+
+export interface EmailDestinationConfig {
+  email: string;
+  from?: string;
+}
+
+export interface WebhookDestinationConfig {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  timeout_seconds?: number;
+}
+
+export interface AlertDestinationInput {
+  name: string;
+  type: 'email' | 'webhook';
+  config: EmailDestinationConfig | WebhookDestinationConfig;
+}
+
+export async function getAlertDestinations(): Promise<AlertDestination[]> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      type,
+      config,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at
+    FROM logs.alert_destinations
+    ORDER BY created_at DESC
+  `;
+
+  return queryClickHouse<AlertDestination>(sql);
+}
+
+export async function getAlertDestinationById(id: string): Promise<AlertDestination | null> {
+  const sql = `
+    SELECT
+      toString(id) as id,
+      name,
+      type,
+      config,
+      enabled,
+      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at
+    FROM logs.alert_destinations
+    WHERE id = '${escapeString(id)}'
+    LIMIT 1
+  `;
+
+  const results = await queryClickHouse<AlertDestination>(sql);
+  return results.length > 0 ? results[0] : null;
+}
+
+export async function createAlertDestination(dest: AlertDestinationInput): Promise<void> {
+  const configJson = JSON.stringify(dest.config);
+  const sql = `
+    INSERT INTO logs.alert_destinations (name, type, config)
+    VALUES (
+      '${escapeString(dest.name)}',
+      '${escapeString(dest.type)}',
+      '${escapeString(configJson)}'
+    )
+  `;
+
+  await executeClickHouse(sql);
+}
+
+export async function updateAlertDestination(
+  id: string,
+  updates: Partial<AlertDestinationInput> & { enabled?: boolean }
+): Promise<void> {
+  const setClauses: string[] = [];
+
+  if (updates.name !== undefined) {
+    setClauses.push(`name = '${escapeString(updates.name)}'`);
+  }
+  if (updates.type !== undefined) {
+    setClauses.push(`type = '${escapeString(updates.type)}'`);
+  }
+  if (updates.config !== undefined) {
+    setClauses.push(`config = '${escapeString(JSON.stringify(updates.config))}'`);
+  }
+  if (updates.enabled !== undefined) {
+    setClauses.push(`enabled = ${updates.enabled ? 1 : 0}`);
+  }
+
+  if (setClauses.length === 0) return;
+
+  await executeClickHouse(`
+    ALTER TABLE logs.alert_destinations
+    UPDATE ${setClauses.join(', ')}
+    WHERE id = '${escapeString(id)}'
+  `);
+}
+
+export async function deleteAlertDestination(id: string): Promise<void> {
+  await executeClickHouse(`
+    ALTER TABLE logs.alert_destinations
+    DELETE WHERE id = '${escapeString(id)}'
+  `);
 }
 
 // Landing Page Metrics

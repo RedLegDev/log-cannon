@@ -12,10 +12,19 @@ interface Alert {
   interval_seconds: number;
   cooldown_seconds: number;
   recipients: string;
+  destination_ids: string;
   subject: string;
   enabled: number;
   created_at: string;
   last_triggered_at: string;
+}
+
+interface Destination {
+  id: string;
+  name: string;
+  type: string;
+  config: string;
+  enabled: number;
 }
 
 interface TestResult {
@@ -35,6 +44,9 @@ export default function AlertsPage() {
   const [testingAlertId, setTestingAlertId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
+  // Destinations
+  const [availableDestinations, setAvailableDestinations] = useState<Destination[]>([]);
+
   // Form state
   const [formName, setFormName] = useState('');
   const [formDescription, setFormDescription] = useState('');
@@ -42,7 +54,7 @@ export default function AlertsPage() {
   const [formCondition, setFormCondition] = useState('');
   const [formIntervalSeconds, setFormIntervalSeconds] = useState(60);
   const [formCooldownSeconds, setFormCooldownSeconds] = useState(300);
-  const [formRecipients, setFormRecipients] = useState('');
+  const [formDestinationIds, setFormDestinationIds] = useState<string[]>([]);
   const [formSubject, setFormSubject] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -60,8 +72,18 @@ export default function AlertsPage() {
     }
   };
 
+  const fetchDestinations = async () => {
+    try {
+      const res = await fetch('/api/alert-destinations');
+      if (res.ok) setAvailableDestinations(await res.json());
+    } catch {
+      // silently fail - destinations are optional
+    }
+  };
+
   useEffect(() => {
     fetchAlerts();
+    fetchDestinations();
   }, []);
 
   const resetForm = () => {
@@ -71,7 +93,7 @@ export default function AlertsPage() {
     setFormCondition('');
     setFormIntervalSeconds(60);
     setFormCooldownSeconds(300);
-    setFormRecipients('');
+    setFormDestinationIds([]);
     setFormSubject('');
     setEditingAlert(null);
     setShowCreateForm(false);
@@ -79,14 +101,13 @@ export default function AlertsPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formName.trim() || !formQuery.trim() || !formCondition.trim() || !formSubject.trim() || !formRecipients.trim()) {
+    if (!formName.trim() || !formQuery.trim() || !formCondition.trim() || !formSubject.trim()) {
       setError('Please fill in all required fields');
       return;
     }
 
-    const recipients = formRecipients.split(',').map(r => r.trim()).filter(r => r);
-    if (recipients.length === 0) {
-      setError('At least one recipient email is required');
+    if (formDestinationIds.length === 0) {
+      setError('At least one destination is required');
       return;
     }
 
@@ -102,7 +123,7 @@ export default function AlertsPage() {
           condition: formCondition.trim(),
           interval_seconds: formIntervalSeconds,
           cooldown_seconds: formCooldownSeconds,
-          recipients,
+          destination_ids: formDestinationIds,
           subject: formSubject.trim()
         })
       });
@@ -123,9 +144,8 @@ export default function AlertsPage() {
     e.preventDefault();
     if (!editingAlert) return;
 
-    const recipients = formRecipients.split(',').map(r => r.trim()).filter(r => r);
-    if (recipients.length === 0) {
-      setError('At least one recipient email is required');
+    if (formDestinationIds.length === 0) {
+      setError('At least one destination is required');
       return;
     }
 
@@ -142,7 +162,7 @@ export default function AlertsPage() {
           condition: formCondition.trim(),
           interval_seconds: formIntervalSeconds,
           cooldown_seconds: formCooldownSeconds,
-          recipients,
+          destination_ids: formDestinationIds,
           subject: formSubject.trim()
         })
       });
@@ -218,10 +238,10 @@ export default function AlertsPage() {
     setFormIntervalSeconds(alert.interval_seconds);
     setFormCooldownSeconds(alert.cooldown_seconds);
     try {
-      const recipients = JSON.parse(alert.recipients);
-      setFormRecipients(Array.isArray(recipients) ? recipients.join(', ') : '');
+      const destIds = JSON.parse(alert.destination_ids || '[]');
+      setFormDestinationIds(Array.isArray(destIds) ? destIds : []);
     } catch {
-      setFormRecipients('');
+      setFormDestinationIds([]);
     }
     setFormSubject(alert.subject);
     setShowCreateForm(true);
@@ -252,7 +272,7 @@ export default function AlertsPage() {
             <span className="text-cannon-fire">Alerts</span>
           </h1>
           <p className="text-text-secondary text-sm mt-1">
-            Configure threshold-based alerts with email notifications
+            Configure threshold-based alerts with email and webhook destinations
           </p>
         </div>
         {!showCreateForm && (
@@ -405,15 +425,42 @@ export default function AlertsPage() {
             </div>
 
             <div>
-              <label className="block text-text-secondary text-sm mb-1">Recipients * (comma-separated emails)</label>
-              <input
-                type="text"
-                placeholder="alerts@example.com, oncall@example.com"
-                value={formRecipients}
-                onChange={(e) => setFormRecipients(e.target.value)}
-                className="input-cannon w-full"
-                required
-              />
+              <label className="block text-text-secondary text-sm mb-1">
+                Destinations *
+                <a href="/destinations" className="ml-2 text-cannon-fire hover:underline text-xs">
+                  Manage destinations
+                </a>
+              </label>
+              {availableDestinations.length === 0 ? (
+                <p className="text-text-muted text-sm py-2">
+                  No destinations configured. <a href="/destinations" className="text-cannon-fire hover:underline">Create one first.</a>
+                </p>
+              ) : (
+                <div className="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-cannon-graphite p-2">
+                  {availableDestinations.filter(d => d.enabled).map(dest => (
+                    <label key={dest.id} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-cannon-graphite cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formDestinationIds.includes(dest.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setFormDestinationIds(prev => [...prev, dest.id]);
+                          } else {
+                            setFormDestinationIds(prev => prev.filter(id => id !== dest.id));
+                          }
+                        }}
+                        className="accent-cannon-fire"
+                      />
+                      <span className="text-text-primary text-sm">{dest.name}</span>
+                      <span className={`ml-auto text-xs px-1.5 py-0.5 rounded ${
+                        dest.type === 'email'
+                          ? 'bg-cannon-tracer/20 text-cannon-tracer'
+                          : 'bg-cannon-fire/20 text-cannon-fire'
+                      }`}>{dest.type}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-3">
@@ -470,6 +517,7 @@ export default function AlertsPage() {
               testingAlertId={testingAlertId}
               parseRecipients={parseRecipients}
               formatLastTriggered={formatLastTriggered}
+              availableDestinations={availableDestinations}
             />
           ))}
         </div>
@@ -487,11 +535,16 @@ interface AlertCardProps {
   testingAlertId: string | null;
   parseRecipients: (json: string) => string[];
   formatLastTriggered: (timestamp: string) => string;
+  availableDestinations: Destination[];
 }
 
-function AlertCard({ alert, onToggle, onEdit, onDelete, onTest, testingAlertId, parseRecipients, formatLastTriggered }: AlertCardProps) {
+function AlertCard({ alert, onToggle, onEdit, onDelete, onTest, testingAlertId, parseRecipients, formatLastTriggered, availableDestinations }: AlertCardProps) {
   const [expanded, setExpanded] = useState(false);
   const recipients = parseRecipients(alert.recipients);
+  const destinationIds: string[] = (() => {
+    try { return JSON.parse(alert.destination_ids || '[]'); } catch { return []; }
+  })();
+  const alertDestinations = availableDestinations.filter(d => destinationIds.includes(d.id));
 
   return (
     <div className="card-cannon overflow-hidden">
@@ -584,13 +637,27 @@ function AlertCard({ alert, onToggle, onEdit, onDelete, onTest, testingAlertId, 
               <p className="text-text-primary text-sm">{alert.subject}</p>
             </div>
             <div>
-              <label className="block text-text-muted text-xs uppercase mb-1">Recipients</label>
+              <label className="block text-text-muted text-xs uppercase mb-1">Destinations</label>
               <div className="flex flex-wrap gap-1">
-                {recipients.map((email, i) => (
-                  <span key={i} className="px-2 py-0.5 rounded text-xs font-medium bg-cannon-graphite text-text-secondary">
-                    {email}
-                  </span>
-                ))}
+                {alertDestinations.length > 0 ? (
+                  alertDestinations.map((dest) => (
+                    <span key={dest.id} className={`px-2 py-0.5 rounded text-xs font-medium ${
+                      dest.type === 'email'
+                        ? 'bg-cannon-tracer/20 text-cannon-tracer'
+                        : 'bg-cannon-fire/20 text-cannon-fire'
+                    }`}>
+                      {dest.name}
+                    </span>
+                  ))
+                ) : recipients.length > 0 ? (
+                  recipients.map((email, i) => (
+                    <span key={i} className="px-2 py-0.5 rounded text-xs font-medium bg-cannon-graphite text-text-secondary">
+                      {email}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-text-muted text-xs">None configured</span>
+                )}
               </div>
             </div>
           </div>

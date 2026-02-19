@@ -18,6 +18,7 @@ export async function GET(request: NextRequest) {
       interval_seconds: a.interval_seconds,
       cooldown_seconds: a.cooldown_seconds,
       recipients: JSON.parse(a.recipients || '[]'),
+      destination_ids: JSON.parse(a.destination_ids || '[]'),
       subject: a.subject,
       enabled: Boolean(a.enabled),
       created_at: a.created_at,
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { name, description, query, condition, interval_seconds, cooldown_seconds, recipients, subject } = body;
+    const { name, description, query, condition, interval_seconds, cooldown_seconds, recipients, destination_ids, subject } = body;
 
     // Validation
     const errors: Record<string, string> = {};
@@ -60,8 +61,10 @@ export async function POST(request: NextRequest) {
       errors.subject = 'Required field';
     }
 
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      errors.recipients = 'At least one recipient email is required';
+    const hasDestinations = Array.isArray(destination_ids) && destination_ids.length > 0;
+    const hasRecipients = Array.isArray(recipients) && recipients.length > 0;
+    if (!hasDestinations && !hasRecipients) {
+      errors.destination_ids = 'At least one destination or recipient is required';
     }
 
     const intervalSecs = interval_seconds || 60;
@@ -80,7 +83,8 @@ export async function POST(request: NextRequest) {
       condition,
       interval_seconds: intervalSecs,
       cooldown_seconds: cooldown_seconds || 300,
-      recipients,
+      recipients: recipients || [],
+      destination_ids: destination_ids || [],
       subject,
     });
 

@@ -16,7 +16,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { name, description, query, condition, interval_seconds, cooldown_seconds, recipients, subject } = body;
+    const { name, description, query, condition, interval_seconds, cooldown_seconds, recipients, destination_ids, subject } = body;
 
     if (!name || typeof name !== 'string') {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
@@ -34,8 +34,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Subject is required' }, { status: 400 });
     }
 
-    if (!Array.isArray(recipients) || recipients.length === 0) {
-      return NextResponse.json({ error: 'At least one recipient is required' }, { status: 400 });
+    // Require either destination_ids or recipients
+    const hasDestinations = Array.isArray(destination_ids) && destination_ids.length > 0;
+    const hasRecipients = Array.isArray(recipients) && recipients.length > 0;
+    if (!hasDestinations && !hasRecipients) {
+      return NextResponse.json({ error: 'At least one destination or recipient is required' }, { status: 400 });
     }
 
     // Validate SQL is a SELECT statement
@@ -56,7 +59,8 @@ export async function POST(request: NextRequest) {
       condition,
       interval_seconds: intervalSecs,
       cooldown_seconds: cooldown_seconds || 300,
-      recipients,
+      recipients: recipients || [],
+      destination_ids: destination_ids || [],
       subject
     });
 

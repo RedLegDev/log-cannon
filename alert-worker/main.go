@@ -26,12 +26,43 @@ type Alert struct {
 	IntervalSeconds int       `json:"interval_seconds"`
 	CooldownSeconds int       `json:"cooldown_seconds"`
 	Recipients      []string  `json:"recipients"`
+	DestinationIDs  []string  `json:"destination_ids"`
 	Subject         string    `json:"subject"`
 	LastTriggeredAt time.Time `json:"last_triggered_at"`
 }
 
 type AlertState struct {
 	LastRun time.Time
+}
+
+type Destination struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Config  string `json:"config"`
+	Enabled uint8  `json:"enabled"`
+}
+
+type EmailConfig struct {
+	Email string `json:"email"`
+	From  string `json:"from"`
+}
+
+type WebhookConfig struct {
+	URL            string            `json:"url"`
+	Method         string            `json:"method"`
+	Headers        map[string]string `json:"headers"`
+	TimeoutSeconds int               `json:"timeout_seconds"`
+}
+
+type WebhookPayload struct {
+	AlertID       string                 `json:"alert_id"`
+	AlertName     string                 `json:"alert_name"`
+	Description   string                 `json:"description"`
+	Condition     string                 `json:"condition"`
+	TriggeredAt   string                 `json:"triggered_at"`
+	QueryResult   map[string]interface{} `json:"query_result"`
+	DashboardLink string                 `json:"dashboard_link"`
 }
 
 func main() {
@@ -45,7 +76,7 @@ func main() {
 	dashboardURL := getEnv("DASHBOARD_URL", "https://logs.redleg.dev")
 
 	if resendAPIKey == "" {
-		log.Fatal("RESEND_API_KEY environment variable is required")
+		log.Println("Warning: RESEND_API_KEY not set - email destinations will not work")
 	}
 
 	// Connect to ClickHouse
@@ -136,15 +167,7 @@ func main() {
 
 			// Send alert
 			log.Printf("[%s] Sending alert: %s", alert.ID, alert.Name)
-			textBody, htmlBody := formatAlertBody(alert, result, dashboardURL)
-
-			for _, recipient := range alert.Recipients {
-				if err := sendEmail(resendAPIKey, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
-					log.Printf("[%s] Failed to send email to %s: %v", alert.ID, recipient, err)
-				} else {
-					log.Printf("[%s] Email sent to %s", alert.ID, recipient)
-				}
-			}
+			dispatchAlert(conn, alert, result, resendAPIKey, fromEmail, dashboardURL)
 
 			// Update last_triggered_at in database
 			if err := updateLastTriggered(conn, alert.ID); err != nil {
@@ -167,6 +190,7 @@ func fetchAlertsFromDB(conn driver.Conn) ([]Alert, error) {
 			interval_seconds,
 			cooldown_seconds,
 			recipients,
+			destination_ids,
 			subject,
 			last_triggered_at
 		FROM logs.alerts
@@ -182,20 +206,21 @@ func fetchAlertsFromDB(conn driver.Conn) ([]Alert, error) {
 	var alerts []Alert
 	for rows.Next() {
 		var (
-			id              string
-			name            string
-			description     string
-			alertQuery      string
-			condition       string
-			intervalSeconds uint32
-			cooldownSeconds uint32
-			recipientsJSON  string
-			subject         string
-			lastTriggeredAt time.Time
+			id                 string
+			name               string
+			description        string
+			alertQuery         string
+			condition          string
+			intervalSeconds    uint32
+			cooldownSeconds    uint32
+			recipientsJSON     string
+			destinationIDsJSON string
+			subject            string
+			lastTriggeredAt    time.Time
 		)
 
 		if err := rows.Scan(&id, &name, &description, &alertQuery, &condition,
-			&intervalSeconds, &cooldownSeconds, &recipientsJSON, &subject, &lastTriggeredAt); err != nil {
+			&intervalSeconds, &cooldownSeconds, &recipientsJSON, &destinationIDsJSON, &subject, &lastTriggeredAt); err != nil {
 			return nil, fmt.Errorf("failed to scan alert row: %w", err)
 		}
 
@@ -204,6 +229,13 @@ func fetchAlertsFromDB(conn driver.Conn) ([]Alert, error) {
 		if err := json.Unmarshal([]byte(recipientsJSON), &recipients); err != nil {
 			log.Printf("Warning: Failed to parse recipients for alert %s: %v", id, err)
 			recipients = []string{}
+		}
+
+		// Parse destination_ids JSON
+		var destinationIDs []string
+		if err := json.Unmarshal([]byte(destinationIDsJSON), &destinationIDs); err != nil {
+			log.Printf("Warning: Failed to parse destination_ids for alert %s: %v", id, err)
+			destinationIDs = []string{}
 		}
 
 		// Enforce minimum interval
@@ -220,6 +252,7 @@ func fetchAlertsFromDB(conn driver.Conn) ([]Alert, error) {
 			IntervalSeconds: int(intervalSeconds),
 			CooldownSeconds: int(cooldownSeconds),
 			Recipients:      recipients,
+			DestinationIDs:  destinationIDs,
 			Subject:         subject,
 			LastTriggeredAt: lastTriggeredAt,
 		})
@@ -601,6 +634,144 @@ func sendEmail(apiKey, from, to, subject, textBody, htmlBody string) error {
 	}
 
 	return nil
+}
+
+func fetchDestinationsByIDs(conn driver.Conn, ids []string) ([]Destination, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = fmt.Sprintf("'%s'", id)
+	}
+	query := fmt.Sprintf(`
+		SELECT toString(id) as id, name, type, config, enabled
+		FROM logs.alert_destinations
+		WHERE id IN (%s) AND enabled = 1
+	`, strings.Join(quoted, ","))
+
+	rows, err := conn.Query(context.Background(), query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query destinations: %w", err)
+	}
+	defer rows.Close()
+
+	var destinations []Destination
+	for rows.Next() {
+		var d Destination
+		if err := rows.Scan(&d.ID, &d.Name, &d.Type, &d.Config, &d.Enabled); err != nil {
+			return nil, fmt.Errorf("failed to scan destination row: %w", err)
+		}
+		destinations = append(destinations, d)
+	}
+	return destinations, nil
+}
+
+func sendWebhook(cfg WebhookConfig, payload WebhookPayload) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	method := cfg.Method
+	if method == "" {
+		method = "POST"
+	}
+	timeout := cfg.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 10
+	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	req, err := http.NewRequest(method, cfg.URL, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range cfg.Headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("webhook error (status %d): %s", resp.StatusCode, respBody)
+	}
+	return nil
+}
+
+func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
+	resendAPIKey, fromEmail, dashboardURL string) {
+
+	textBody, htmlBody := formatAlertBody(alert, result, dashboardURL)
+
+	// New destinations path
+	if len(alert.DestinationIDs) > 0 {
+		destinations, err := fetchDestinationsByIDs(conn, alert.DestinationIDs)
+		if err != nil {
+			log.Printf("[%s] Failed to fetch destinations: %v", alert.ID, err)
+		}
+		for _, dest := range destinations {
+			switch dest.Type {
+			case "email":
+				var cfg EmailConfig
+				if err := json.Unmarshal([]byte(dest.Config), &cfg); err != nil {
+					log.Printf("[%s] Bad email config for dest %s: %v", alert.ID, dest.ID, err)
+					continue
+				}
+				from := fromEmail
+				if cfg.From != "" {
+					from = cfg.From
+				}
+				if resendAPIKey == "" {
+					log.Printf("[%s] Cannot send email to %s: RESEND_API_KEY not set", alert.ID, cfg.Email)
+					continue
+				}
+				if err := sendEmail(resendAPIKey, from, cfg.Email, alert.Subject, textBody, htmlBody); err != nil {
+					log.Printf("[%s] Email to %s failed: %v", alert.ID, cfg.Email, err)
+				} else {
+					log.Printf("[%s] Email sent to %s via dest %s", alert.ID, cfg.Email, dest.Name)
+				}
+			case "webhook":
+				var cfg WebhookConfig
+				if err := json.Unmarshal([]byte(dest.Config), &cfg); err != nil {
+					log.Printf("[%s] Bad webhook config for dest %s: %v", alert.ID, dest.ID, err)
+					continue
+				}
+				payload := WebhookPayload{
+					AlertID:       alert.ID,
+					AlertName:     alert.Name,
+					Description:   alert.Description,
+					Condition:     alert.Condition,
+					TriggeredAt:   time.Now().UTC().Format(time.RFC3339),
+					QueryResult:   result,
+					DashboardLink: fmt.Sprintf("%s/alerts", dashboardURL),
+				}
+				if err := sendWebhook(cfg, payload); err != nil {
+					log.Printf("[%s] Webhook to %s failed: %v", alert.ID, cfg.URL, err)
+				} else {
+					log.Printf("[%s] Webhook sent to %s via dest %s", alert.ID, cfg.URL, dest.Name)
+				}
+			default:
+				log.Printf("[%s] Unknown destination type: %s", alert.ID, dest.Type)
+			}
+		}
+		return
+	}
+
+	// Legacy recipients fallback
+	for _, recipient := range alert.Recipients {
+		if resendAPIKey == "" {
+			log.Printf("[%s] Cannot send email to %s: RESEND_API_KEY not set", alert.ID, recipient)
+			continue
+		}
+		if err := sendEmail(resendAPIKey, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
+			log.Printf("[%s] Failed to send email to %s: %v", alert.ID, recipient, err)
+		} else {
+			log.Printf("[%s] Email sent to %s", alert.ID, recipient)
+		}
+	}
 }
 
 func getEnv(key, defaultVal string) string {
