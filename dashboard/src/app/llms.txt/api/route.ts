@@ -93,7 +93,7 @@ POST /api/v1/alerts/:id/test        # Test alert query
   "condition": "cnt > 50",
   "interval_seconds": 60,
   "cooldown_seconds": 300,
-  "recipients": ["ops@example.com"],
+  "destination_ids": ["uuid-of-destination"],
   "subject": "[ALERT] High error rate detected"
 }
 \`\`\`
@@ -105,10 +105,62 @@ POST /api/v1/alerts/:id/test        # Test alert query
 - **condition**: Expression like \`cnt > 50\`, \`errors == 0\`, \`total >= 100 && errors > 5\` (required)
 - **interval_seconds**: How often to check (min 30, default 60)
 - **cooldown_seconds**: Min time between repeated alerts (default 300)
-- **recipients**: Array of email addresses (required, at least one)
+- **destination_ids**: Array of alert destination UUIDs (preferred — see Alert Destinations below)
+- **recipients**: Array of email addresses (legacy, use destination_ids instead)
 - **subject**: Email subject line (required)
 
 **Condition Syntax:** \`>\`, \`<\`, \`>=\`, \`<=\`, \`==\`, \`!=\`, \`&&\` (AND), \`||\` (OR). Variables are column names from your query.
+
+### Alert Destinations
+
+Reusable notification targets (email or webhook) that can be assigned to multiple alerts or triggered manually from the log explorer.
+
+\`\`\`bash
+GET /api/v1/alert-destinations              # List all destinations
+POST /api/v1/alert-destinations             # Create destination
+PATCH /api/v1/alert-destinations            # Update (pass id in body)
+DELETE /api/v1/alert-destinations           # Delete (pass id in body)
+\`\`\`
+
+**Create Email Destination:**
+\`\`\`json
+{
+  "name": "Ops Team",
+  "type": "email",
+  "config": { "email": "ops@example.com", "from": "alerts@yourdomain.com" }
+}
+\`\`\`
+
+**Create Webhook Destination:**
+\`\`\`json
+{
+  "name": "Make Scenario",
+  "type": "webhook",
+  "config": {
+    "url": "https://hook.make.com/abc123",
+    "method": "POST",
+    "headers": { "X-Custom-Auth": "token123" },
+    "timeout_seconds": 10
+  }
+}
+\`\`\`
+
+**Webhook Payload (sent by alerts and manual triggers):**
+\`\`\`json
+{
+  "alert_id": "uuid or 'manual'",
+  "alert_name": "High Error Rate",
+  "description": "...",
+  "condition": "cnt > 50",
+  "triggered_at": "2026-02-19T12:00:00Z",
+  "query_result": { "cnt": 127, "service": "api" },
+  "dashboard_link": "https://logs.example.com/alerts"
+}
+\`\`\`
+
+**Destination Types:**
+- **email**: Requires \`config.email\`. Optional \`config.from\` to override sender address.
+- **webhook**: Requires \`config.url\`. Optional \`config.method\` (default POST), \`config.headers\` (key-value pairs), \`config.timeout_seconds\` (default 10).
 
 ### API Keys (admin scope required)
 

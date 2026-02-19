@@ -21,6 +21,7 @@ Quick reference (see /llms.txt/api for full details):
 - **Ingest logs (CLEF):** \`POST /ingest/clef\` with \`X-Api-Key\` or \`X-Seq-ApiKey\` header (see /llms.txt/logger)
 - **Ingest logs (Webhook):** \`POST /ingest/webhook?preset=cloudflare\` — ndjson, gzip supported
 - **Ingest logs (OTLP):** \`POST /ingest/otlp/logs\` and \`POST /ingest/otlp/traces\` — OpenTelemetry protocol (also available at \`/v1/logs\` and \`/v1/traces\`)
+- **Alert Destinations:** \`GET/POST/PATCH/DELETE /api/v1/alert-destinations\` — reusable notification targets (email + webhook)
 
 ## Dashboards
 
