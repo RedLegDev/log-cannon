@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { ChevronRight, ChevronDown, Check, X, AlertTriangle, Columns, MoreVertical, Copy, FileText, Link } from 'lucide-react'
+import { ChevronRight, ChevronDown, Check, X, AlertTriangle, Columns, MoreVertical, Copy, FileText, Link, Send, Mail, Globe, Loader2 } from 'lucide-react'
 import { ColumnConfig } from '@/hooks/useColumns'
 
 // ===== Expandable Text Component =====
@@ -113,6 +113,12 @@ function formatLogAsText(log: {
   return lines.join('\n')
 }
 
+export interface DestinationOption {
+  id: string
+  name: string
+  type: string
+}
+
 interface LogRowProps {
   log: {
     id: string
@@ -129,6 +135,7 @@ interface LogRowProps {
   columns?: ColumnConfig[]
   onToggleColumn?: (property: string) => void
   hasColumn?: (property: string) => boolean
+  destinations?: DestinationOption[]
 }
 
 function getLevelClass(level: string): string {
@@ -448,10 +455,32 @@ interface ActionBarProps {
     exception?: string
     properties: string
   }
+  destinations?: DestinationOption[]
 }
 
-function ActionBar({ log }: ActionBarProps) {
+function ActionBar({ log, destinations }: ActionBarProps) {
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [sendOpen, setSendOpen] = useState(false)
+  const [sending, setSending] = useState<string | null>(null)
+  const sendRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!sendOpen) return
+    function handleClickOutside(e: MouseEvent) {
+      if (sendRef.current && !sendRef.current.contains(e.target as Node)) {
+        setSendOpen(false)
+      }
+    }
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') setSendOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [sendOpen])
 
   const copyAsJson = async () => {
     try {
@@ -487,6 +516,38 @@ function ActionBar({ log }: ActionBarProps) {
       setToastMessage('Link copied')
     } catch {
       setToastMessage('Failed to copy')
+    }
+  }
+
+  const sendToDestination = async (dest: DestinationOption) => {
+    setSending(dest.id)
+    try {
+      const res = await fetch('/api/alert-destinations/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          destination_id: dest.id,
+          event: {
+            id: log.id,
+            timestamp: log.timestamp,
+            level: log.level,
+            message: log.message,
+            source: log.source,
+            exception: log.exception || '',
+            properties: log.properties,
+          },
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || `Failed (${res.status})`)
+      }
+      setToastMessage(`Sent to ${dest.name}`)
+      setSendOpen(false)
+    } catch (err) {
+      setToastMessage(err instanceof Error ? err.message : 'Failed to send')
+    } finally {
+      setSending(null)
     }
   }
 
@@ -526,6 +587,52 @@ function ActionBar({ log }: ActionBarProps) {
         <span>Share</span>
       </button>
 
+      {destinations && destinations.length > 0 && (
+        <div ref={sendRef} className="relative ml-1 border-l border-cannon-graphite pl-2">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              setSendOpen(!sendOpen)
+            }}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-text-secondary hover:text-cannon-fire hover:bg-cannon-steel rounded transition-colors"
+            title="Send to destination"
+          >
+            <Send size={14} />
+            <span>Send</span>
+          </button>
+          {sendOpen && (
+            <div
+              className="absolute top-full left-0 mt-1 min-w-[200px] py-1 bg-cannon-charcoal border border-cannon-graphite rounded-lg shadow-xl z-50"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-3 py-1.5 text-xs text-text-muted font-semibold uppercase tracking-wide border-b border-cannon-graphite">
+                Send to
+              </div>
+              {destinations.map((dest) => (
+                <button
+                  key={dest.id}
+                  onClick={() => sendToDestination(dest)}
+                  disabled={sending !== null}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:text-white hover:bg-cannon-steel transition-colors disabled:opacity-50"
+                >
+                  {sending === dest.id ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : dest.type === 'email' ? (
+                    <Mail size={14} className="text-cannon-tracer" />
+                  ) : (
+                    <Globe size={14} className="text-cannon-fire" />
+                  )}
+                  <span>{dest.name}</span>
+                  <span className={`ml-auto text-[10px] uppercase font-medium ${dest.type === 'email' ? 'text-cannon-tracer' : 'text-cannon-fire'}`}>
+                    {dest.type}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {toastMessage && (
         <CopyToast message={toastMessage} onDone={() => setToastMessage(null)} />
       )}
@@ -533,7 +640,7 @@ function ActionBar({ log }: ActionBarProps) {
   )
 }
 
-export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggleColumn, hasColumn }: LogRowProps) {
+export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggleColumn, hasColumn, destinations }: LogRowProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const properties = parseProperties(log.properties)
@@ -622,7 +729,7 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
       {isExpanded && (
         <div className="border-t border-cannon-graphite bg-cannon-black/50 animate-slide-down">
           {/* Action bar */}
-          <ActionBar log={log} />
+          <ActionBar log={log} destinations={destinations} />
 
           {log.exception && (
             <div className="border-b border-cannon-graphite">
