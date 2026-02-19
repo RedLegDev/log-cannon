@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { LogList } from './LogList'
 import { Radio, ChevronUp } from 'lucide-react'
+import type { DestinationOption } from './LogRow'
 
 interface LogEvent {
   id: string
@@ -30,6 +31,7 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
   const [newLogIds, setNewLogIds] = useState<Set<string>>(new Set())
   const [newLogCount, setNewLogCount] = useState(0)
   const [isAtTop, setIsAtTop] = useState(true)
+  const [destinations, setDestinations] = useState<DestinationOption[]>([])
   const topSentinelRef = useRef<HTMLDivElement>(null)
   const logsRef = useRef<LogEvent[]>(initialLogs)
 
@@ -155,6 +157,20 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
     return () => observer.disconnect()
   }, [])
 
+  // Fetch available destinations once
+  useEffect(() => {
+    fetch('/api/alert-destinations')
+      .then(res => res.ok ? res.json() : [])
+      .then((data: Array<{ id: string; name: string; type: string; enabled: number }>) => {
+        setDestinations(
+          data
+            .filter(d => d.enabled)
+            .map(d => ({ id: d.id, name: d.name, type: d.type }))
+        )
+      })
+      .catch(() => {})
+  }, [])
+
   const scrollToTop = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' })
     setNewLogCount(0)
@@ -208,7 +224,7 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
         </button>
       )}
 
-      <LogList logs={logsWithNewFlag} highlightedLogId={highlightedLogId} />
+      <LogList logs={logsWithNewFlag} highlightedLogId={highlightedLogId} destinations={destinations} />
     </div>
   )
 }

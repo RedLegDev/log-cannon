@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { LogRow } from './LogRow'
+import { LogRow, DestinationOption } from './LogRow'
 import { ColumnPicker } from './ColumnPicker'
 import { useColumns } from '@/hooks/useColumns'
 import { FileText, AlertCircle } from 'lucide-react'
@@ -20,6 +20,7 @@ interface Log {
 interface LogListProps {
   logs: Log[]
   highlightedLogId?: string | null
+  destinations?: DestinationOption[]
 }
 
 function extractPropertiesFromLogs(logs: Log[]): string[] {
@@ -41,7 +42,7 @@ function extractPropertiesFromLogs(logs: Log[]): string[] {
   return Array.from(propertySet).sort()
 }
 
-export function LogList({ logs, highlightedLogId }: LogListProps) {
+export function LogList({ logs, highlightedLogId, destinations }: LogListProps) {
   const [expandedId, setExpandedId] = useState<string | null>(highlightedLogId || null)
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightedLogId || null)
   const { columns, addColumn, removeColumn, toggleColumn, hasColumn, canAddMore, maxColumns } = useColumns()
@@ -149,6 +150,7 @@ export function LogList({ logs, highlightedLogId }: LogListProps) {
               columns={columns}
               onToggleColumn={toggleColumn}
               hasColumn={hasColumn}
+              destinations={destinations}
             />
           </div>
         ))}
