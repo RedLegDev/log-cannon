@@ -151,12 +151,14 @@ DELETE /api/v1/alert-destinations           # Delete (pass id in body)
   "alert_id": "uuid or 'manual'",
   "alert_name": "High Error Rate",
   "description": "...",
+  "query": "SELECT count(*) as cnt FROM logs.events WHERE ...",
   "condition": "cnt > 50",
   "triggered_at": "2026-02-19T12:00:00Z",
-  "query_result": { "cnt": 127, "service": "api" },
-  "dashboard_link": "https://logs.example.com/alerts"
+  "query_result": { "cnt": 127, "service": "api" }
 }
 \`\`\`
+
+The \`query\` field contains the full SQL used to evaluate the alert, so consuming applications can re-run it via \`POST /api/v1/query\` to fetch related events.
 
 **Destination Types:**
 - **email**: Requires \`config.email\`. Optional \`config.from\` to override sender address.

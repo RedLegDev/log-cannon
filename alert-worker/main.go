@@ -56,13 +56,13 @@ type WebhookConfig struct {
 }
 
 type WebhookPayload struct {
-	AlertID       string                 `json:"alert_id"`
-	AlertName     string                 `json:"alert_name"`
-	Description   string                 `json:"description"`
-	Condition     string                 `json:"condition"`
-	TriggeredAt   string                 `json:"triggered_at"`
-	QueryResult   map[string]interface{} `json:"query_result"`
-	DashboardLink string                 `json:"dashboard_link"`
+	AlertID     string                 `json:"alert_id"`
+	AlertName   string                 `json:"alert_name"`
+	Description string                 `json:"description"`
+	Query       string                 `json:"query"`
+	Condition   string                 `json:"condition"`
+	TriggeredAt string                 `json:"triggered_at"`
+	QueryResult map[string]interface{} `json:"query_result"`
 }
 
 func main() {
@@ -740,13 +740,13 @@ func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
 					continue
 				}
 				payload := WebhookPayload{
-					AlertID:       alert.ID,
-					AlertName:     alert.Name,
-					Description:   alert.Description,
-					Condition:     alert.Condition,
-					TriggeredAt:   time.Now().UTC().Format(time.RFC3339),
-					QueryResult:   result,
-					DashboardLink: fmt.Sprintf("%s/alerts", dashboardURL),
+					AlertID:     alert.ID,
+					AlertName:   alert.Name,
+					Description: alert.Description,
+					Query:       alert.Query,
+					Condition:   alert.Condition,
+					TriggeredAt: time.Now().UTC().Format(time.RFC3339),
+					QueryResult: result,
 				}
 				if err := sendWebhook(cfg, payload); err != nil {
 					log.Printf("[%s] Webhook to %s failed: %v", alert.ID, cfg.URL, err)

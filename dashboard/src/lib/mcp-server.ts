@@ -586,8 +586,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         if (!dest.enabled) return errorResult('Destination is disabled');
 
         const config = JSON.parse(dest.config);
-        const dashboardUrl = process.env.DASHBOARD_URL || 'https://logs.redleg.dev';
-        const eventLink = `${dashboardUrl}/logs?id=${args.event.id}`;
 
         if (dest.type === 'webhook') {
           const webhookConfig = config as WebhookDestinationConfig;
@@ -603,6 +601,7 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
                 alert_id: 'manual',
                 alert_name: `Manual: ${args.event.source}`,
                 description: args.event.message,
+                query: `SELECT * FROM logs.events WHERE id = '${args.event.id}'`,
                 condition: 'manual',
                 triggered_at: args.event.timestamp,
                 query_result: {
@@ -611,7 +610,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
                   exception: args.event.exception || '',
                   properties: args.event.properties || {},
                 },
-                dashboard_link: eventLink,
               }),
               signal: controller.signal,
             });
@@ -629,7 +627,8 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
           if (!resendApiKey) return errorResult('RESEND_API_KEY not configured');
           const fromEmail = emailConfig.from || process.env.ALERT_FROM_EMAIL || 'alerts@yourdomain.com';
           const subject = `[${args.event.level}] ${args.event.source}: ${args.event.message.slice(0, 80)}`;
-          const text = `[${args.event.level}] ${args.event.source} — ${args.event.timestamp}\n\n${args.event.message}\n\nView: ${eventLink}`;
+          const dashboardUrl = process.env.DASHBOARD_URL || 'https://logs.redleg.dev';
+          const text = `[${args.event.level}] ${args.event.source} — ${args.event.timestamp}\n\n${args.event.message}\n\nView: ${dashboardUrl}/logs?id=${args.event.id}`;
           const res = await fetch('https://api.resend.com/emails', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },

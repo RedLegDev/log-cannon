@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
         alert_id: 'manual',
         alert_name: `Manual: ${event.source || 'Unknown'}`,
         description: event.message,
+        query: `SELECT * FROM logs.events WHERE id = '${event.id}'`,
         condition: 'manual',
         triggered_at: event.timestamp,
         query_result: {
@@ -57,7 +58,6 @@ export async function POST(request: NextRequest) {
           exception: event.exception || '',
           properties: parsedProps,
         },
-        dashboard_link: eventLink,
       });
     } else if (destination.type === 'email') {
       const emailConfig = config as EmailDestinationConfig;
