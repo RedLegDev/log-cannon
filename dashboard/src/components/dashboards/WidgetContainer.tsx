@@ -42,7 +42,7 @@ export function WidgetContainer({ widget, dashboardName, children }: WidgetConta
     fetchData();
   }, [fetchData]);
 
-  // Auto-refresh
+  // Auto-refresh (per-widget interval)
   useEffect(() => {
     if (!widget.dataSource.refreshInterval || widget.dataSource.refreshInterval <= 0) {
       return;
@@ -54,6 +54,13 @@ export function WidgetContainer({ widget, dashboardName, children }: WidgetConta
 
     return () => clearInterval(intervalId);
   }, [widget.dataSource.refreshInterval, fetchData]);
+
+  // Dashboard-level auto-refresh
+  useEffect(() => {
+    const handler = () => fetchData();
+    window.addEventListener('dashboard-refresh', handler);
+    return () => window.removeEventListener('dashboard-refresh', handler);
+  }, [fetchData]);
 
   return (
     <div className="card-cannon p-4 h-full flex flex-col">

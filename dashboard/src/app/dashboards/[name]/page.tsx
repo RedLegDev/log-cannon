@@ -1,6 +1,7 @@
 import { getDashboardByName } from '@/lib/clickhouse';
 import { DashboardView } from '@/components/dashboards/DashboardView';
 import { ShareButton } from '@/components/dashboards/ShareButton';
+import { AutoRefreshToggle } from '@/components/dashboards/AutoRefreshToggle';
 import { AlertCircle, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 
@@ -88,7 +89,10 @@ export default async function DashboardPage({
             )}
           </div>
 
-          <ShareButton />
+          <div className="flex items-center gap-2">
+            <AutoRefreshToggle />
+            <ShareButton />
+          </div>
         </div>
       </div>
 
