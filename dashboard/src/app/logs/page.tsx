@@ -123,9 +123,9 @@ export default async function LogExplorerPage({
 
       {/* Search Form */}
       <form className="mb-6" key={`${resolvedParams.source || ''}-${resolvedParams.level || ''}-${resolvedParams.search || ''}`}>
-        {/* Preserve property filters as hidden inputs */}
+        {/* Preserve time range and property filters as hidden inputs */}
         {Object.entries(resolvedParams)
-          .filter(([key]) => key.startsWith('prop.'))
+          .filter(([key]) => key.startsWith('prop.') || key === 'time' || key === 'from' || key === 'to')
           .map(([key, value]) => (
             <input key={key} type="hidden" name={key} value={value || ''} />
           ))
