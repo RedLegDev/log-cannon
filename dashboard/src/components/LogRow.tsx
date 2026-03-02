@@ -205,6 +205,13 @@ function tryParseJson(value: unknown): Record<string, unknown> | null {
   }
 }
 
+function getNestedObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return tryParseJson(value)
+}
+
 function isUrl(value: unknown): boolean {
   if (typeof value !== 'string') return false
   try {
@@ -752,7 +759,7 @@ export function LogRow({ log, isExpanded, onToggle, isNew, columns = [], onToggl
                       .sort(([a], [b]) => a.localeCompare(b))
                       .flatMap(([key, value]) => {
                         const isColumn = hasColumn?.(key) ?? false
-                        const nestedJson = tryParseJson(value)
+                        const nestedJson = getNestedObject(value)
                         const rows: React.ReactNode[] = []
 
                         // Main property row
