@@ -21,6 +21,7 @@ Each log event is a JSON object:
 | @t    | Yes      | ISO 8601 timestamp (e.g., 2026-01-25T10:30:00.123Z) |
 | @l    | No       | Level: Verbose, Debug, Information, Warning, Error, Fatal (default: Information) |
 | @mt   | Yes      | Message template with {Placeholders} for structured logging |
+| @i    | No       | Event type identifier. If omitted, auto-computed as MurmurHash3 of @mt (e.g. 0x5432a8ff). Events sharing a template share the same event type. |
 | @x    | No       | Exception/stack trace string |
 | *     | No       | Any additional properties become searchable fields |
 

@@ -282,6 +282,11 @@ func mapWebhookEvent(raw map[string]interface{}, preset WebhookPreset, defaultSo
 		}
 	}
 
+	// Auto-compute event type from message template when not provided.
+	if eventType == "" {
+		eventType = computeEventType(messageTemplate, message)
+	}
+
 	// --- Properties ---
 	// Build properties excluding mapped/excluded fields.
 	excluded := buildExcludeSet(preset)

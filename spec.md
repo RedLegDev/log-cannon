@@ -184,7 +184,7 @@ CREATE TABLE IF NOT EXISTS logs.events (
     message_template String,                 -- @mt: Original template with placeholders
     message String,                          -- @m: Rendered message (may be empty if @mt only)
     exception String DEFAULT '',             -- @x: Exception/stack trace
-    event_type String DEFAULT '',            -- @i: Event type hash
+    event_type String DEFAULT '',            -- @i: MurmurHash3 32-bit hex hash of message_template (auto-computed at ingest if not provided)
     source String,                           -- Derived from API key name
     properties String                        -- JSON string of all other CLEF properties
 ) ENGINE = MergeTree
@@ -250,7 +250,7 @@ Newline-delimited JSON (CLEF format). Each line is an independent log event.
 | `@mt` | `message_template` | Message template with placeholders like `{UserId}` |
 | `@m` | `message` | Rendered message. If missing, use `@mt` value. |
 | `@x` | `exception` | Exception text/stack trace |
-| `@i` | `event_type` | Event type identifier (hash) |
+| `@i` | `event_type` | Event type identifier. If omitted, auto-computed as MurmurHash3 32-bit hex of `@mt` (e.g. `0x5432a8ff`). Events with the same template share the same event type. |
 | *(all others)* | `properties` | Serialized as JSON object |
 
 **Source derivation:** The `source` column is populated from the `name` field of the matched API key, not from the log event itself.

@@ -300,7 +300,7 @@ func convertOTLPLogRecord(lr *logspb.LogRecord, source string) LogEvent {
 		MessageTemplate: "",
 		Message:         message,
 		Exception:       "",
-		EventType:       "otlp-log",
+		EventType:       computeEventType("", message),
 		Source:          source,
 		Properties:      propsJSON,
 	}
@@ -464,7 +464,7 @@ func convertOTLPSpan(span *tracepb.Span, source string) LogEvent {
 		MessageTemplate: messageTemplate,
 		Message:         message,
 		Exception:       "",
-		EventType:       "trace",
+		EventType:       computeEventType(messageTemplate, message),
 		Source:          source,
 		Properties:      propsJSON,
 	}

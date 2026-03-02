@@ -70,7 +70,7 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         source: z.string().describe('Source/service name (e.g. "my-agent", "build-bot")'),
         message_template: z.string().optional().describe('Structured message template with {Placeholder} tokens (e.g. "Task {TaskName} completed in {Duration}ms")'),
         exception: z.string().optional().describe('Exception/stack trace text'),
-        event_type: z.string().optional().describe('Event type identifier'),
+        event_type: z.string().optional().describe('Event type identifier (MurmurHash3 hex hash of message_template, e.g. "0x5432a8ff"). Auto-computed at ingest if omitted.'),
         properties: z.record(z.string(), z.any()).optional().describe('Structured properties as key-value pairs (e.g. {"TaskName": "deploy", "Duration": 1234})'),
       },
     }, async (args) => {

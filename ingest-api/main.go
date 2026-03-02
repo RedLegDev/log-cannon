@@ -499,6 +499,11 @@ func parseCLEFLine(line string, source string) (*LogEvent, error) {
 		message = renderMessageTemplate(messageTemplate, raw)
 	}
 
+	// Auto-compute event type from message template when not provided by client.
+	if eventType == "" {
+		eventType = computeEventType(messageTemplate, message)
+	}
+
 	propsJSON := "{}"
 	if len(raw) > 0 {
 		b, _ := json.Marshal(raw)

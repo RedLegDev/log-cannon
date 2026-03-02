@@ -38,7 +38,7 @@ Manage existing dashboards via \`GET/POST/PATCH/DELETE /api/v1/dashboards\` (req
 | message_template | String | Template with placeholders |
 | message | String | Rendered message |
 | exception | String | Exception details |
-| event_type | String | Event classification |
+| event_type | String | MurmurHash3 hash of message_template (e.g. 0x5432a8ff). Auto-computed at ingest; client-provided @i takes precedence |
 | source | String | Application/service name |
 | properties | String | JSON object with structured data |
 
