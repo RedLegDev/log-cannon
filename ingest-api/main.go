@@ -279,6 +279,13 @@ func (s *Server) validateAPIKey(apiKey string) (string, error) {
 // addEventsToBatch appends events to the internal batch and flushes if the
 // batch reaches 1000 events.
 func (s *Server) addEventsToBatch(events []LogEvent) {
+	// Clamp future timestamps to now (defense against misconfigured clients)
+	now := time.Now()
+	for i := range events {
+		if events[i].Timestamp.After(now) {
+			events[i].Timestamp = now
+		}
+	}
 	s.batchMu.Lock()
 	s.eventBatch = append(s.eventBatch, events...)
 	shouldFlush := len(s.eventBatch) >= 1000
