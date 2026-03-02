@@ -33,11 +33,6 @@ export function TimeRangeCalendar({ initialRange, onApply, onClose }: TimeRangeC
       return
     }
 
-    if (to > new Date()) {
-      setError('End time cannot be in the future')
-      return
-    }
-
     onApply({
       type: 'absolute',
       from,
@@ -85,7 +80,6 @@ export function TimeRangeCalendar({ initialRange, onApply, onClose }: TimeRangeC
                 setToDate(e.target.value)
                 setError(null)
               }}
-              max={formatDateForInput(new Date())}
               className="input-cannon w-full"
             />
           </div>

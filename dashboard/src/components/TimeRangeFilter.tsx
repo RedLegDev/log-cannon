@@ -57,8 +57,7 @@ export function TimeRangeFilter({ className }: TimeRangeFilterProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const canShiftForward =
-    currentRange.type === 'absolute' && currentRange.to && currentRange.to < new Date()
+  const canShiftForward = currentRange.type === 'absolute'
 
   return (
     <div className={`relative ${className || ''}`} ref={dropdownRef}>
