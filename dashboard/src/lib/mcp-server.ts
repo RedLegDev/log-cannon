@@ -15,10 +15,6 @@ import {
   updateAlert,
   deleteAlert,
   getAlertDestinations,
-  getAlertDestinationById,
-  createAlertDestination,
-  updateAlertDestination,
-  deleteAlertDestination,
   getCurrentMetrics,
   getServiceStats,
   getTopServicesByErrors,
@@ -27,7 +23,7 @@ import {
   getFiringAlerts,
   insertLogEvent,
 } from './clickhouse';
-import type { PropertyFilter, EmailDestinationConfig, WebhookDestinationConfig } from './clickhouse';
+import type { PropertyFilter } from './clickhouse';
 import { getOverviewDocs, API_DOCS, LOGGER_DOCS, DASHBOARD_DOCS } from './docs-content';
 
 const SCOPE_HIERARCHY: Record<ApiScope, ApiScope[]> = {
@@ -533,150 +529,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
       }
     });
 
-    server.registerTool('create_destination', {
-      title: 'Create Alert Destination',
-      description: 'Create a reusable alert destination. Email destinations require config.email. Webhook destinations require config.url and support custom method, headers, and timeout.',
-      inputSchema: {
-        name: z.string().describe('Destination name (e.g. "Ops Team Email", "Make Webhook")'),
-        type: z.enum(['email', 'webhook']).describe('Destination type'),
-        config: z.record(z.string(), z.any()).describe('Type-specific config: email needs {email, from?}, webhook needs {url, method?, headers?, timeout_seconds?}'),
-      },
-    }, async (args) => {
-      try {
-        if (args.type === 'email' && !args.config.email) {
-          return errorResult('Email destinations require config.email');
-        }
-        if (args.type === 'webhook' && !args.config.url) {
-          return errorResult('Webhook destinations require config.url');
-        }
-        await createAlertDestination({
-          name: args.name,
-          type: args.type,
-          config: args.config as EmailDestinationConfig | WebhookDestinationConfig,
-        });
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to create destination: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('update_destination', {
-      title: 'Update Alert Destination',
-      description: 'Update an existing alert destination. Only provided fields are changed.',
-      inputSchema: {
-        id: z.string().describe('Destination ID to update'),
-        name: z.string().optional().describe('New name'),
-        type: z.enum(['email', 'webhook']).optional().describe('New type'),
-        config: z.record(z.string(), z.any()).optional().describe('New config'),
-        enabled: z.boolean().optional().describe('Enable/disable'),
-      },
-    }, async (args) => {
-      try {
-        const { id, ...updates } = args;
-        await updateAlertDestination(id, updates as Parameters<typeof updateAlertDestination>[1]);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to update destination: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('delete_destination', {
-      title: 'Delete Alert Destination',
-      description: 'Delete an alert destination by ID.',
-      inputSchema: {
-        id: z.string().describe('Destination ID to delete'),
-      },
-      annotations: { destructiveHint: true },
-    }, async (args) => {
-      try {
-        await deleteAlertDestination(args.id);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to delete destination: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('send_to_destination', {
-      title: 'Send Event to Destination',
-      description: 'Manually send a log event to an alert destination. Useful for testing webhook integrations or escalating specific events. Webhook destinations receive the same payload schema as alert-triggered webhooks.',
-      inputSchema: {
-        destination_id: z.string().describe('Destination UUID to send to'),
-        event: z.object({
-          id: z.string().describe('Log event ID'),
-          timestamp: z.string().describe('Event timestamp'),
-          level: z.string().describe('Log level'),
-          message: z.string().describe('Log message'),
-          source: z.string().describe('Source/service name'),
-          exception: z.string().optional().describe('Exception text'),
-          properties: z.record(z.string(), z.any()).optional().describe('Event properties'),
-        }).describe('Log event to send'),
-      },
-    }, async (args) => {
-      try {
-        const dest = await getAlertDestinationById(args.destination_id);
-        if (!dest) return errorResult('Destination not found');
-        if (!dest.enabled) return errorResult('Destination is disabled');
-
-        const config = JSON.parse(dest.config);
-
-        if (dest.type === 'webhook') {
-          const webhookConfig = config as WebhookDestinationConfig;
-          const method = webhookConfig.method || 'POST';
-          const timeout = (webhookConfig.timeout_seconds || 10) * 1000;
-          const headers: Record<string, string> = { 'Content-Type': 'application/json', ...webhookConfig.headers };
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeout);
-          try {
-            const res = await fetch(webhookConfig.url, {
-              method, headers,
-              body: JSON.stringify({
-                alert_id: 'manual',
-                alert_name: `Manual: ${args.event.source}`,
-                description: args.event.message,
-                query: `SELECT * FROM logs.events WHERE id = '${args.event.id}'`,
-                condition: 'manual',
-                triggered_at: args.event.timestamp,
-                query_result: {
-                  id: args.event.id, level: args.event.level,
-                  message: args.event.message, source: args.event.source,
-                  exception: args.event.exception || '',
-                  properties: args.event.properties || {},
-                },
-              }),
-              signal: controller.signal,
-            });
-            if (!res.ok) {
-              const text = await res.text().catch(() => '');
-              return errorResult(`Webhook returned ${res.status}: ${text.slice(0, 200)}`);
-            }
-          } finally {
-            clearTimeout(timer);
-          }
-          return jsonResult({ success: true, destination: dest.name, type: 'webhook' });
-        } else if (dest.type === 'email') {
-          const emailConfig = config as EmailDestinationConfig;
-          const resendApiKey = process.env.RESEND_API_KEY;
-          if (!resendApiKey) return errorResult('RESEND_API_KEY not configured');
-          const fromEmail = emailConfig.from || process.env.ALERT_FROM_EMAIL || 'alerts@yourdomain.com';
-          const subject = `[${args.event.level}] ${args.event.source}: ${args.event.message.slice(0, 80)}`;
-          const dashboardUrl = process.env.DASHBOARD_URL || 'https://logs.redleg.dev';
-          const text = `[${args.event.level}] ${args.event.source} — ${args.event.timestamp}\n\n${args.event.message}\n\nView: ${dashboardUrl}/logs?id=${args.event.id}`;
-          const res = await fetch('https://api.resend.com/emails', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from: fromEmail, to: [emailConfig.email], subject, text }),
-          });
-          if (!res.ok) {
-            const errText = await res.text().catch(() => '');
-            return errorResult(`Resend API returned ${res.status}: ${errText.slice(0, 200)}`);
-          }
-          return jsonResult({ success: true, destination: dest.name, type: 'email' });
-        }
-        return errorResult(`Unknown destination type: ${dest.type}`);
-      } catch (e) {
-        return errorResult(`Failed to send to destination: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
 
   }
 

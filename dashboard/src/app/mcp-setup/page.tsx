@@ -25,10 +25,6 @@ const TOOLS = [
   { name: 'create_alert', scope: 'write', description: 'Create a threshold alert rule with destination-based notifications' },
   { name: 'update_alert', scope: 'write', description: 'Update an existing alert rule' },
   { name: 'delete_alert', scope: 'write', description: 'Delete an alert rule by ID' },
-  { name: 'create_destination', scope: 'write', description: 'Create a reusable alert destination (email or webhook)' },
-  { name: 'update_destination', scope: 'write', description: 'Update an existing alert destination' },
-  { name: 'delete_destination', scope: 'write', description: 'Delete an alert destination by ID' },
-  { name: 'send_to_destination', scope: 'write', description: 'Send a log event to a destination — test webhooks or escalate specific events' },
 ];
 
 function CopyButton({ text }: { text: string }) {
