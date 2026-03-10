@@ -8,23 +8,11 @@ const TOOLS = [
   { name: 'create_log', scope: 'ingest', description: 'Create a log entry — record agent activity, task progress, errors, or structured events' },
   { name: 'search_logs', scope: 'read', description: 'Search and filter log events by source, level, text, and property filters' },
   { name: 'execute_query', scope: 'read', description: 'Execute a read-only SQL SELECT query against the ClickHouse logs database' },
-  { name: 'list_dashboards', scope: 'read', description: 'List all configured dashboards with their widget configurations' },
-  { name: 'get_dashboard', scope: 'read', description: 'Get a specific dashboard by name' },
-  { name: 'list_alerts', scope: 'read', description: 'List all alert rules with their query, condition, and notification settings' },
-  { name: 'list_destinations', scope: 'read', description: 'List all alert destinations (email and webhook notification targets)' },
   { name: 'get_overview', scope: 'read', description: 'One-shot investigation starter: metrics, service breakdown, and top errors for the last 24h' },
-  { name: 'get_service_overview', scope: 'read', description: 'All sources/services with log counts, error counts, error rates, and last seen' },
-  { name: 'get_error_summary', scope: 'read', description: 'Errors grouped by message template with counts and sample messages (much more compact than raw logs)' },
-  { name: 'get_log_volume', scope: 'read', description: 'Time-series log volume by level with configurable granularity (minute/hour/day)' },
   { name: 'get_firing_alerts', scope: 'read', description: 'Check if any alert rules are currently firing' },
   { name: 'get_docs', scope: 'read', description: 'Get log-cannon documentation — API reference, logger integration, dashboard schema, or system overview with live data' },
-  { name: 'delete_logs', scope: 'write', description: 'Delete logs matching the given filters' },
   { name: 'create_dashboard', scope: 'write', description: 'Create a new dashboard with configurable widgets' },
-  { name: 'update_dashboard', scope: 'write', description: 'Update an existing dashboard by name' },
-  { name: 'delete_dashboard', scope: 'write', description: 'Delete a dashboard by name' },
   { name: 'create_alert', scope: 'write', description: 'Create a threshold alert rule with destination-based notifications' },
-  { name: 'update_alert', scope: 'write', description: 'Update an existing alert rule' },
-  { name: 'delete_alert', scope: 'write', description: 'Delete an alert rule by ID' },
 ];
 
 function CopyButton({ text }: { text: string }) {

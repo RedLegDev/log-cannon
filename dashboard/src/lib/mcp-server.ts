@@ -4,22 +4,11 @@ import type { ApiScope } from './api-auth';
 import {
   queryClickHouse,
   getRecentLogs,
-  deleteLogs,
-  getDashboards,
-  getDashboardByName,
   createDashboard,
-  updateDashboard,
-  deleteDashboard,
-  getAlerts,
   createAlert,
-  updateAlert,
-  deleteAlert,
-  getAlertDestinations,
   getCurrentMetrics,
   getServiceStats,
-  getTopServicesByErrors,
   getErrorSummary,
-  getLogVolume,
   getFiringAlerts,
   insertLogEvent,
 } from './clickhouse';
@@ -154,85 +143,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
       }
     });
 
-    server.registerTool('list_dashboards', {
-      title: 'List Dashboards',
-      description: 'List all configured dashboards with their widget configurations.',
-      inputSchema: {},
-    }, async () => {
-      try {
-        const dashboards = await getDashboards();
-        const data = dashboards.map(d => ({
-          id: d.id, name: d.name, description: d.description,
-          config: JSON.parse(d.config), enabled: Boolean(d.enabled),
-          created_at: d.created_at, updated_at: d.updated_at,
-        }));
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to list dashboards: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('get_dashboard', {
-      title: 'Get Dashboard',
-      description: 'Get a specific dashboard by name, including its full widget configuration.',
-      inputSchema: {
-        name: z.string().describe('Dashboard name (URL-safe identifier)'),
-      },
-    }, async (args) => {
-      try {
-        const d = await getDashboardByName(args.name);
-        if (!d) return errorResult(`Dashboard not found: ${args.name}`);
-        return jsonResult({
-          id: d.id, name: d.name, description: d.description,
-          config: JSON.parse(d.config), enabled: Boolean(d.enabled),
-          created_at: d.created_at, updated_at: d.updated_at,
-        });
-      } catch (e) {
-        return errorResult(`Failed to get dashboard: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('list_alerts', {
-      title: 'List Alerts',
-      description: 'List all alert rules with their query, condition, and notification settings.',
-      inputSchema: {},
-    }, async () => {
-      try {
-        const alerts = await getAlerts();
-        const data = alerts.map(a => ({
-          id: a.id, name: a.name, description: a.description,
-          query: a.query, condition: a.condition,
-          interval_seconds: a.interval_seconds, cooldown_seconds: a.cooldown_seconds,
-          recipients: JSON.parse(a.recipients || '[]'),
-          destination_ids: JSON.parse(a.destination_ids || '[]'),
-          subject: a.subject,
-          enabled: Boolean(a.enabled), created_at: a.created_at,
-          last_triggered_at: a.last_triggered_at,
-        }));
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to list alerts: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('list_destinations', {
-      title: 'List Alert Destinations',
-      description: 'List all alert destinations (email and webhook targets). Destinations are reusable notification targets that can be assigned to multiple alerts or triggered manually from the log explorer.',
-      inputSchema: {},
-    }, async () => {
-      try {
-        const destinations = await getAlertDestinations();
-        const data = destinations.map(d => ({
-          id: d.id, name: d.name, type: d.type,
-          config: JSON.parse(d.config || '{}'),
-          enabled: Boolean(d.enabled), created_at: d.created_at,
-        }));
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to list destinations: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
     // ── Investigation tools ────────────────────────────────────
 
     server.registerTool('get_overview', {
@@ -249,55 +159,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         return jsonResult({ metrics, services, top_errors: topErrors });
       } catch (e) {
         return errorResult(`Failed to get overview: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('get_service_overview', {
-      title: 'Get Service Overview',
-      description: 'List all sources/services with log counts, error counts, error rates, and last seen timestamp. Sorted by error count descending.',
-      inputSchema: {
-        limit: z.number().min(1).max(100).optional().describe('Max services to return (default 20)'),
-      },
-    }, async (args) => {
-      try {
-        const data = await getTopServicesByErrors(args.limit || 20);
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to get service overview: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('get_error_summary', {
-      title: 'Get Error Summary',
-      description: 'Errors and warnings grouped by message template with counts, latest timestamp, and a sample message. Much more compact than searching raw error logs. Use this instead of search_logs when you want to understand what types of errors are occurring.',
-      inputSchema: {
-        source: z.string().optional().describe('Filter to a specific source/service'),
-        hours: z.number().min(1).max(168).optional().describe('Lookback period in hours (default 24, max 168)'),
-        limit: z.number().min(1).max(100).optional().describe('Max error groups to return (default 20)'),
-      },
-    }, async (args) => {
-      try {
-        const data = await getErrorSummary(args.source, args.hours || 24, args.limit || 20);
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to get error summary: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('get_log_volume', {
-      title: 'Get Log Volume',
-      description: 'Time-series log volume broken down by level (total, errors, warnings, info). Use granularity parameter to control bucket size: "minute" for last-hour detail, "hour" for daily trends, "day" for weekly view.',
-      inputSchema: {
-        source: z.string().optional().describe('Filter to a specific source/service'),
-        hours: z.number().min(1).max(168).optional().describe('Lookback period in hours (default 24, max 168)'),
-        granularity: z.enum(['minute', 'hour', 'day']).optional().describe('Time bucket size (default "hour")'),
-      },
-    }, async (args) => {
-      try {
-        const data = await getLogVolume(args.source, args.hours || 24, args.granularity || 'hour');
-        return jsonResult({ data });
-      } catch (e) {
-        return errorResult(`Failed to get log volume: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
 
@@ -349,35 +210,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
   // ── Write tools ────────────────────────────────────────────
 
   if (canWrite) {
-    server.registerTool('delete_logs', {
-      title: 'Delete Logs',
-      description: 'Delete logs matching the given filters. At least one filter is required.',
-      inputSchema: {
-        source: z.string().optional().describe('Filter by source/service name'),
-        level: z.string().optional().describe('Filter by log level'),
-        search: z.string().optional().describe('Full-text search filter'),
-        property_filters: z.array(z.object({
-          key: z.string(),
-          value: z.string(),
-          operator: z.enum(['=', '!=', '>', '>=', '<', '<=']).optional(),
-        })).optional().describe('Property filters'),
-      },
-      annotations: { destructiveHint: true },
-    }, async (args) => {
-      try {
-        if (!args.source && !args.level && !args.search && (!args.property_filters || args.property_filters.length === 0)) {
-          return errorResult('At least one filter (source, level, search, or property_filters) is required');
-        }
-        const propFilters: PropertyFilter[] = (args.property_filters || []).map(f => ({
-          key: f.key, value: f.value, operator: f.operator || '=',
-        }));
-        const deleted = await deleteLogs(args.source, args.level, args.search, propFilters);
-        return jsonResult({ message: `Deleted ${deleted} log(s)`, meta: { deleted } });
-      } catch (e) {
-        return errorResult(`Failed to delete logs: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
     server.registerTool('create_dashboard', {
       title: 'Create Dashboard',
       description: 'Create a new dashboard. Requires a name (URL-safe), optional description, and a config with layout and widgets. Widget types: stat, line_chart, bar_chart, pie_chart, doughnut_chart, scatter_chart, table.',
@@ -395,54 +227,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         return jsonResult({ success: true, name: args.name });
       } catch (e) {
         return errorResult(`Failed to create dashboard: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('update_dashboard', {
-      title: 'Update Dashboard',
-      description: 'Update an existing dashboard by name. Only provided fields are updated.',
-      inputSchema: {
-        name: z.string().describe('Dashboard name to update'),
-        new_name: z.string().regex(/^[a-zA-Z0-9_-]+$/).optional().describe('New name'),
-        description: z.string().optional().describe('New description'),
-        config: z.object({
-          layout: z.enum(['auto', 'grid']),
-          widgets: z.array(z.any()).min(1),
-        }).optional().describe('New configuration'),
-        enabled: z.boolean().optional().describe('Enable/disable'),
-      },
-    }, async (args) => {
-      try {
-        const d = await getDashboardByName(args.name);
-        if (!d) return errorResult(`Dashboard not found: ${args.name}`);
-        const updates: Record<string, unknown> = {};
-        if (args.new_name !== undefined) updates.name = args.new_name;
-        if (args.description !== undefined) updates.description = args.description;
-        if (args.config !== undefined) updates.config = args.config;
-        if (args.enabled !== undefined) updates.enabled = args.enabled;
-        if (Object.keys(updates).length === 0) return errorResult('No fields to update');
-        await updateDashboard(d.id, updates);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to update dashboard: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('delete_dashboard', {
-      title: 'Delete Dashboard',
-      description: 'Delete a dashboard by name.',
-      inputSchema: {
-        name: z.string().describe('Dashboard name to delete'),
-      },
-      annotations: { destructiveHint: true },
-    }, async (args) => {
-      try {
-        const d = await getDashboardByName(args.name);
-        if (!d) return errorResult(`Dashboard not found: ${args.name}`);
-        await deleteDashboard(d.id);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to delete dashboard: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
 
@@ -481,54 +265,6 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         return errorResult(`Failed to create alert: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
-
-    server.registerTool('update_alert', {
-      title: 'Update Alert',
-      description: 'Update an existing alert rule. Only provided fields are changed.',
-      inputSchema: {
-        id: z.string().describe('Alert ID to update'),
-        name: z.string().optional().describe('New name'),
-        description: z.string().optional().describe('New description'),
-        query: z.string().optional().describe('New SELECT query'),
-        condition: z.string().optional().describe('New condition expression'),
-        interval_seconds: z.number().min(30).optional().describe('New check interval'),
-        cooldown_seconds: z.number().optional().describe('New cooldown'),
-        destination_ids: z.array(z.string()).optional().describe('New destination UUIDs'),
-        recipients: z.array(z.string()).optional().describe('New recipients (legacy)'),
-        subject: z.string().optional().describe('New subject'),
-        enabled: z.boolean().optional().describe('Enable/disable'),
-      },
-    }, async (args) => {
-      try {
-        const { id, enabled, ...rest } = args;
-        if (rest.query && !rest.query.trim().toLowerCase().startsWith('select')) {
-          return errorResult('query must be a SELECT statement');
-        }
-        const updates: Record<string, unknown> = { ...rest };
-        if (enabled !== undefined) updates.enabled = enabled ? 1 : 0;
-        await updateAlert(id, updates);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to update alert: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
-    server.registerTool('delete_alert', {
-      title: 'Delete Alert',
-      description: 'Delete an alert rule by ID.',
-      inputSchema: {
-        id: z.string().describe('Alert ID to delete'),
-      },
-      annotations: { destructiveHint: true },
-    }, async (args) => {
-      try {
-        await deleteAlert(args.id);
-        return jsonResult({ success: true });
-      } catch (e) {
-        return errorResult(`Failed to delete alert: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    });
-
 
   }
 
