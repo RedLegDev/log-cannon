@@ -28,6 +28,7 @@ import {
   insertLogEvent,
 } from './clickhouse';
 import type { PropertyFilter, EmailDestinationConfig, WebhookDestinationConfig } from './clickhouse';
+import { getOverviewDocs, API_DOCS, LOGGER_DOCS, DASHBOARD_DOCS } from './docs-content';
 
 const SCOPE_HIERARCHY: Record<ApiScope, ApiScope[]> = {
   admin: ['admin', 'write', 'read', 'ingest'],
@@ -314,6 +315,37 @@ export function createMcpServer(scopes: ApiScope[]): McpServer {
         return jsonResult({ data, firing_count: data.length });
       } catch (e) {
         return errorResult(`Failed to get firing alerts: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+
+    server.registerTool('get_docs', {
+      title: 'Get Documentation',
+      description: 'Get log-cannon documentation. Returns API reference, logger integration guide, dashboard/widget schema, or a system overview with live data (active sources, log levels, property keys). Use this to understand how to interact with log-cannon before calling other tools.',
+      inputSchema: {
+        section: z.enum(['overview', 'api', 'logger', 'dashboards']).describe(
+          'Which documentation section: "overview" (system overview + live data), "api" (REST API reference), "logger" (CLEF logger integration guide), "dashboards" (dashboard & widget schema)'
+        ),
+      },
+    }, async (args) => {
+      try {
+        let content: string;
+        switch (args.section) {
+          case 'overview':
+            content = await getOverviewDocs();
+            break;
+          case 'api':
+            content = API_DOCS;
+            break;
+          case 'logger':
+            content = LOGGER_DOCS;
+            break;
+          case 'dashboards':
+            content = DASHBOARD_DOCS;
+            break;
+        }
+        return { content: [{ type: 'text' as const, text: content }] };
+      } catch (e) {
+        return errorResult(`Failed to get documentation: ${e instanceof Error ? e.message : String(e)}`);
       }
     });
   }

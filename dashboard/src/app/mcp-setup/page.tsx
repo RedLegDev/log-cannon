@@ -17,6 +17,7 @@ const TOOLS = [
   { name: 'get_error_summary', scope: 'read', description: 'Errors grouped by message template with counts and sample messages (much more compact than raw logs)' },
   { name: 'get_log_volume', scope: 'read', description: 'Time-series log volume by level with configurable granularity (minute/hour/day)' },
   { name: 'get_firing_alerts', scope: 'read', description: 'Check if any alert rules are currently firing' },
+  { name: 'get_docs', scope: 'read', description: 'Get log-cannon documentation — API reference, logger integration, dashboard schema, or system overview with live data' },
   { name: 'delete_logs', scope: 'write', description: 'Delete logs matching the given filters' },
   { name: 'create_dashboard', scope: 'write', description: 'Create a new dashboard with configurable widgets' },
   { name: 'update_dashboard', scope: 'write', description: 'Update an existing dashboard by name' },
