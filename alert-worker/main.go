@@ -58,6 +58,7 @@ type WebhookConfig struct {
 type WebhookPayload struct {
 	AlertID     string                 `json:"alert_id"`
 	AlertName   string                 `json:"alert_name"`
+	Service     string                 `json:"service"`
 	Description string                 `json:"description"`
 	Query       string                 `json:"query"`
 	Condition   string                 `json:"condition"`
@@ -742,6 +743,7 @@ func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
 				payload := WebhookPayload{
 					AlertID:     alert.ID,
 					AlertName:   alert.Name,
+					Service:     deriveService(alert.Name),
 					Description: alert.Description,
 					Query:       alert.Query,
 					Condition:   alert.Condition,
@@ -772,6 +774,28 @@ func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
 			log.Printf("[%s] Email sent to %s", alert.ID, recipient)
 		}
 	}
+}
+
+// deriveService extracts a short service slug from an alert name.
+// e.g. "Esferas - Azure Function Failures" → "esferas"
+//      "GreenwaySupplyCo Errors"            → "greenwaysupplyco"
+func deriveService(alertName string) string {
+	name := strings.ToLower(alertName)
+	// Take everything before the first " - " or " errors" or " alert"
+	for _, sep := range []string{" - ", " errors", " alert", " warning"} {
+		if idx := strings.Index(name, sep); idx > 0 {
+			name = name[:idx]
+			break
+		}
+	}
+	// Strip non-alphanumeric except hyphens
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func getEnv(key, defaultVal string) string {
