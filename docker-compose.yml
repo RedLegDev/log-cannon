@@ -29,8 +29,6 @@ services:
       - CLICKHOUSE_PASSWORD=
     volumes:
       - clickhouse-data:/var/lib/clickhouse
-      - clickhouse-backups:/backups
-      - ./clickhouse/config/backups.xml:/etc/clickhouse-server/config.d/backups.xml
     ulimits:
       nofile:
         soft: 262144
@@ -79,21 +77,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  backup:
-    build: ./backup
-    environment:
-      - CLICKHOUSE_HOST=clickhouse
-      - BACKUP_CRON=${BACKUP_CRON:-0 3,15 * * *}
-      - BACKUP_RETAIN_LOCAL=${BACKUP_RETAIN_LOCAL:-7}
-      - BACKUP_RETAIN_OFFSITE=${BACKUP_RETAIN_OFFSITE:-30}
-    volumes:
-      - clickhouse-backups:/backups
-      - /home/matt/gdrive:/gdrive
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: unless-stopped
-
   clickhouse-ui:
     image: ghcr.io/caioricciuti/ch-ui:latest
     ports:
@@ -105,4 +88,3 @@ services:
 
 volumes:
   clickhouse-data:
-  clickhouse-backups:
