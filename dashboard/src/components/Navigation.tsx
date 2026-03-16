@@ -58,6 +58,7 @@ const navItems: NavItem[] = [
     ],
   },
   { href: '/system', label: 'System' },
+  { href: '/backups', label: 'Backups' },
 ]
 
 function NavDropdown({ item, pathname }: { item: NavDropdownItem; pathname: string }) {

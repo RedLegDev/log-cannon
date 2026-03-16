@@ -57,6 +57,8 @@ services:
       - RESEND_API_KEY=${RESEND_API_KEY}
       - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.dev}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
+    volumes:
+      - clickhouse-backups:/backups:ro
     depends_on:
       clickhouse:
         condition: service_healthy
