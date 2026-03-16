@@ -272,7 +272,7 @@ Then rebuild: `docker compose build backup && docker compose up -d backup`
 |----------|---------|-------------|
 | `BACKUP_CRON` | `0 3,15 * * *` | Cron schedule (default: 3 AM and 3 PM) |
 | `BACKUP_RETAIN_LOCAL` | `7` | Local backups to keep |
-| `BACKUP_RETAIN_OFFSITE` | `30` | R2 backups to keep |
+| `BACKUP_RETAIN_OFFSITE` | `14` | R2 backups to keep |
 | `R2_ACCOUNT_ID` | | Cloudflare Account ID |
 | `R2_ACCESS_KEY_ID` | | R2 API token access key |
 | `R2_SECRET_ACCESS_KEY` | | R2 API token secret key |
