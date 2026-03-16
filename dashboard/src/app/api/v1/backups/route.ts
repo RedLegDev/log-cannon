@@ -10,6 +10,12 @@ interface BackupRow {
   uncompressed_size: string;
 }
 
+function getBackupType(name: string): 'full' | 'incremental' | 'legacy' {
+  if (name.startsWith('logs-full-')) return 'full';
+  if (name.startsWith('logs-incr-')) return 'incremental';
+  return 'legacy';
+}
+
 export async function GET() {
   try {
     const rows = await queryClickHouse<BackupRow>(
@@ -24,6 +30,7 @@ export async function GET() {
       timestamp: row.start_time,
       size: Number(row.uncompressed_size),
       size_formatted: row.total_size,
+      type: getBackupType(row.name),
     }));
 
     return NextResponse.json({ backups });

@@ -9,6 +9,8 @@ import {
   Clock,
   HardDrive,
   CheckCircle2,
+  Database,
+  Layers,
 } from 'lucide-react';
 
 interface Backup {
@@ -16,6 +18,7 @@ interface Backup {
   timestamp: string;
   size: number;
   size_formatted: string;
+  type: 'full' | 'incremental' | 'legacy';
 }
 
 function formatBytes(bytes: number): string {
@@ -36,6 +39,31 @@ function formatDate(iso: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function TypeBadge({ type }: { type: Backup['type'] }) {
+  if (type === 'full') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-cannon-fire bg-cannon-fire/10 px-2 py-0.5 rounded-full">
+        <Database className="w-3 h-3" />
+        Full
+      </span>
+    );
+  }
+  if (type === 'incremental') {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-cannon-tracer bg-cannon-tracer/10 px-2 py-0.5 rounded-full">
+        <Layers className="w-3 h-3" />
+        Incremental
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-text-muted bg-cannon-steel px-2 py-0.5 rounded-full">
+      <Database className="w-3 h-3" />
+      Legacy
+    </span>
+  );
 }
 
 export default function BackupsPage() {
@@ -65,6 +93,8 @@ export default function BackupsPage() {
   }, []);
 
   const totalSize = backups.reduce((sum, b) => sum + b.size, 0);
+  const fullCount = backups.filter((b) => b.type === 'full' || b.type === 'legacy').length;
+  const incrCount = backups.filter((b) => b.type === 'incremental').length;
 
   return (
     <div className="animate-fade-in">
@@ -102,7 +132,7 @@ export default function BackupsPage() {
 
       {/* Summary Cards */}
       {!loading && backups.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-6">
           <div className="card-cannon p-4">
             <div className="flex items-center gap-3 mb-3">
               <div className="p-2 rounded-lg bg-cannon-fire/10">
@@ -112,6 +142,17 @@ export default function BackupsPage() {
             </div>
             <div className="text-2xl font-bold text-text-primary font-mono">
               {backups.length}
+            </div>
+          </div>
+          <div className="card-cannon p-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 rounded-lg bg-cannon-fire/10">
+                <Database className="w-5 h-5 text-cannon-fire" />
+              </div>
+              <span className="text-text-secondary text-sm">Full / Incremental</span>
+            </div>
+            <div className="text-2xl font-bold text-text-primary font-mono">
+              {fullCount} / {incrCount}
             </div>
           </div>
           <div className="card-cannon p-4">
@@ -165,6 +206,7 @@ export default function BackupsPage() {
               <thead className="bg-cannon-steel/50">
                 <tr className="text-left text-text-secondary text-sm">
                   <th className="px-4 py-3 font-medium">Name</th>
+                  <th className="px-4 py-3 font-medium">Type</th>
                   <th className="px-4 py-3 font-medium">Date</th>
                   <th className="px-4 py-3 text-right font-medium">Size</th>
                   <th className="px-4 py-3 text-right font-medium">Status</th>
@@ -178,6 +220,9 @@ export default function BackupsPage() {
                   >
                     <td className="px-4 py-3 font-mono text-sm text-text-primary">
                       {backup.name}
+                    </td>
+                    <td className="px-4 py-3">
+                      <TypeBadge type={backup.type} />
                     </td>
                     <td className="px-4 py-3 text-sm text-text-secondary">
                       {formatDate(backup.timestamp)}
