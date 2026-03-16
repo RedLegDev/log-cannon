@@ -3,18 +3,19 @@
 import { useState, useEffect } from 'react';
 import {
   Archive,
-  Download,
   AlertCircle,
   Loader2,
   RefreshCw,
   Clock,
   HardDrive,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface Backup {
   name: string;
   timestamp: string;
   size: number;
+  size_formatted: string;
 }
 
 function formatBytes(bytes: number): string {
@@ -42,7 +43,6 @@ export default function BackupsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [downloading, setDownloading] = useState<string | null>(null);
 
   const fetchBackups = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -57,27 +57,6 @@ export default function BackupsPage() {
     } finally {
       setLoading(false);
       setRefreshing(false);
-    }
-  };
-
-  const handleDownload = async (name: string) => {
-    setDownloading(name);
-    try {
-      const res = await fetch(`/api/v1/backups/${name}/download`);
-      if (!res.ok) throw new Error('Download failed');
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${name}.tar.gz`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Download failed');
-    } finally {
-      setDownloading(null);
     }
   };
 
@@ -96,7 +75,7 @@ export default function BackupsPage() {
             <span className="text-cannon-fire">Backups</span>
           </h1>
           <p className="text-text-secondary text-sm mt-1">
-            ClickHouse database backups &mdash; download to save offsite
+            ClickHouse database backups synced to Cloudflare R2
           </p>
         </div>
         <button
@@ -178,7 +157,7 @@ export default function BackupsPage() {
           <div className="px-4 py-3 bg-cannon-steel border-b border-cannon-graphite">
             <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
               <Archive className="w-5 h-5 text-cannon-fire" />
-              Available Backups
+              Backup History
             </h2>
           </div>
           <div className="overflow-x-auto">
@@ -188,7 +167,7 @@ export default function BackupsPage() {
                   <th className="px-4 py-3 font-medium">Name</th>
                   <th className="px-4 py-3 font-medium">Date</th>
                   <th className="px-4 py-3 text-right font-medium">Size</th>
-                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                  <th className="px-4 py-3 text-right font-medium">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -204,21 +183,13 @@ export default function BackupsPage() {
                       {formatDate(backup.timestamp)}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-sm text-cannon-fire tabular-nums">
-                      {formatBytes(backup.size)}
+                      {backup.size_formatted || formatBytes(backup.size)}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => handleDownload(backup.name)}
-                        disabled={downloading === backup.name}
-                        className="btn-cannon-ghost text-sm inline-flex items-center gap-1.5 disabled:opacity-50"
-                      >
-                        {downloading === backup.name ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Download className="w-4 h-4" />
-                        )}
-                        {downloading === backup.name ? 'Downloading...' : 'Download'}
-                      </button>
+                      <span className="inline-flex items-center gap-1.5 text-sm text-cannon-tracer">
+                        <CheckCircle2 className="w-4 h-4" />
+                        Completed
+                      </span>
                     </td>
                   </tr>
                 ))}

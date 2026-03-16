@@ -117,6 +117,7 @@ log-cannon/
 ├── dashboard/        # Next.js web UI for log exploration
 ├── alert-worker/     # Go service for threshold-based alerting
 ├── clickhouse/       # Database schema initialization
+├── backup/           # Automated backup with Cloudflare R2 offsite sync
 └── docker-compose.yml
 ```
 
@@ -240,6 +241,79 @@ Log Cannon exposes its API as an [MCP](https://modelcontextprotocol.io) server a
 ```
 
 The MCP endpoint uses the same API key auth as the REST API. Tools are scoped to your key's permissions (`read` or `write`). See the **MCP** page in the dashboard for interactive setup instructions.
+
+## Backup & Restore
+
+Automated ClickHouse backups run twice daily with offsite sync to Cloudflare R2.
+
+### Setup Cloudflare R2
+
+1. Log in to the [Cloudflare dashboard](https://dash.cloudflare.com)
+2. Go to **R2 Object Storage** → **Create bucket**
+3. Name it `log-cannon-backups` (or your preference)
+4. Go to **R2 Object Storage** → **Manage R2 API Tokens** → **Create API Token**
+5. Give it **Object Read & Write** permission on your bucket
+6. Note the **Account ID** (on the R2 overview page), **Access Key ID**, and **Secret Access Key**
+
+Add to your `.env`:
+
+```env
+R2_ACCOUNT_ID=your-account-id
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+R2_BUCKET=log-cannon-backups
+```
+
+Then rebuild: `docker compose build backup && docker compose up -d backup`
+
+### Backup Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BACKUP_CRON` | `0 3,15 * * *` | Cron schedule (default: 3 AM and 3 PM) |
+| `BACKUP_RETAIN_LOCAL` | `7` | Local backups to keep |
+| `BACKUP_RETAIN_OFFSITE` | `30` | R2 backups to keep |
+| `R2_ACCOUNT_ID` | | Cloudflare Account ID |
+| `R2_ACCESS_KEY_ID` | | R2 API token access key |
+| `R2_SECRET_ACCESS_KEY` | | R2 API token secret key |
+| `R2_BUCKET` | `log-cannon-backups` | R2 bucket name |
+
+### Manual Backup
+
+```bash
+docker compose exec backup /scripts/backup.sh
+```
+
+### List Available Backups
+
+```bash
+docker compose exec backup /scripts/restore.sh
+```
+
+### Restore
+
+```bash
+# From local backup
+docker compose exec backup /scripts/restore.sh logs-2026-03-15-030000
+
+# From R2 (auto-downloads if not found locally)
+docker compose exec backup /scripts/restore.sh logs-2026-03-01-030000
+```
+
+### Disaster Recovery (fresh server)
+
+1. Set up a new server with Docker Compose
+2. Clone this repo and configure `.env` with your R2 credentials
+3. `docker compose up -d`
+4. Wait for ClickHouse to be healthy, then:
+
+```bash
+docker compose exec backup /scripts/restore.sh logs-2026-03-15-030000
+```
+
+The restore script downloads from R2 automatically if the backup isn't found locally.
+
+Backup status is also visible in the dashboard under **System → Backups**.
 
 ## Tech Stack
 

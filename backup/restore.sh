@@ -3,7 +3,8 @@ set -euo pipefail
 
 CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-clickhouse}"
 BACKUP_DIR="/backups"
-GDRIVE_DIR="/gdrive/log-cannon-backups"
+R2_BUCKET="${R2_BUCKET:-log-cannon-backups}"
+RCLONE_CONF="/root/.config/rclone/rclone.conf"
 
 ch_query() {
     curl -sf "http://${CLICKHOUSE_HOST}:8123/" --data-binary "$1"
@@ -11,6 +12,10 @@ ch_query() {
 
 log() {
     echo "[$(date -Iseconds)] $1"
+}
+
+has_r2() {
+    rclone --config "$RCLONE_CONF" listremotes 2>/dev/null | grep -q "r2:"
 }
 
 list_backups() {
@@ -26,20 +31,21 @@ list_backups() {
     fi
 
     echo ""
-    echo "Google Drive ($GDRIVE_DIR):"
-    if [ -d "$GDRIVE_DIR" ]; then
-        if ls -d "$GDRIVE_DIR"/logs-* 2>/dev/null | sort -r | head -20; then
-            :
+    echo "Cloudflare R2 (${R2_BUCKET}):"
+    if has_r2; then
+        R2_LIST=$(rclone lsd "r2:${R2_BUCKET}/" --config "$RCLONE_CONF" 2>/dev/null | awk '{print $NF}' | grep "^logs-" | sort -r | head -20)
+        if [ -n "$R2_LIST" ]; then
+            echo "$R2_LIST" | while read -r dir; do echo "  r2:${R2_BUCKET}/${dir}"; done
         else
             echo "  (none)"
         fi
     else
-        echo "  (not mounted)"
+        echo "  (not configured)"
     fi
     echo ""
 }
 
-# If no argument, list backups and prompt
+# If no argument, list backups and exit
 if [ $# -eq 0 ]; then
     list_backups
     echo "Usage: restore.sh <backup-name>"
@@ -52,12 +58,19 @@ BACKUP_NAME="$1"
 # Check if backup exists locally
 if [ -d "$BACKUP_DIR/$BACKUP_NAME" ]; then
     log "Found backup locally: $BACKUP_DIR/$BACKUP_NAME"
-elif [ -d "$GDRIVE_DIR/$BACKUP_NAME" ]; then
-    log "Backup not found locally. Copying from Google Drive..."
-    rsync -a "$GDRIVE_DIR/$BACKUP_NAME/" "$BACKUP_DIR/$BACKUP_NAME/"
-    log "Copy complete."
+elif has_r2; then
+    log "Backup not found locally. Downloading from R2..."
+    if rclone copy "r2:${R2_BUCKET}/${BACKUP_NAME}/" "$BACKUP_DIR/$BACKUP_NAME/" \
+        --config "$RCLONE_CONF" \
+        --transfers 8 \
+        --progress; then
+        log "Download complete."
+    else
+        log "ERROR: Failed to download backup from R2."
+        exit 1
+    fi
 else
-    log "ERROR: Backup '$BACKUP_NAME' not found locally or on Google Drive."
+    log "ERROR: Backup '$BACKUP_NAME' not found locally and R2 is not configured."
     list_backups
     exit 1
 fi

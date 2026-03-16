@@ -57,8 +57,13 @@ const navItems: NavItem[] = [
       { href: '/mcp-setup', label: 'MCP' },
     ],
   },
-  { href: '/system', label: 'System' },
-  { href: '/backups', label: 'Backups' },
+  {
+    label: 'System',
+    children: [
+      { href: '/system', label: 'Status' },
+      { href: '/backups', label: 'Backups' },
+    ],
+  },
 ]
 
 function NavDropdown({ item, pathname }: { item: NavDropdownItem; pathname: string }) {
