@@ -5,6 +5,10 @@ CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-clickhouse}"
 BACKUP_DIR="/backups"
 GDRIVE_DIR="/gdrive/log-cannon-backups"
 
+ch_query() {
+    curl -sf "http://${CLICKHOUSE_HOST}:8123/" --data-binary "$1"
+}
+
 log() {
     echo "[$(date -Iseconds)] $1"
 }
@@ -64,7 +68,7 @@ echo ""
 echo "Press Ctrl+C within 5 seconds to abort..."
 sleep 5
 
-if clickhouse-client -h "$CLICKHOUSE_HOST" --query "RESTORE DATABASE logs FROM Disk('local_backups', '$BACKUP_NAME') SETTINGS allow_non_empty_tables=true"; then
+if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BACKUP_NAME') SETTINGS allow_non_empty_tables=true"; then
     log "Restore completed successfully from: $BACKUP_NAME"
 else
     log "ERROR: Restore failed."
@@ -73,7 +77,7 @@ fi
 
 # Verify
 log "Verifying restore..."
-ROW_COUNT=$(clickhouse-client -h "$CLICKHOUSE_HOST" --query "SELECT count() FROM logs.events")
-TABLE_COUNT=$(clickhouse-client -h "$CLICKHOUSE_HOST" --query "SELECT count() FROM system.tables WHERE database = 'logs'")
+ROW_COUNT=$(ch_query "SELECT count() FROM logs.events")
+TABLE_COUNT=$(ch_query "SELECT count() FROM system.tables WHERE database = 'logs'")
 log "Verification: $TABLE_COUNT tables, $ROW_COUNT events in logs.events"
 log "Restore complete."

@@ -9,6 +9,10 @@ GDRIVE_DIR="/gdrive/log-cannon-backups"
 
 BACKUP_NAME="logs-$(date +%Y-%m-%d-%H%M%S)"
 
+ch_query() {
+    curl -sf "http://${CLICKHOUSE_HOST}:8123/" --data-binary "$1"
+}
+
 log() {
     echo "[$(date -Iseconds)] $1"
 }
@@ -16,7 +20,7 @@ log() {
 log "Starting backup: $BACKUP_NAME"
 
 # Run ClickHouse native backup
-if clickhouse-client -h "$CLICKHOUSE_HOST" --query "BACKUP DATABASE logs TO Disk('local_backups', '$BACKUP_NAME')"; then
+if ch_query "BACKUP DATABASE logs TO Disk('local_backups', '$BACKUP_NAME')"; then
     log "ClickHouse backup completed successfully"
 else
     log "ERROR: ClickHouse backup failed"

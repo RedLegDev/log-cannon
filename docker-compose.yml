@@ -88,7 +88,7 @@ services:
       - BACKUP_RETAIN_OFFSITE=${BACKUP_RETAIN_OFFSITE:-30}
     volumes:
       - clickhouse-backups:/backups
-      - /home/matt/gdrive:/gdrive
+      - ${BACKUP_PATH:-./backups-offsite}:/gdrive
     depends_on:
       clickhouse:
         condition: service_healthy
