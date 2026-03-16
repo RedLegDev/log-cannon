@@ -88,11 +88,6 @@ services:
       - BACKUP_RETAIN_OFFSITE=${BACKUP_RETAIN_OFFSITE:-30}
     volumes:
       - clickhouse-backups:/backups
-      - type: bind
-        source: ${BACKUP_PATH:-./backups-offsite}
-        target: /gdrive
-        bind:
-          create_host_path: false
     depends_on:
       clickhouse:
         condition: service_healthy
