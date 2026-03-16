@@ -22,6 +22,8 @@ log "Starting backup: $BACKUP_NAME"
 # Run ClickHouse native backup
 if ch_query "BACKUP DATABASE logs TO Disk('local_backups', '$BACKUP_NAME')"; then
     log "ClickHouse backup completed successfully"
+    # Make backup readable by dashboard container (runs as uid 1001)
+    chmod -R o+rX "$BACKUP_DIR/$BACKUP_NAME" 2>/dev/null || true
 else
     log "ERROR: ClickHouse backup failed"
     exit 1

@@ -22,6 +22,15 @@ export async function GET(
   }
 
   try {
+    fs.accessSync(backupPath, fs.constants.R_OK);
+  } catch {
+    return NextResponse.json(
+      { error: 'Backup not readable. Run a new backup to fix permissions, or chmod from the backup container.' },
+      { status: 403 }
+    );
+  }
+
+  try {
     const tarBuffer = execSync(`tar -czf - -C "${BACKUP_DIR}" "${name}"`, {
       maxBuffer: 1024 * 1024 * 1024, // 1GB
     });
@@ -33,7 +42,10 @@ export async function GET(
         'Content-Length': tarBuffer.length.toString(),
       },
     });
-  } catch {
-    return NextResponse.json({ error: 'Failed to create archive' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json(
+      { error: `Failed to create archive: ${e instanceof Error ? e.message : 'unknown error'}` },
+      { status: 500 }
+    );
   }
 }
