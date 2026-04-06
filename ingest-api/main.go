@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -43,6 +44,8 @@ type Server struct {
 	batchMu       sync.Mutex
 	lastFlush     time.Time
 	discoveryMode bool
+	droppedEvents atomic.Int64
+	flushedEvents atomic.Int64
 }
 
 func main() {
@@ -226,30 +229,55 @@ func (s *Server) flushBatch(events []LogEvent) error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	batch, err := s.conn.PrepareBatch(ctx,
-		"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties)")
-	if err != nil {
-		return err
-	}
-
-	for _, e := range events {
-		if err := batch.Append(
-			e.Timestamp,
-			e.Level,
-			e.MessageTemplate,
-			e.Message,
-			e.Exception,
-			e.EventType,
-			e.Source,
-			e.Properties,
-		); err != nil {
-			return err
+	const maxRetries = 3
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
 		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		batch, err := s.conn.PrepareBatch(ctx,
+			"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties)")
+		if err != nil {
+			cancel()
+			lastErr = err
+			log.Printf("Flush attempt %d/%d: PrepareBatch error: %v", attempt+1, maxRetries, err)
+			continue
+		}
+
+		for _, e := range events {
+			if err := batch.Append(
+				e.Timestamp,
+				e.Level,
+				e.MessageTemplate,
+				e.Message,
+				e.Exception,
+				e.EventType,
+				e.Source,
+				e.Properties,
+			); err != nil {
+				cancel()
+				lastErr = err
+				log.Printf("Flush attempt %d/%d: Append error: %v", attempt+1, maxRetries, err)
+				continue
+			}
+		}
+
+		if err := batch.Send(); err != nil {
+			cancel()
+			lastErr = err
+			log.Printf("Flush attempt %d/%d: Send error: %v", attempt+1, maxRetries, err)
+			continue
+		}
+
+		cancel()
+		s.flushedEvents.Add(int64(len(events)))
+		return nil
 	}
 
-	return batch.Send()
+	s.droppedEvents.Add(int64(len(events)))
+	return fmt.Errorf("flush failed after %d attempts (%d events dropped): %w", maxRetries, len(events), lastErr)
 }
 
 // validateAPIKey checks the provided API key against known keys using
@@ -338,13 +366,24 @@ func extractAPIKey(r *http.Request) string {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	dropped := s.droppedEvents.Load()
+	flushed := s.flushedEvents.Load()
 	if err := s.conn.Ping(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":         "error",
+			"error":          err.Error(),
+			"flushed_events": flushed,
+			"dropped_events": dropped,
+		})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "ok",
+		"flushed_events": flushed,
+		"dropped_events": dropped,
+	})
 }
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
