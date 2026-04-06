@@ -15,7 +15,7 @@ binding = "INGEST_QUEUE"
 
 [[kv_namespaces]]
 binding = "API_KEYS"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "3cdaa6591a6e415488072c7094cf3c36"
 
 [vars]
 DISCOVERY_MODE = "true"
