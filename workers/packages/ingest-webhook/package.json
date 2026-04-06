@@ -1,0 +1,13 @@
+{
+  "name": "@log-cannon/ingest-webhook",
+  "version": "0.0.1",
+  "private": true,
+  "dependencies": {
+    "@log-cannon/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^3.99.0"
+  }
+}

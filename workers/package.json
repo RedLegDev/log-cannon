@@ -1,0 +1,10 @@
+{
+  "name": "log-cannon-workers",
+  "private": true,
+  "workspaces": [
+    "packages/shared",
+    "packages/ingest-clef",
+    "packages/ingest-webhook",
+    "packages/ingest-otlp"
+  ]
+}
