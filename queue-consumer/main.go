@@ -252,7 +252,8 @@ func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
 	}
 
 	now := time.Now()
-	for _, e := range events {
+	appended := 0
+	for i, e := range events {
 		ts := e.Timestamp
 		if ts.After(now) {
 			ts = now
@@ -267,8 +268,19 @@ func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
 			e.Source,
 			e.Properties,
 		); err != nil {
-			return err
+			log.Printf("Skipping event %d/%d (source=%s): batch append error: %v", i+1, len(events), e.Source, err)
+			continue
 		}
+		appended++
+	}
+
+	if appended == 0 {
+		log.Printf("All %d events failed to append, skipping batch send", len(events))
+		return nil
+	}
+
+	if appended < len(events) {
+		log.Printf("Appended %d/%d events (%d skipped)", appended, len(events), len(events)-appended)
 	}
 
 	return batch.Send()
