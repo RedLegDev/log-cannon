@@ -7,6 +7,8 @@ routes = [
   { pattern = "logs.redleg.dev/v1/traces", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/ingest/otlp/*", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/ingest/webhook", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/clef", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/api/events/raw", zone_name = "redleg.dev" },
 ]
 
 [[queues.producers]]
