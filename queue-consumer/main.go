@@ -160,7 +160,8 @@ func (c *Consumer) poll(ctx context.Context) error {
 	log.Printf("Pulled %d messages from queue", len(messages))
 
 	var allEvents []LogEvent
-	var acks []QueueAck
+	var deadLetterAcks []QueueAck // Corrupt/unparseable — ack unconditionally
+	var goodAcks []QueueAck       // Successfully processed — ack only after flush
 
 	for _, msg := range messages {
 		// The HTTP pull API may double-encode the body as a JSON string.
@@ -176,8 +177,7 @@ func (c *Consumer) poll(ctx context.Context) error {
 		var payload QueuePayload
 		if err := json.Unmarshal(rawBody, &payload); err != nil {
 			log.Printf("Failed to unmarshal message %s: %v", msg.ID, err)
-			// Ack anyway to prevent redelivery of corrupt messages
-			acks = append(acks, QueueAck{LeaseID: msg.LeaseID})
+			deadLetterAcks = append(deadLetterAcks, QueueAck{LeaseID: msg.LeaseID})
 			continue
 		}
 
@@ -185,35 +185,42 @@ func (c *Consumer) poll(ctx context.Context) error {
 		rawBody, err := base64.StdEncoding.DecodeString(payload.Body)
 		if err != nil {
 			log.Printf("Failed to decode base64 body for message %s: %v", msg.ID, err)
-			acks = append(acks, QueueAck{LeaseID: msg.LeaseID})
+			deadLetterAcks = append(deadLetterAcks, QueueAck{LeaseID: msg.LeaseID})
 			continue
 		}
 
 		events, err := c.processPayload(payload, rawBody)
 		if err != nil {
 			log.Printf("Failed to process message %s (format=%s): %v", msg.ID, payload.Format, err)
-			// Still ack — don't let bad data block the queue
-			acks = append(acks, QueueAck{LeaseID: msg.LeaseID})
+			deadLetterAcks = append(deadLetterAcks, QueueAck{LeaseID: msg.LeaseID})
 			continue
 		}
 
 		allEvents = append(allEvents, events...)
-		acks = append(acks, QueueAck{LeaseID: msg.LeaseID})
+		goodAcks = append(goodAcks, QueueAck{LeaseID: msg.LeaseID})
+	}
+
+	// Always ack dead-letter messages so they don't block the queue
+	if len(deadLetterAcks) > 0 {
+		log.Printf("Acking %d dead-letter messages (corrupt/unparseable)", len(deadLetterAcks))
+		if err := c.ackMessages(ctx, deadLetterAcks); err != nil {
+			log.Printf("Warning: failed to ack %d dead-letter messages: %v", len(deadLetterAcks), err)
+		}
 	}
 
 	// Batch insert into ClickHouse
 	if len(allEvents) > 0 {
 		if err := c.flushBatch(ctx, allEvents); err != nil {
-			// Don't ack if insert failed — messages will be redelivered
+			// Don't ack good messages if insert failed — they will be redelivered
 			return fmt.Errorf("flush %d events: %w", len(allEvents), err)
 		}
 		log.Printf("Inserted %d events into ClickHouse", len(allEvents))
 	}
 
-	// Acknowledge processed messages
-	if len(acks) > 0 {
-		if err := c.ackMessages(ctx, acks); err != nil {
-			log.Printf("Warning: failed to ack %d messages: %v", len(acks), err)
+	// Acknowledge successfully processed messages only after flush succeeds
+	if len(goodAcks) > 0 {
+		if err := c.ackMessages(ctx, goodAcks); err != nil {
+			log.Printf("Warning: failed to ack %d messages after successful flush: %v", len(goodAcks), err)
 		}
 	}
 
