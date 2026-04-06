@@ -163,8 +163,18 @@ func (c *Consumer) poll(ctx context.Context) error {
 	var acks []QueueAck
 
 	for _, msg := range messages {
+		// The HTTP pull API may double-encode the body as a JSON string.
+		// Unwrap it if needed before deserializing into QueuePayload.
+		rawBody := msg.Body
+		if len(rawBody) > 0 && rawBody[0] == '"' {
+			var unwrapped string
+			if err := json.Unmarshal(rawBody, &unwrapped); err == nil {
+				rawBody = json.RawMessage(unwrapped)
+			}
+		}
+
 		var payload QueuePayload
-		if err := json.Unmarshal(msg.Body, &payload); err != nil {
+		if err := json.Unmarshal(rawBody, &payload); err != nil {
 			log.Printf("Failed to unmarshal message %s: %v", msg.ID, err)
 			// Ack anyway to prevent redelivery of corrupt messages
 			acks = append(acks, QueueAck{LeaseID: msg.LeaseID})
