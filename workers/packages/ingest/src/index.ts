@@ -89,7 +89,13 @@ async function readBody(request: Request): Promise<ArrayBuffer> {
 }
 
 function encodeBody(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }
 
 // --- Auth middleware ---
@@ -121,7 +127,7 @@ async function handleCLEF(
   env: Env,
   source: string,
 ): Promise<Response> {
-  const bodyBytes = await request.arrayBuffer();
+  const bodyBytes = await readBody(request);
 
   await env.INGEST_QUEUE.send({
     format: "clef",
