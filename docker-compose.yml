@@ -97,6 +97,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  queue-consumer:
+    build: ./queue-consumer
+    environment:
+      - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
+      - CF_QUEUE_ID=${CF_QUEUE_ID}
+      - CF_API_TOKEN=${CF_API_TOKEN}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DATABASE=logs
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
   clickhouse-ui:
     image: ghcr.io/caioricciuti/ch-ui:latest
     ports:

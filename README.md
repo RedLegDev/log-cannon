@@ -21,6 +21,30 @@ Browser ──────────► Cloudflare Tunnel ──► Dashboard 
                          Alert Worker (Go) ───┴──► Resend (Email)
 ```
 
+### Edge Ingestion (Optional — Cloudflare Workers)
+
+For redundant ingestion that survives internet outages, deploy the Cloudflare Workers architecture. Logs are accepted at the edge, buffered in a Cloudflare Queue, and drained into ClickHouse by a consumer on your server.
+
+```
+Serilog / OTel / Webhooks
+        │
+        ▼
+┌─ Cloudflare Edge ────────────────────────┐
+│  Ingest Worker ──────────► CF Queue      │
+│  (CLEF, webhook, OTel)     (buffered)    │
+│  API Keys: KV Namespace                  │
+└──────────────────────────┬───────────────┘
+                           │ pull
+                           ▼
+┌─ Your Server ────────────────────────────┐
+│  Queue Consumer (Go) ──► ClickHouse      │
+│  Dashboard (Next.js)                     │
+│  Alert Worker (Go)                       │
+└──────────────────────────────────────────┘
+```
+
+When your server goes offline, the Workers keep accepting logs and the Queue buffers them (up to 4 days). When connectivity returns, the consumer drains the backlog.
+
 ## Quick Start
 
 ### Prerequisites
@@ -113,11 +137,14 @@ Log.Logger = new LoggerConfiguration()
 
 ```
 log-cannon/
-├── ingest-api/       # Go HTTP server for CLEF log ingestion
-├── dashboard/        # Next.js web UI for log exploration
-├── alert-worker/     # Go service for threshold-based alerting
-├── clickhouse/       # Database schema initialization
-├── backup/           # Automated backup with Cloudflare R2 offsite sync
+├── ingest-api/        # Go HTTP server for CLEF log ingestion (direct mode)
+├── workers/           # Cloudflare Workers for edge ingestion (optional)
+│   └── packages/ingest/    # Unified ingest worker (CLEF, webhook, OTel)
+├── queue-consumer/    # Go service that pulls from CF Queue → ClickHouse
+├── dashboard/         # Next.js web UI for log exploration
+├── alert-worker/      # Go service for threshold-based alerting
+├── clickhouse/        # Database schema initialization
+├── backup/            # Automated backup with Cloudflare R2 offsite sync
 └── docker-compose.yml
 ```
 
@@ -129,6 +156,16 @@ log-cannon/
 | `CLOUDFLARE_TUNNEL_TOKEN` | Yes | Cloudflare tunnel token |
 | `ALERT_FROM_EMAIL` | No | Sender email for alerts |
 | `DISCOVERY_MODE` | No | Set to `true` to auto-provision unknown API keys (for migration) |
+
+### Queue Consumer Variables (for edge ingestion)
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `CF_ACCOUNT_ID` | Yes | Cloudflare account ID |
+| `CF_QUEUE_ID` | Yes | Cloudflare Queue ID (from queue setup) |
+| `CF_API_TOKEN` | Yes | Cloudflare API token with Queue read/ack permissions |
+| `CLICKHOUSE_HOST` | No | ClickHouse host (default: `clickhouse`) |
+| `CLICKHOUSE_PORT` | No | ClickHouse native port (default: `9000`) |
 
 ## Alerts
 
@@ -315,13 +352,151 @@ The restore script downloads from R2 automatically if the backup isn't found loc
 
 Backup status is also visible in the dashboard under **System → Backups**.
 
+## Cloudflare Workers Edge Ingestion (Optional)
+
+This optional architecture adds ingestion redundancy by accepting logs at Cloudflare's edge. Thin Workers validate API keys and enqueue raw payloads — all parsing happens in the Go queue consumer on your server.
+
+### Prerequisites
+
+- Cloudflare account with a domain (Workers free tier is sufficient)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) installed
+- [pnpm](https://pnpm.io/) for the Workers monorepo
+
+### Step 1: Create Cloudflare Resources
+
+**Create a Queue:**
+
+```bash
+npx wrangler queues create log-cannon-ingest
+```
+
+Note the **Queue ID** from the output — you'll need it for the consumer.
+
+**Create a KV Namespace:**
+
+```bash
+npx wrangler kv namespace create API_KEYS
+```
+
+Note the **namespace ID** from the output.
+
+### Step 2: Populate API Keys in KV
+
+For each API key, add an entry to KV. The key is the raw API key string, the value is JSON with the source name:
+
+```bash
+# Example: add a key for your "order-service"
+npx wrangler kv key put --namespace-id=YOUR_KV_NAMESPACE_ID \
+  "your-api-key-here" '{"name":"order-service","enabled":true}'
+```
+
+To bulk-sync from your existing ClickHouse `api_keys` table:
+
+```bash
+docker exec log-cannon-clickhouse-1 clickhouse-client -q \
+  "SELECT api_key, name FROM logs.api_keys WHERE enabled = 1 FORMAT JSONEachRow" \
+  | while IFS= read -r row; do
+      key=$(echo "$row" | jq -r .api_key)
+      name=$(echo "$row" | jq -r .name)
+      npx wrangler kv key put --namespace-id=YOUR_KV_NAMESPACE_ID \
+        "$key" "{\"name\":\"$name\",\"enabled\":true}"
+    done
+```
+
+### Step 3: Configure the Worker
+
+Update `workers/packages/ingest/wrangler.toml` with your KV namespace ID and route patterns:
+
+```toml
+[[kv_namespaces]]
+binding = "API_KEYS"
+id = "YOUR_KV_NAMESPACE_ID"    # ← replace
+
+routes = [
+  { pattern = "logs.yourdomain.com/ingest/*", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/api/events/raw", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/*", zone_name = "yourdomain.com" },
+]
+```
+
+### Step 4: Deploy the Worker
+
+```bash
+cd workers
+
+# Install dependencies
+pnpm install
+
+# Deploy
+cd packages/ingest && pnpm wrangler deploy
+```
+
+### Step 5: Start the Queue Consumer
+
+Add the Cloudflare credentials to your `.env`:
+
+```env
+CF_ACCOUNT_ID=your-cloudflare-account-id
+CF_QUEUE_ID=your-queue-id-from-step-1
+CF_API_TOKEN=your-api-token-with-queue-permissions
+```
+
+The API token needs the **Queues: Read** permission. Create one at [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens).
+
+Then start the consumer:
+
+```bash
+docker compose up -d queue-consumer
+```
+
+### Step 6: Verify
+
+Send a test log through the Worker endpoint:
+
+```bash
+curl -X POST https://logs.yourdomain.com/ingest/clef \
+  -H "X-Seq-ApiKey: your-api-key" \
+  -d '{"@t":"2026-01-01T00:00:00Z","@mt":"Hello from edge","@l":"Information"}'
+```
+
+Check the queue consumer logs:
+
+```bash
+docker compose logs -f queue-consumer
+```
+
+### Ingest Routes
+
+A single Worker handles all ingestion formats via path-based routing:
+
+| Path | Format | Notes |
+|------|--------|-------|
+| `/ingest/clef` | CLEF (NDJSON) | Primary Seq/Serilog endpoint |
+| `/api/events/raw` | CLEF (NDJSON) | Legacy Seq compatibility |
+| `/ingest/webhook` | Webhook JSON | Supports `?preset=cloudflare` |
+| `/ingest/otlp/logs` | OTel logs | Protobuf or JSON |
+| `/ingest/otlp/traces` | OTel traces | Protobuf or JSON |
+| `/v1/logs` | OTel logs | Standard OTel SDK path |
+| `/v1/traces` | OTel traces | Standard OTel SDK path |
+| `/health` | — | Returns `{"status":"ok"}` |
+
+### How It Works
+
+1. **Worker** is thin — it validates the API key against KV, reads the raw request body, and pushes it to the Queue with metadata (format, source, content-type)
+2. **Queue** buffers messages at the edge for up to 4 days
+3. **Queue Consumer** polls the Cloudflare Queue API, decodes the raw payloads, parses them using the same logic as the direct ingest-api (CLEF, webhook presets, OTel protobuf/JSON), and batch-inserts into ClickHouse
+
+The existing direct ingest-api continues to work — the Worker is an additional ingestion path, not a replacement.
+
 ## Tech Stack
 
-- **Ingest API**: Go 1.21+
-- **Dashboard**: Next.js 14, React 18, Tailwind CSS
-- **Alert Worker**: Go 1.21+
+- **Ingest API**: Go 1.22+
+- **Edge Workers**: Cloudflare Workers (TypeScript)
+- **Queue Consumer**: Go 1.22+
+- **Dashboard**: Next.js, React 18, Tailwind CSS
+- **Alert Worker**: Go 1.22+
 - **Database**: ClickHouse
-- **Infrastructure**: Docker Compose, Cloudflare Tunnels
+- **Infrastructure**: Docker Compose, Cloudflare Tunnels, Cloudflare Queues + KV (optional)
 
 ## License
 
