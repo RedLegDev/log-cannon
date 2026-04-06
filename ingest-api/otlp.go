@@ -190,6 +190,9 @@ func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit request body size to prevent memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20) // 32 MB
+
 	// Extract and validate API key
 	apiKey := extractOTLPAPIKey(r)
 	if apiKey == "" {
@@ -319,6 +322,9 @@ func (s *Server) handleOTLPTraces(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Limit request body size to prevent memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20) // 32 MB
 
 	// Extract and validate API key
 	apiKey := extractOTLPAPIKey(r)

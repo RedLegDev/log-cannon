@@ -25,6 +25,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit request body size to prevent memory exhaustion
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20) // 32 MB
+
 	// Extract API key
 	apiKey := extractAPIKey(r)
 	if apiKey == "" {
