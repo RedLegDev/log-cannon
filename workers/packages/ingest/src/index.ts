@@ -79,13 +79,46 @@ function errorResponse(status: number, message: string): Response {
   return jsonResponse({ Error: message }, status);
 }
 
+const MAX_BODY_BYTES = 32 * 1024 * 1024; // 32 MB
+
 async function readBody(request: Request): Promise<ArrayBuffer> {
+  let stream: ReadableStream<Uint8Array>;
+
   if (request.headers.get("Content-Encoding") === "gzip") {
     const ds = new DecompressionStream("gzip");
-    const decompressed = request.body!.pipeThrough(ds);
-    return new Response(decompressed).arrayBuffer();
+    stream = request.body!.pipeThrough(ds);
+  } else {
+    stream = request.body!;
   }
-  return request.arrayBuffer();
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalSize = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalSize += value.byteLength;
+    if (totalSize > MAX_BODY_BYTES) {
+      reader.cancel();
+      throw new BodyTooLargeError();
+    }
+    chunks.push(value);
+  }
+
+  const result = new Uint8Array(totalSize);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result.buffer;
+}
+
+class BodyTooLargeError extends Error {
+  constructor() {
+    super("Request body exceeds 32 MB limit");
+  }
 }
 
 function encodeBody(buf: ArrayBuffer): string {
@@ -217,17 +250,24 @@ export default {
     }
 
     // Route
-    if (path === "/ingest/clef" || path === "/api/events/raw") {
-      return handleCLEF(request, env, source);
-    }
-    if (path === "/ingest/webhook") {
-      return handleWebhook(request, env, source);
-    }
-    if (path === "/ingest/otlp/logs" || path === "/v1/logs") {
-      return handleOTLP(request, env, source, "otlp-logs");
-    }
-    if (path === "/ingest/otlp/traces" || path === "/v1/traces") {
-      return handleOTLP(request, env, source, "otlp-traces");
+    try {
+      if (path === "/ingest/clef" || path === "/api/events/raw") {
+        return await handleCLEF(request, env, source);
+      }
+      if (path === "/ingest/webhook") {
+        return await handleWebhook(request, env, source);
+      }
+      if (path === "/ingest/otlp/logs" || path === "/v1/logs") {
+        return await handleOTLP(request, env, source, "otlp-logs");
+      }
+      if (path === "/ingest/otlp/traces" || path === "/v1/traces") {
+        return await handleOTLP(request, env, source, "otlp-traces");
+      }
+    } catch (e) {
+      if (e instanceof BodyTooLargeError) {
+        return errorResponse(413, e.message);
+      }
+      throw e;
     }
 
     return errorResponse(404, "Not found");
