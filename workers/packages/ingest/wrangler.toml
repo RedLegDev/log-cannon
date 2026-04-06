@@ -18,4 +18,4 @@ binding = "API_KEYS"
 id = "YOUR_KV_NAMESPACE_ID"
 
 [vars]
-DISCOVERY_MODE = "false"
+DISCOVERY_MODE = "true"
