@@ -2,12 +2,11 @@ name = "log-cannon-ingest"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 
-# Uncomment and configure your routes:
-# routes = [
-#   { pattern = "logs.example.com/ingest/*", zone_name = "example.com" },
-#   { pattern = "logs.example.com/api/events/raw", zone_name = "example.com" },
-#   { pattern = "logs.example.com/v1/*", zone_name = "example.com" },
-# ]
+routes = [
+  { pattern = "logs.redleg.dev/v1/logs", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/v1/traces", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/otlp/*", zone_name = "redleg.dev" },
+]
 
 [[queues.producers]]
 queue = "log-cannon-ingest"
