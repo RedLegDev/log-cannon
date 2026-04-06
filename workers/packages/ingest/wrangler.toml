@@ -1,11 +1,12 @@
-name = "log-cannon-ingest-clef"
+name = "log-cannon-ingest"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 
-# Uncomment and set your routes:
+# Uncomment and configure your routes:
 # routes = [
-#   { pattern = "logs.example.com/ingest/clef", zone_name = "example.com" },
+#   { pattern = "logs.example.com/ingest/*", zone_name = "example.com" },
 #   { pattern = "logs.example.com/api/events/raw", zone_name = "example.com" },
+#   { pattern = "logs.example.com/v1/*", zone_name = "example.com" },
 # ]
 
 [[queues.producers]]

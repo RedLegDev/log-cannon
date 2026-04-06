@@ -30,9 +30,8 @@ Serilog / OTel / Webhooks
         │
         ▼
 ┌─ Cloudflare Edge ────────────────────────┐
-│  ingest-clef Worker ──┐                  │
-│  ingest-webhook Worker ├──► CF Queue     │
-│  ingest-otlp Worker ──┘    (buffered)    │
+│  Ingest Worker ──────────► CF Queue      │
+│  (CLEF, webhook, OTel)     (buffered)    │
 │  API Keys: KV Namespace                  │
 └──────────────────────────┬───────────────┘
                            │ pull
@@ -142,9 +141,7 @@ log-cannon/
 ├── workers/           # Cloudflare Workers for edge ingestion (optional)
 │   └── packages/
 │       ├── shared/          # Shared types and auth utilities
-│       ├── ingest-clef/     # CLEF/Seq-compatible ingestion worker
-│       ├── ingest-webhook/  # Webhook/Logpush ingestion worker
-│       └── ingest-otlp/     # OpenTelemetry ingestion worker
+│       └── ingest/          # Unified ingest worker (CLEF, webhook, OTel)
 ├── queue-consumer/    # Go service that pulls from CF Queue → ClickHouse
 ├── dashboard/         # Next.js web UI for log exploration
 ├── alert-worker/      # Go service for threshold-based alerting
@@ -408,25 +405,23 @@ docker exec log-cannon-clickhouse-1 clickhouse-client -q \
     done
 ```
 
-### Step 3: Configure Workers
+### Step 3: Configure the Worker
 
-Update the `wrangler.toml` in each worker package with your KV namespace ID and route patterns:
+Update `workers/packages/ingest/wrangler.toml` with your KV namespace ID and route patterns:
 
-**`workers/packages/ingest-clef/wrangler.toml`:**
 ```toml
 [[kv_namespaces]]
 binding = "API_KEYS"
 id = "YOUR_KV_NAMESPACE_ID"    # ← replace
 
 routes = [
-  { pattern = "logs.yourdomain.com/ingest/clef", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/ingest/*", zone_name = "yourdomain.com" },
   { pattern = "logs.yourdomain.com/api/events/raw", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/*", zone_name = "yourdomain.com" },
 ]
 ```
 
-Repeat for `ingest-webhook` and `ingest-otlp` with their respective route patterns.
-
-### Step 4: Deploy Workers
+### Step 4: Deploy the Worker
 
 ```bash
 cd workers
@@ -434,10 +429,8 @@ cd workers
 # Install dependencies
 pnpm install
 
-# Deploy each worker
-cd packages/ingest-clef && pnpm wrangler deploy && cd ../..
-cd packages/ingest-webhook && pnpm wrangler deploy && cd ../..
-cd packages/ingest-otlp && pnpm wrangler deploy && cd ../..
+# Deploy
+cd packages/ingest && pnpm wrangler deploy
 ```
 
 ### Step 5: Start the Queue Consumer
@@ -474,21 +467,28 @@ Check the queue consumer logs:
 docker compose logs -f queue-consumer
 ```
 
-### Worker Routes
+### Ingest Routes
 
-| Worker | Routes |
-|--------|--------|
-| `ingest-clef` | `/ingest/clef`, `/api/events/raw` |
-| `ingest-webhook` | `/ingest/webhook` (supports `?preset=cloudflare`) |
-| `ingest-otlp` | `/ingest/otlp/logs`, `/ingest/otlp/traces`, `/v1/logs`, `/v1/traces` |
+A single Worker handles all ingestion formats via path-based routing:
+
+| Path | Format | Notes |
+|------|--------|-------|
+| `/ingest/clef` | CLEF (NDJSON) | Primary Seq/Serilog endpoint |
+| `/api/events/raw` | CLEF (NDJSON) | Legacy Seq compatibility |
+| `/ingest/webhook` | Webhook JSON | Supports `?preset=cloudflare` |
+| `/ingest/otlp/logs` | OTel logs | Protobuf or JSON |
+| `/ingest/otlp/traces` | OTel traces | Protobuf or JSON |
+| `/v1/logs` | OTel logs | Standard OTel SDK path |
+| `/v1/traces` | OTel traces | Standard OTel SDK path |
+| `/health` | — | Returns `{"status":"ok"}` |
 
 ### How It Works
 
-1. **Workers** are thin — they validate the API key against KV, read the raw request body, and push it to the Queue with metadata (format, source, content-type)
+1. **Worker** is thin — it validates the API key against KV, reads the raw request body, and pushes it to the Queue with metadata (format, source, content-type)
 2. **Queue** buffers messages at the edge for up to 4 days
 3. **Queue Consumer** polls the Cloudflare Queue API, decodes the raw payloads, parses them using the same logic as the direct ingest-api (CLEF, webhook presets, OTel protobuf/JSON), and batch-inserts into ClickHouse
 
-The existing direct ingest-api continues to work — the Workers are an additional ingestion path, not a replacement.
+The existing direct ingest-api continues to work — the Worker is an additional ingestion path, not a replacement.
 
 ## Tech Stack
 

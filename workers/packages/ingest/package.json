@@ -1,5 +1,5 @@
 {
-  "name": "@log-cannon/ingest-otlp",
+  "name": "@log-cannon/ingest",
   "version": "0.0.1",
   "private": true,
   "dependencies": {
