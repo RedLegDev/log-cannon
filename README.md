@@ -139,9 +139,7 @@ Log.Logger = new LoggerConfiguration()
 log-cannon/
 ├── ingest-api/        # Go HTTP server for CLEF log ingestion (direct mode)
 ├── workers/           # Cloudflare Workers for edge ingestion (optional)
-│   └── packages/
-│       ├── shared/          # Shared types and auth utilities
-│       └── ingest/          # Unified ingest worker (CLEF, webhook, OTel)
+│   └── packages/ingest/    # Unified ingest worker (CLEF, webhook, OTel)
 ├── queue-consumer/    # Go service that pulls from CF Queue → ClickHouse
 ├── dashboard/         # Next.js web UI for log exploration
 ├── alert-worker/      # Go service for threshold-based alerting

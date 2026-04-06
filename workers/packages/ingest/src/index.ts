@@ -1,15 +1,84 @@
-import type { Env, QueuePayload } from "@log-cannon/shared";
-import {
-  extractAPIKey,
-  validateAPIKey,
-  handleOptions,
-  errorResponse,
-  corsHeaders,
-} from "@log-cannon/shared";
+// --- Types ---
 
-/**
- * Read the request body, handling gzip decompression if present.
- */
+interface APIKeyEntry {
+  name: string;
+  enabled: boolean;
+}
+
+interface Env {
+  INGEST_QUEUE: Queue<QueuePayload>;
+  API_KEYS: KVNamespace;
+  DISCOVERY_MODE?: string;
+}
+
+interface QueuePayload {
+  format: "clef" | "webhook" | "otlp-logs" | "otlp-traces";
+  source: string;
+  /** Raw request body, base64-encoded (queue messages are JSON). */
+  body: string;
+  contentType: string;
+  preset?: string;
+}
+
+// --- Auth ---
+
+function extractAPIKey(request: Request): string {
+  const h = request.headers;
+
+  const xApiKey = h.get("X-Api-Key");
+  if (xApiKey) return xApiKey;
+
+  const xSeqApiKey = h.get("X-Seq-ApiKey");
+  if (xSeqApiKey) return xSeqApiKey;
+
+  const queryKey = new URL(request.url).searchParams.get("apiKey");
+  if (queryKey) return queryKey;
+
+  const auth = h.get("Authorization");
+  if (auth && auth.startsWith("Bearer ")) return auth.slice(7);
+
+  return "";
+}
+
+async function validateAPIKey(apiKey: string, env: Env): Promise<string> {
+  const entry = await env.API_KEYS.get<APIKeyEntry>(apiKey, "json");
+
+  if (entry) {
+    if (!entry.enabled) throw new Error("API key is disabled");
+    return entry.name;
+  }
+
+  if (env.DISCOVERY_MODE === "true") {
+    const name = `discovered-${apiKey.slice(0, 8)}`;
+    await env.API_KEYS.put(apiKey, JSON.stringify({ name, enabled: true }));
+    return name;
+  }
+
+  throw new Error("Invalid API key");
+}
+
+// --- HTTP helpers ---
+
+function corsHeaders(): HeadersInit {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers":
+      "Content-Type, X-Seq-ApiKey, X-Api-Key, Authorization",
+  };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...corsHeaders() },
+  });
+}
+
+function errorResponse(status: number, message: string): Response {
+  return jsonResponse({ Error: message }, status);
+}
+
 async function readBody(request: Request): Promise<ArrayBuffer> {
   if (request.headers.get("Content-Encoding") === "gzip") {
     const ds = new DecompressionStream("gzip");
@@ -19,12 +88,21 @@ async function readBody(request: Request): Promise<ArrayBuffer> {
   return request.arrayBuffer();
 }
 
-/** Base64-encode an ArrayBuffer for queue transport. */
 function encodeBody(buf: ArrayBuffer): string {
   return btoa(String.fromCharCode(...new Uint8Array(buf)));
 }
 
-/** Authenticate the request. Returns the source name. */
+// --- Auth middleware ---
+
+class AuthError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 async function authenticate(request: Request, env: Env): Promise<string> {
   const apiKey = extractAPIKey(request);
   if (!apiKey) throw new AuthError(401, "API key required");
@@ -33,15 +111,6 @@ async function authenticate(request: Request, env: Env): Promise<string> {
     return await validateAPIKey(apiKey, env);
   } catch {
     throw new AuthError(403, "Invalid or disabled API key");
-  }
-}
-
-class AuthError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
   }
 }
 
@@ -54,19 +123,14 @@ async function handleCLEF(
 ): Promise<Response> {
   const bodyBytes = await request.arrayBuffer();
 
-  const payload: QueuePayload = {
+  await env.INGEST_QUEUE.send({
     format: "clef",
     source,
     body: encodeBody(bodyBytes),
     contentType: request.headers.get("Content-Type") ?? "application/json",
-  };
-
-  await env.INGEST_QUEUE.send(payload);
-
-  return new Response(JSON.stringify({ MinimumLevelAccepted: null }), {
-    status: 201,
-    headers: { "Content-Type": "application/json", ...corsHeaders() },
   });
+
+  return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
 
 async function handleWebhook(
@@ -84,20 +148,15 @@ async function handleWebhook(
 
   const preset = new URL(request.url).searchParams.get("preset") ?? "";
 
-  const payload: QueuePayload = {
+  await env.INGEST_QUEUE.send({
     format: "webhook",
     source,
     body: encodeBody(bodyBytes),
     contentType: request.headers.get("Content-Type") ?? "application/json",
     preset: preset || undefined,
-  };
-
-  await env.INGEST_QUEUE.send(payload);
-
-  return new Response(JSON.stringify({ accepted: true }), {
-    status: 200,
-    headers: { "Content-Type": "application/json", ...corsHeaders() },
   });
+
+  return jsonResponse({ accepted: true });
 }
 
 async function handleOTLP(
@@ -108,41 +167,41 @@ async function handleOTLP(
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
 
-  const payload: QueuePayload = {
+  await env.INGEST_QUEUE.send({
     format,
     source,
     body: encodeBody(bodyBytes),
     contentType:
       request.headers.get("Content-Type") ?? "application/x-protobuf",
-  };
+  });
 
-  await env.INGEST_QUEUE.send(payload);
-
-  const responseKey =
-    format === "otlp-logs" ? "rejectedLogRecords" : "rejectedSpans";
-
-  return new Response(
-    JSON.stringify({ partialSuccess: { [responseKey]: 0, errorMessage: "" } }),
-    {
-      status: 200,
-      headers: { "Content-Type": "application/json", ...corsHeaders() },
-    },
-  );
+  const key = format === "otlp-logs" ? "rejectedLogRecords" : "rejectedSpans";
+  return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
 
 // --- Router ---
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === "OPTIONS") return handleOptions();
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders() });
+    }
+    if (request.method !== "POST" && request.method !== "GET") {
+      return errorResponse(405, "Method not allowed");
+    }
+
+    const path = new URL(request.url).pathname;
+
+    // Health check (GET)
+    if (path === "/health") {
+      return jsonResponse({ status: "ok" });
+    }
+
     if (request.method !== "POST") {
       return errorResponse(405, "Method not allowed");
     }
 
-    const url = new URL(request.url);
-    const path = url.pathname;
-
-    // Authenticate (shared across all routes)
+    // Authenticate
     let source: string;
     try {
       source = await authenticate(request, env);
@@ -151,33 +210,18 @@ export default {
       return errorResponse(500, "Internal error");
     }
 
-    // Route to handler
+    // Route
     if (path === "/ingest/clef" || path === "/api/events/raw") {
       return handleCLEF(request, env, source);
     }
-
     if (path === "/ingest/webhook") {
       return handleWebhook(request, env, source);
     }
-
-    if (
-      path === "/ingest/otlp/logs" ||
-      path === "/v1/logs"
-    ) {
+    if (path === "/ingest/otlp/logs" || path === "/v1/logs") {
       return handleOTLP(request, env, source, "otlp-logs");
     }
-
-    if (
-      path === "/ingest/otlp/traces" ||
-      path === "/v1/traces"
-    ) {
+    if (path === "/ingest/otlp/traces" || path === "/v1/traces") {
       return handleOTLP(request, env, source, "otlp-traces");
-    }
-
-    if (path === "/health") {
-      return new Response(JSON.stringify({ status: "ok" }), {
-        headers: { "Content-Type": "application/json" },
-      });
     }
 
     return errorResponse(404, "Not found");

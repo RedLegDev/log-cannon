@@ -1,8 +1,4 @@
 {
   "name": "log-cannon-workers",
-  "private": true,
-  "workspaces": [
-    "packages/shared",
-    "packages/ingest"
-  ]
+  "private": true
 }
