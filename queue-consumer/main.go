@@ -208,9 +208,11 @@ func (c *Consumer) poll(ctx context.Context) error {
 		}
 	}
 
-	// Batch insert into ClickHouse
+	// Batch insert into ClickHouse with a timeout safely under the visibility window
 	if len(allEvents) > 0 {
-		if err := c.flushBatch(ctx, allEvents); err != nil {
+		flushCtx, flushCancel := context.WithTimeout(ctx, 60*time.Second)
+		defer flushCancel()
+		if err := c.flushBatch(flushCtx, allEvents); err != nil {
 			// Don't ack good messages if insert failed — they will be redelivered
 			return fmt.Errorf("flush %d events: %w", len(allEvents), err)
 		}
@@ -281,7 +283,7 @@ func (c *Consumer) pullMessages(ctx context.Context) ([]QueueMessage, error) {
 	)
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"visibility_timeout_ms": 30000,
+		"visibility_timeout_ms": 120000,
 		"batch_size":            c.batchSize,
 	})
 

@@ -126,7 +126,9 @@ func main() {
 }
 
 func (s *Server) loadAPIKeys() error {
-	rows, err := s.conn.Query(context.Background(),
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rows, err := s.conn.Query(ctx,
 		"SELECT api_key, name, enabled FROM logs.api_keys")
 	if err != nil {
 		return err
@@ -177,7 +179,8 @@ func (s *Server) discoverAPIKey(apiKey string) (*APIKey, error) {
 	name := fmt.Sprintf("discovered-%s", prefix)
 
 	// Insert into database
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	err := s.conn.Exec(ctx, `
 		INSERT INTO logs.api_keys (api_key, name, enabled)
 		VALUES ($1, $2, 1)
@@ -223,7 +226,9 @@ func (s *Server) flushBatch(events []LogEvent) error {
 		return nil
 	}
 
-	batch, err := s.conn.PrepareBatch(context.Background(),
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	batch, err := s.conn.PrepareBatch(ctx,
 		"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties)")
 	if err != nil {
 		return err
@@ -331,7 +336,9 @@ func extractAPIKey(r *http.Request) string {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if err := s.conn.Ping(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.conn.Ping(ctx); err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
 		return
