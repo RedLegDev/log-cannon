@@ -81,7 +81,13 @@ function errorResponse(status: number, message: string): Response {
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024; // 32 MB
 
-async function readBody(request: Request): Promise<ArrayBuffer> {
+// Maximum raw bytes per Cloudflare Queue message after chunking. CF Queues
+// hard-cap each message at 128 KB. Base64 inflates payloads by ~33%, plus
+// the JSON wrapper around the QueuePayload (~100 bytes). 90 KB raw stays
+// safely under the cap: 90 KB * 4/3 + ~100 ≈ 123 KB encoded.
+const MAX_QUEUE_CHUNK_BYTES = 90 * 1024;
+
+async function readBody(request: Request): Promise<Uint8Array> {
   let stream: ReadableStream<Uint8Array>;
 
   if (request.headers.get("Content-Encoding") === "gzip") {
@@ -112,7 +118,7 @@ async function readBody(request: Request): Promise<ArrayBuffer> {
     result.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return result.buffer;
+  return result;
 }
 
 class BodyTooLargeError extends Error {
@@ -121,14 +127,58 @@ class BodyTooLargeError extends Error {
   }
 }
 
-function encodeBody(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
+function encodeBody(bytes: Uint8Array): string {
   const CHUNK = 0x8000;
   let binary = "";
   for (let i = 0; i < bytes.length; i += CHUNK) {
     binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
   return btoa(binary);
+}
+
+/**
+ * Split a CLEF body (newline-delimited JSON) into chunks that each fit
+ * under MAX_QUEUE_CHUNK_BYTES. Each returned chunk is itself a valid CLEF
+ * payload, so the queue-consumer processes it identically to a single
+ * smaller request.
+ *
+ * Returns null if any single line is larger than MAX_QUEUE_CHUNK_BYTES —
+ * such an event cannot be split further at line boundaries and the caller
+ * should surface a 413 so the producer fixes the offending log statement.
+ */
+function chunkCLEFBody(body: Uint8Array): Uint8Array[] | null {
+  const chunks: Uint8Array[] = [];
+  let chunkStart = 0;
+  let lastLineEnd = 0;
+  let i = 0;
+
+  while (i < body.length) {
+    // Find the end of the current line (inclusive of trailing '\n' if any).
+    let lineEnd = i;
+    while (lineEnd < body.length && body[lineEnd] !== 0x0a) lineEnd++;
+    if (lineEnd < body.length) lineEnd++; // include the newline byte
+
+    const lineLength = lineEnd - i;
+    if (lineLength > MAX_QUEUE_CHUNK_BYTES) {
+      return null; // single line cannot fit in any queue message
+    }
+
+    // If appending this line would push the in-progress chunk over the
+    // limit, flush what we have first and start a new chunk at this line.
+    if (lineEnd - chunkStart > MAX_QUEUE_CHUNK_BYTES && i > chunkStart) {
+      chunks.push(body.subarray(chunkStart, i));
+      chunkStart = i;
+    }
+
+    lastLineEnd = lineEnd;
+    i = lineEnd;
+  }
+
+  if (lastLineEnd > chunkStart) {
+    chunks.push(body.subarray(chunkStart, lastLineEnd));
+  }
+
+  return chunks;
 }
 
 // --- Auth middleware ---
@@ -161,13 +211,44 @@ async function handleCLEF(
   source: string,
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
+  const contentType =
+    request.headers.get("Content-Type") ?? "application/json";
 
-  await env.INGEST_QUEUE.send({
-    format: "clef",
-    source,
-    body: encodeBody(bodyBytes),
-    contentType: request.headers.get("Content-Type") ?? "application/json",
-  });
+  // Fast path: small bodies go in a single queue message.
+  if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
+    await env.INGEST_QUEUE.send({
+      format: "clef",
+      source,
+      body: encodeBody(bodyBytes),
+      contentType,
+    });
+    return jsonResponse({ MinimumLevelAccepted: null }, 201);
+  }
+
+  // Large body: split CLEF (newline-delimited JSON) into chunks that each
+  // fit under the CF Queue per-message limit. Without this the entire body
+  // is enqueued as a single message and CF Queues' 128 KB cap rejects it,
+  // surfacing as a 5xx the producer's Serilog sink retries forever.
+  const chunks = chunkCLEFBody(bodyBytes);
+  if (chunks === null) {
+    return errorResponse(
+      413,
+      `CLEF event exceeds ${MAX_QUEUE_CHUNK_BYTES} byte queue chunk limit`,
+    );
+  }
+
+  // Send each chunk as its own queue message. If a send partway through
+  // throws, the producer retries the whole batch — chunks already enqueued
+  // produce duplicates downstream. The previous single-message path also
+  // duplicated on every send-failure retry, so this is no worse.
+  for (const chunk of chunks) {
+    await env.INGEST_QUEUE.send({
+      format: "clef",
+      source,
+      body: encodeBody(chunk),
+      contentType,
+    });
+  }
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -178,13 +259,19 @@ async function handleWebhook(
   source: string,
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
-  const raw = new Uint8Array(bodyBytes);
 
   // Cloudflare Logpush validation handshake: non-JSON body → 200 OK
-  if (raw.length === 0 || (raw[0] !== 0x7b && raw[0] !== 0x5b)) {
+  if (
+    bodyBytes.length === 0 ||
+    (bodyBytes[0] !== 0x7b && bodyBytes[0] !== 0x5b)
+  ) {
     return new Response(null, { status: 200 });
   }
 
+  // NOTE: webhook bodies are also pushed as a single queue message and will
+  // hit the same CF Queue 128 KB limit if they exceed ~96 KB raw. Webhooks
+  // aren't newline-delimited so chunking is format-specific — left for a
+  // follow-up if a webhook producer ever exceeds the cap.
   const preset = new URL(request.url).searchParams.get("preset") ?? "";
 
   await env.INGEST_QUEUE.send({
