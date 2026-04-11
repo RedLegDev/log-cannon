@@ -40,17 +40,46 @@ function extractAPIKey(request: Request): string {
   return "";
 }
 
+// In-memory API key cache, scoped to the Worker isolate. Cloudflare reuses
+// isolates across many requests, so a Map populated by one request serves
+// hits for all subsequent requests in the same isolate at zero KV cost.
+// At ~10 distinct API keys × ~27M requests/month, this drops KV reads from
+// ~27M to roughly (isolate recycles × distinct keys) — typically <1% of the
+// uncached rate.
+//
+// Trade-off: when a key is disabled or deleted in KV, warm isolates serve
+// the stale cached entry for up to KEY_CACHE_TTL_MS. Acceptable for an
+// ingest endpoint where compromise response is "rotate + redeploy", not
+// "instant revoke."
+interface CachedKey {
+  entry: APIKeyEntry;
+  expiresAt: number;
+}
+const KEY_CACHE = new Map<string, CachedKey>();
+const KEY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 async function validateAPIKey(apiKey: string, env: Env): Promise<string> {
+  const now = Date.now();
+
+  const cached = KEY_CACHE.get(apiKey);
+  if (cached && cached.expiresAt > now) {
+    if (!cached.entry.enabled) throw new Error("API key is disabled");
+    return cached.entry.name;
+  }
+
   const entry = await env.API_KEYS.get<APIKeyEntry>(apiKey, "json");
 
   if (entry) {
+    KEY_CACHE.set(apiKey, { entry, expiresAt: now + KEY_CACHE_TTL_MS });
     if (!entry.enabled) throw new Error("API key is disabled");
     return entry.name;
   }
 
   if (env.DISCOVERY_MODE === "true") {
     const name = `discovered-${apiKey.slice(0, 8)}`;
-    await env.API_KEYS.put(apiKey, JSON.stringify({ name, enabled: true }));
+    const newEntry: APIKeyEntry = { name, enabled: true };
+    await env.API_KEYS.put(apiKey, JSON.stringify(newEntry));
+    KEY_CACHE.set(apiKey, { entry: newEntry, expiresAt: now + KEY_CACHE_TTL_MS });
     return name;
   }
 
