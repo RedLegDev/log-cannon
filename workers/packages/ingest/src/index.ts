@@ -228,6 +228,92 @@ function chunkOTLPBody(body: Uint8Array): Uint8Array[] | null {
 }
 
 /**
+ * Split a JSON OTLP body into chunks. The body is an
+ * ExportLogsServiceRequest (key `resourceLogs`) or ExportTraceServiceRequest
+ * (key `resourceSpans`); each chunk wraps a contiguous subset of that
+ * top-level array as a fresh request, so the consumer parses it identically.
+ *
+ * Same null-return contract as chunkOTLPBody: bail (caller surfaces 413) if
+ * the body has unexpected top-level keys, isn't valid JSON, or contains a
+ * single entry that wouldn't fit in a chunk on its own. Splitting deeper
+ * (into scopeLogs / logRecords) is left until a producer actually trips it.
+ */
+function chunkJSONOTLPBody(
+  body: Uint8Array,
+  format: "otlp-logs" | "otlp-traces",
+): Uint8Array[] | null {
+  const arrayKey = format === "otlp-logs" ? "resourceLogs" : "resourceSpans";
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const obj = parsed as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1 || keys[0] !== arrayKey) return null;
+  const entries = obj[arrayKey];
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode(`{"${arrayKey}":[`);
+  const suffix = encoder.encode(`]}`);
+  const wrapperOverhead = prefix.byteLength + suffix.byteLength;
+
+  const serialized: Uint8Array[] = entries.map((e) =>
+    encoder.encode(JSON.stringify(e)),
+  );
+  for (const s of serialized) {
+    if (s.byteLength + wrapperOverhead > MAX_QUEUE_CHUNK_BYTES) return null;
+  }
+
+  const chunks: Uint8Array[] = [];
+  let groupStart = 0;
+  let groupBodySize = serialized[0].byteLength;
+  for (let i = 1; i < serialized.length; i++) {
+    const addedSize = 1 + serialized[i].byteLength; // +1 for comma separator
+    if (groupBodySize + addedSize + wrapperOverhead > MAX_QUEUE_CHUNK_BYTES) {
+      chunks.push(joinJSONOTLPChunk(prefix, suffix, serialized, groupStart, i));
+      groupStart = i;
+      groupBodySize = serialized[i].byteLength;
+    } else {
+      groupBodySize += addedSize;
+    }
+  }
+  chunks.push(
+    joinJSONOTLPChunk(prefix, suffix, serialized, groupStart, serialized.length),
+  );
+  return chunks;
+}
+
+function joinJSONOTLPChunk(
+  prefix: Uint8Array,
+  suffix: Uint8Array,
+  entries: Uint8Array[],
+  start: number,
+  end: number,
+): Uint8Array {
+  let total = prefix.byteLength + suffix.byteLength;
+  for (let i = start; i < end; i++) {
+    total += entries[i].byteLength;
+    if (i > start) total += 1; // comma
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  out.set(prefix, off);
+  off += prefix.byteLength;
+  for (let i = start; i < end; i++) {
+    if (i > start) out[off++] = 0x2c; // ','
+    out.set(entries[i], off);
+    off += entries[i].byteLength;
+  }
+  out.set(suffix, off);
+  return out;
+}
+
+/**
  * Split a CLEF body (newline-delimited JSON) into chunks that each fit
  * under MAX_QUEUE_CHUNK_BYTES. Each returned chunk is itself a valid CLEF
  * payload, so the queue-consumer processes it identically to a single
@@ -399,12 +485,19 @@ async function handleOTLP(
   }
 
   // Large body: split the OTLP request at resource_logs/resource_spans
-  // boundaries (top-level field 1) so each queue message stays under CF's
-  // 128 KB per-message cap. Without this the entire batch is enqueued as one
-  // message and CF Queues rejects it, surfacing as a 5xx that CF Workers
-  // Observability retries (and eventually drops) — exactly the symptom we
-  // saw on https://logs.redleg.dev/v1/logs.
-  const chunks = chunkOTLPBody(bodyBytes);
+  // boundaries so each queue message stays under CF's 128 KB per-message
+  // cap. Without this the entire batch is enqueued as one message and CF
+  // Queues rejects it, surfacing as a 5xx that CF Workers Observability
+  // retries (and eventually drops) — exactly the symptom we saw on
+  // https://logs.redleg.dev/v1/logs. Dispatch matches the consumer's
+  // content-type rule (queue-consumer/otlp.go): exact protobuf media types
+  // get the protobuf splitter; everything else is treated as JSON.
+  const isProtobuf =
+    contentType === "application/x-protobuf" ||
+    contentType === "application/proto";
+  const chunks = isProtobuf
+    ? chunkOTLPBody(bodyBytes)
+    : chunkJSONOTLPBody(bodyBytes, format);
   if (chunks === null) {
     return errorResponse(
       413,
