@@ -166,6 +166,68 @@ function encodeBody(bytes: Uint8Array): string {
 }
 
 /**
+ * Split an OTLP protobuf body (ExportLogsServiceRequest or
+ * ExportTraceServiceRequest) into chunks at the top-level repeated field
+ * boundary. In both messages the repeated `resource_logs` / `resource_spans`
+ * field uses field number 1, wire type 2 (length-delimited), so the tag byte
+ * is 0x0a. Concatenating any subset of those length-delimited entries yields
+ * a valid OTLP request containing only those resources — the consumer
+ * processes each chunk as an independent batch.
+ *
+ * Returns null if a single resource entry already exceeds the chunk limit
+ * (would require descending into scope_logs/log_records to split further),
+ * or if the body has unexpected top-level fields. The caller surfaces 413 in
+ * that case so we notice and add deeper chunking before it bites in prod.
+ */
+function chunkOTLPBody(body: Uint8Array): Uint8Array[] | null {
+  // Pass 1: walk the top-level message and record each entry's byte range.
+  const entries: Array<{ start: number; end: number }> = [];
+  let i = 0;
+  while (i < body.length) {
+    const entryStart = i;
+    const tag = body[i];
+    if (tag !== 0x0a) {
+      // Unknown top-level field (or a non-resource scalar). Bail rather than
+      // silently dropping fields we don't understand.
+      return null;
+    }
+    i++;
+    // Read varint length prefix
+    let length = 0;
+    let shift = 0;
+    while (i < body.length) {
+      const b = body[i];
+      i++;
+      length += (b & 0x7f) * Math.pow(2, shift);
+      if ((b & 0x80) === 0) break;
+      shift += 7;
+      if (shift > 35) return null;
+    }
+    if (i + length > body.length) return null;
+    i += length;
+    if (i - entryStart > MAX_QUEUE_CHUNK_BYTES) return null;
+    entries.push({ start: entryStart, end: i });
+  }
+
+  if (entries.length === 0) return null;
+
+  // Pass 2: greedy-pack contiguous entries into chunks under the limit.
+  const chunks: Uint8Array[] = [];
+  let chunkStart = entries[0].start;
+  let chunkEnd = entries[0].end;
+  for (let idx = 1; idx < entries.length; idx++) {
+    const e = entries[idx];
+    if (e.end - chunkStart > MAX_QUEUE_CHUNK_BYTES) {
+      chunks.push(body.subarray(chunkStart, chunkEnd));
+      chunkStart = e.start;
+    }
+    chunkEnd = e.end;
+  }
+  chunks.push(body.subarray(chunkStart, chunkEnd));
+  return chunks;
+}
+
+/**
  * Split a CLEF body (newline-delimited JSON) into chunks that each fit
  * under MAX_QUEUE_CHUNK_BYTES. Each returned chunk is itself a valid CLEF
  * payload, so the queue-consumer processes it identically to a single
@@ -321,16 +383,44 @@ async function handleOTLP(
   format: "otlp-logs" | "otlp-traces",
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
-
-  await env.INGEST_QUEUE.send({
-    format,
-    source,
-    body: encodeBody(bodyBytes),
-    contentType:
-      request.headers.get("Content-Type") ?? "application/x-protobuf",
-  });
-
+  const contentType =
+    request.headers.get("Content-Type") ?? "application/x-protobuf";
   const key = format === "otlp-logs" ? "rejectedLogRecords" : "rejectedSpans";
+
+  // Fast path: small bodies go in a single queue message.
+  if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
+    await env.INGEST_QUEUE.send({
+      format,
+      source,
+      body: encodeBody(bodyBytes),
+      contentType,
+    });
+    return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
+  }
+
+  // Large body: split the OTLP request at resource_logs/resource_spans
+  // boundaries (top-level field 1) so each queue message stays under CF's
+  // 128 KB per-message cap. Without this the entire batch is enqueued as one
+  // message and CF Queues rejects it, surfacing as a 5xx that CF Workers
+  // Observability retries (and eventually drops) — exactly the symptom we
+  // saw on https://logs.redleg.dev/v1/logs.
+  const chunks = chunkOTLPBody(bodyBytes);
+  if (chunks === null) {
+    return errorResponse(
+      413,
+      `OTLP resource entry exceeds ${MAX_QUEUE_CHUNK_BYTES} byte queue chunk limit`,
+    );
+  }
+
+  for (const chunk of chunks) {
+    await env.INGEST_QUEUE.send({
+      format,
+      source,
+      body: encodeBody(chunk),
+      contentType,
+    });
+  }
+
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
 
