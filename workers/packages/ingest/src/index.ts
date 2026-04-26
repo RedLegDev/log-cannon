@@ -165,6 +165,47 @@ function encodeBody(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+// CF Queues sendBatch caps at 256 KB total per call. Use 240 KB to leave
+// headroom for the JSON envelope CF wraps around the message array.
+const MAX_BATCH_BYTES = 240 * 1024;
+
+/**
+ * Pack chunks into one or more sendBatch calls under the 256 KB-per-call
+ * cap. Each batch is one HTTP round trip — for an 8-chunk OTLP request at
+ * ~120 KB encoded each, this collapses 8 awaited sends into ~4 awaited
+ * batches. Same duplicate-on-retry semantic as the previous per-chunk
+ * loop: if a later batch fails after earlier batches enqueued, the
+ * producer retries the whole request and downstream sees duplicates.
+ */
+async function sendChunksBatched(
+  queue: Queue<QueuePayload>,
+  chunks: Uint8Array[],
+  base: Omit<QueuePayload, "body">,
+): Promise<void> {
+  const baseOverhead = JSON.stringify({ ...base, body: "" }).length;
+
+  let batch: MessageSendRequest<QueuePayload>[] = [];
+  let batchBytes = 0;
+
+  for (const chunk of chunks) {
+    const encoded = encodeBody(chunk);
+    const msgBytes = baseOverhead + encoded.length;
+
+    if (batch.length > 0 && batchBytes + msgBytes > MAX_BATCH_BYTES) {
+      await queue.sendBatch(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+
+    batch.push({ body: { ...base, body: encoded } });
+    batchBytes += msgBytes;
+  }
+
+  if (batch.length > 0) {
+    await queue.sendBatch(batch);
+  }
+}
+
 /**
  * Split an OTLP protobuf body (ExportLogsServiceRequest or
  * ExportTraceServiceRequest) into chunks at the top-level repeated field
@@ -414,18 +455,11 @@ async function handleCLEF(
     );
   }
 
-  // Send each chunk as its own queue message. If a send partway through
-  // throws, the producer retries the whole batch — chunks already enqueued
-  // produce duplicates downstream. The previous single-message path also
-  // duplicated on every send-failure retry, so this is no worse.
-  for (const chunk of chunks) {
-    await env.INGEST_QUEUE.send({
-      format: "clef",
-      source,
-      body: encodeBody(chunk),
-      contentType,
-    });
-  }
+  await sendChunksBatched(env.INGEST_QUEUE, chunks, {
+    format: "clef",
+    source,
+    contentType,
+  });
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -505,14 +539,11 @@ async function handleOTLP(
     );
   }
 
-  for (const chunk of chunks) {
-    await env.INGEST_QUEUE.send({
-      format,
-      source,
-      body: encodeBody(chunk),
-      contentType,
-    });
-  }
+  await sendChunksBatched(env.INGEST_QUEUE, chunks, {
+    format,
+    source,
+    contentType,
+  });
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
