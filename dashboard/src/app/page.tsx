@@ -1,4 +1,3 @@
-import { auth } from '@clerk/nextjs/server'
 import Link from 'next/link'
 import {
   getCurrentMetrics,
@@ -12,7 +11,6 @@ import {
   SavedQuery,
   AlertWithStatus
 } from '@/lib/clickhouse'
-import { AuthGate } from '@/components/AuthGate'
 import { MetricCard } from '@/components/MetricCard'
 import { AlertStatusCard } from '@/components/AlertStatusCard'
 import { DashboardCard } from '@/components/DashboardCard'
@@ -62,8 +60,6 @@ function buildQueryUrl(query: SavedQuery): string {
 }
 
 export default async function HomePage() {
-  const { userId } = await auth()
-
   let error: string | null = null
   let metrics = {
     logs_per_minute: 0,
@@ -81,39 +77,37 @@ export default async function HomePage() {
   let dashboards: Awaited<ReturnType<typeof getDashboards>> = []
   let alertsWithStatus: AlertWithStatus[] = []
 
-  if (userId) {
-    try {
-      const [
-        metricsData,
-        trendData,
-        timeSeriesData,
-        errorRateData,
-        servicesData,
-        queriesData,
-        dashboardsData,
-        alertsStatusData
-      ] = await Promise.all([
-        getCurrentMetrics(),
-        getHourOverHourTrend(),
-        getTimeSeries(60),
-        getErrorRateTimeSeries(60),
-        getTopServicesByErrors(5),
-        getSavedQueries(),
-        getDashboards(),
-        getAlertsWithStatus()
-      ])
+  try {
+    const [
+      metricsData,
+      trendData,
+      timeSeriesData,
+      errorRateData,
+      servicesData,
+      queriesData,
+      dashboardsData,
+      alertsStatusData
+    ] = await Promise.all([
+      getCurrentMetrics(),
+      getHourOverHourTrend(),
+      getTimeSeries(60),
+      getErrorRateTimeSeries(60),
+      getTopServicesByErrors(5),
+      getSavedQueries(),
+      getDashboards(),
+      getAlertsWithStatus()
+    ])
 
-      metrics = metricsData
-      trend = trendData
-      timeSeries = timeSeriesData
-      errorRateSeries = errorRateData
-      topServices = servicesData
-      savedQueries = queriesData.slice(0, 4)
-      dashboards = dashboardsData.filter(d => d.enabled)
-      alertsWithStatus = alertsStatusData
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to load dashboard data'
-    }
+    metrics = metricsData
+    trend = trendData
+    timeSeries = timeSeriesData
+    errorRateSeries = errorRateData
+    topServices = servicesData
+    savedQueries = queriesData.slice(0, 4)
+    dashboards = dashboardsData.filter(d => d.enabled)
+    alertsWithStatus = alertsStatusData
+  } catch (e) {
+    error = e instanceof Error ? e.message : 'Failed to load dashboard data'
   }
 
   // Prepare sparkline data
@@ -124,8 +118,7 @@ export default async function HomePage() {
   const errorRateColor = metrics.error_rate_24h > 5 ? 'critical' : metrics.error_rate_24h > 1 ? 'warning' : 'success'
 
   return (
-    <AuthGate hasServerData={!!userId}>
-      <div className="animate-fade-in">
+    <div className="animate-fade-in">
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-text-primary font-mono">
@@ -363,7 +356,6 @@ export default async function HomePage() {
             )}
           </>
         )}
-      </div>
-    </AuthGate>
+    </div>
   )
 }

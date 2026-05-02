@@ -1,16 +1,10 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ChevronDown } from 'lucide-react'
-import {
-  SignInButton,
-  SignUpButton,
-  SignedIn,
-  SignedOut,
-  UserButton,
-} from '@clerk/nextjs'
+import { ChevronDown, LogOut } from 'lucide-react'
 import { MobileNav } from './MobileNav'
 
 interface NavLink {
@@ -142,6 +136,15 @@ function NavDropdown({ item, pathname }: { item: NavDropdownItem; pathname: stri
 
 export function Navigation() {
   const pathname = usePathname()
+  const router = useRouter()
+
+  if (pathname === '/login') return null
+
+  async function handleSignOut() {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    router.push('/login')
+    router.refresh()
+  }
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 nav-blur border-b border-cannon-graphite safe-top">
@@ -203,34 +206,21 @@ export function Navigation() {
             })}
           </div>
 
-          {/* Right side - Auth + Mobile menu */}
+          {/* Right side - Sign out + Mobile menu */}
           <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-3">
-              <SignedOut>
-                <SignInButton mode="modal">
-                  <button className="btn-cannon-ghost text-sm">
-                    Sign In
-                  </button>
-                </SignInButton>
-                <SignUpButton mode="modal">
-                  <button className="btn-cannon text-sm">
-                    Sign Up
-                  </button>
-                </SignUpButton>
-              </SignedOut>
-              <SignedIn>
-                <UserButton
-                  appearance={{
-                    elements: {
-                      avatarBox: 'w-8 h-8 ring-2 ring-cannon-graphite hover:ring-cannon-fire transition-all'
-                    }
-                  }}
-                />
-              </SignedIn>
+            <div className="hidden sm:flex items-center gap-2">
+              <button
+                onClick={handleSignOut}
+                className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-gray-400 hover:text-white hover:bg-cannon-steel transition-colors"
+                aria-label="Sign out"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sign out</span>
+              </button>
             </div>
 
             {/* Mobile Menu Trigger */}
-            <MobileNav currentPath={pathname} />
+            <MobileNav currentPath={pathname} onSignOut={handleSignOut} />
           </div>
         </div>
       </div>

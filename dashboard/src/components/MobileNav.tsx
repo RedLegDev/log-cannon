@@ -3,14 +3,7 @@
 import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
-import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug, FileText, Send } from 'lucide-react'
-import {
-  SignInButton,
-  SignUpButton,
-  SignedIn,
-  SignedOut,
-  UserButton,
-} from '@clerk/nextjs'
+import { Menu, X, Search, Server, Radio, Key, Bookmark, Zap, LayoutDashboard, Bot, Bell, HardDrive, Plug, FileText, Send, LogOut } from 'lucide-react'
 
 interface NavLink {
   href: string
@@ -55,9 +48,10 @@ const navSections: NavSection[] = [
 
 interface MobileNavProps {
   currentPath: string
+  onSignOut: () => void | Promise<void>
 }
 
-export function MobileNav({ currentPath }: MobileNavProps) {
+export function MobileNav({ currentPath, onSignOut }: MobileNavProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   useEffect(() => {
@@ -171,34 +165,18 @@ export function MobileNav({ currentPath }: MobileNavProps) {
               ))}
             </nav>
 
-            {/* Auth Section */}
+            {/* Sign out */}
             <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-cannon-graphite bg-cannon-charcoal safe-bottom">
-              <SignedOut>
-                <div className="flex flex-col gap-2">
-                  <SignInButton mode="modal">
-                    <button className="w-full btn-cannon-secondary text-sm py-3">
-                      Sign In
-                    </button>
-                  </SignInButton>
-                  <SignUpButton mode="modal">
-                    <button className="w-full btn-cannon text-sm py-3">
-                      Sign Up
-                    </button>
-                  </SignUpButton>
-                </div>
-              </SignedOut>
-              <SignedIn>
-                <div className="flex items-center gap-3 px-2">
-                  <UserButton
-                    appearance={{
-                      elements: {
-                        avatarBox: 'w-10 h-10 ring-2 ring-cannon-graphite'
-                      }
-                    }}
-                  />
-                  <span className="text-sm text-gray-400">Account Settings</span>
-                </div>
-              </SignedIn>
+              <button
+                onClick={() => {
+                  setIsOpen(false)
+                  void onSignOut()
+                }}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-lg text-sm text-gray-300 hover:text-white hover:bg-cannon-steel transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Sign out</span>
+              </button>
             </div>
           </div>
         </>,

@@ -1,16 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
-import Link from 'next/link'
-import {
-  ClerkProvider,
-  SignInButton,
-  SignUpButton,
-  SignedIn,
-  SignedOut,
-  UserButton,
-} from '@clerk/nextjs'
-import { MobileNav } from '@/components/MobileNav'
 import { Navigation } from '@/components/Navigation'
 
 const inter = Inter({
@@ -52,37 +42,30 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <ClerkProvider
-        signInUrl="/sign-in"
-        signUpUrl="/sign-up"
-        signInFallbackRedirectUrl="/"
-        signUpFallbackRedirectUrl="/"
-      >
-      <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-        <head>
-          <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
-          <meta name="apple-mobile-web-app-capable" content="yes" />
-          <script
-            dangerouslySetInnerHTML={{
-              __html: `
-                if ('serviceWorker' in navigator) {
-                  window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('/sw.js');
-                  });
-                }
-              `,
-            }}
-          />
-        </head>
-        <body className="font-sans antialiased">
-          <div className="min-h-screen bg-cannon-black">
-            <Navigation />
-            <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 pt-20">
-              {children}
-            </main>
-          </div>
-        </body>
-      </html>
-    </ClerkProvider>
+    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <head>
+        <link rel="icon" href="/icons/icon.svg" type="image/svg+xml" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                  navigator.serviceWorker.register('/sw.js');
+                });
+              }
+            `,
+          }}
+        />
+      </head>
+      <body className="font-sans antialiased">
+        <div className="min-h-screen bg-cannon-black">
+          <Navigation />
+          <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 pt-20">
+            {children}
+          </main>
+        </div>
+      </body>
+    </html>
   )
 }

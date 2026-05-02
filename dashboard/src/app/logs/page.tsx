@@ -1,11 +1,9 @@
 import { Suspense } from 'react'
-import { auth } from '@clerk/nextjs/server'
 import { getRecentLogs, getLogById, getSources, LogEvent, PropertyFilter, parseOperatorFromValue, TimeFilter } from '@/lib/clickhouse'
 import { LogExplorer } from '@/components/LogExplorer'
 import { FilterBar } from '@/components/FilterBar'
 import { SaveQueryButton } from '@/components/SaveQueryButton'
 import { DeleteLogsButton } from '@/components/DeleteLogsButton'
-import { AuthGate } from '@/components/AuthGate'
 import { TimeRangeFilter } from '@/components/TimeRangeFilter'
 import { parseTimeRangeFromParams, resolveTimeRange, formatTimeRangeDisplay } from '@/lib/timeRange'
 import { Search, ChevronDown, AlertCircle } from 'lucide-react'
@@ -51,10 +49,6 @@ export default async function LogExplorerPage({
 }: {
   searchParams: Promise<SearchParams>
 }) {
-  // Try to get auth state - if authenticated, fetch logs server-side for performance
-  // If not authenticated (e.g., cross-app deep link), AuthGate will handle it client-side
-  const { userId } = await auth()
-
   let logs: LogEvent[] = []
   let sources: string[] = []
   let error: string | null = null
@@ -62,7 +56,6 @@ export default async function LogExplorerPage({
   const resolvedParams = await searchParams
   const propertyFilters = parsePropertyFilters(resolvedParams)
 
-  // Parse time range from URL params
   const urlParams = new URLSearchParams()
   if (resolvedParams.time) urlParams.set('time', resolvedParams.time)
   if (resolvedParams.from) urlParams.set('from', resolvedParams.from)
@@ -74,34 +67,29 @@ export default async function LogExplorerPage({
     end: timeBounds.end,
   }
 
-  // Only fetch data if we have a userId (server-side auth succeeded)
-  if (userId) {
-    try {
-      [logs, sources] = await Promise.all([
-        getRecentLogs(
-          resolvedParams.source,
-          resolvedParams.level,
-          resolvedParams.search,
-          propertyFilters,
-          timeFilter
-        ),
-        getSources(timeFilter)
-      ])
+  try {
+    [logs, sources] = await Promise.all([
+      getRecentLogs(
+        resolvedParams.source,
+        resolvedParams.level,
+        resolvedParams.search,
+        propertyFilters,
+        timeFilter
+      ),
+      getSources(timeFilter)
+    ])
 
-      // If a specific log ID is requested, ensure it's included in the results
-      if (resolvedParams.id) {
-        const logExists = logs.some(log => log.id === resolvedParams.id)
-        if (!logExists) {
-          const specificLog = await getLogById(resolvedParams.id)
-          if (specificLog) {
-            // Prepend the specific log so it's visible at the top
-            logs = [specificLog, ...logs]
-          }
+    if (resolvedParams.id) {
+      const logExists = logs.some(log => log.id === resolvedParams.id)
+      if (!logExists) {
+        const specificLog = await getLogById(resolvedParams.id)
+        if (specificLog) {
+          logs = [specificLog, ...logs]
         }
       }
-    } catch (e) {
-      error = e instanceof Error ? e.message : 'Failed to fetch logs'
     }
+  } catch (e) {
+    error = e instanceof Error ? e.message : 'Failed to fetch logs'
   }
 
   const timeDescription = formatTimeRangeDisplay(timeRange)
@@ -109,7 +97,6 @@ export default async function LogExplorerPage({
   const levels = ['Debug', 'Information', 'Warning', 'Error', 'Fatal']
 
   return (
-    <AuthGate hasServerData={!!userId}>
     <div className="animate-fade-in">
       {/* Header */}
       <div className="mb-6">
@@ -221,6 +208,5 @@ export default async function LogExplorerPage({
         <LogExplorer initialLogs={logs} highlightedLogId={resolvedParams.id} />
       )}
     </div>
-    </AuthGate>
   )
 }

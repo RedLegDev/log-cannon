@@ -1,6 +1,9 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 
+# Build deps for better-sqlite3 native module (falls back to source build if no musl prebuilt)
+RUN apk add --no-cache python3 make g++
+
 COPY package.json ./
 RUN npm install
 
@@ -11,11 +14,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED 1
-
-# Clerk publishable key must be available at build time for Next.js
-# Publishable keys are safe to include - they're meant to be public
-ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_ZmVhc2libGUtbG9jdXN0LTcyLmNsZXJrLmFjY291bnRzLmRldiQ
-ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 
 RUN npm run build
 
@@ -33,8 +31,17 @@ COPY --from=builder /app/public ./public
 RUN mkdir .next
 RUN chown nextjs:nodejs .next
 
+# Auth SQLite lives here; mounted as a volume in docker-compose.
+RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
+
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Native module — Next.js standalone tracing can miss the .node binary.
+# Copy the full package to be sure it loads at runtime.
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/better-sqlite3 ./node_modules/better-sqlite3
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/bindings ./node_modules/bindings
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules/file-uri-to-path ./node_modules/file-uri-to-path
 
 USER nextjs
 
