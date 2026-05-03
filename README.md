@@ -60,11 +60,25 @@ When your server goes offline, the Workers keep accepting logs and the Queue buf
 git clone <repo-url>
 cd log-cannon
 cp .env.example .env
-# Edit .env with your RESEND_API_KEY and CLOUDFLARE_TUNNEL_TOKEN
+# Edit .env — at minimum set:
+#   RESEND_API_KEY            (Resend API key for outbound email)
+#   CLOUDFLARE_TUNNEL_TOKEN   (Cloudflare tunnel token)
+#   AUTH_SECRET               (32+ random bytes; e.g. `openssl rand -hex 32`)
+#   AUTH_ALLOWED_EMAILS       (comma-separated list of emails allowed to sign in)
+#   EMAIL_FROM                (From: address for OTP emails, e.g. "Log Cannon <logs@yourdomain.com>")
+#   EMAIL_TRANSPORT=resend    (production; omit/leave default for local Inbucket)
 
 # Start services
 docker-compose up -d
 ```
+
+### Dashboard Authentication (Email OTP)
+
+The dashboard uses HMAC-signed session cookies and 6-digit email OTPs. There are no user accounts to manage — anyone whose email is in `AUTH_ALLOWED_EMAILS` can request a code and sign in.
+
+- **Production** — set `EMAIL_TRANSPORT=resend` so OTPs are delivered via the Resend HTTP API (uses `RESEND_API_KEY`).
+- **Local development** — leave `EMAIL_TRANSPORT` unset (defaults to SMTP) and set `COMPOSE_PROFILES=dev` to start the bundled [Inbucket](https://inbucket.org) service. Pick up OTPs at `http://localhost:9000`.
+- OTP records are stored in SQLite at `/app/data/auth.db` inside the dashboard container (a Docker volume keeps them across restarts).
 
 ### Cloudflare Tunnel Configuration
 
@@ -152,10 +166,21 @@ log-cannon/
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `RESEND_API_KEY` | Yes | Resend API key for alert emails |
+| `RESEND_API_KEY` | Yes | Resend API key — used for alert emails and (when `EMAIL_TRANSPORT=resend`) dashboard OTP delivery |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Yes | Cloudflare tunnel token |
 | `ALERT_FROM_EMAIL` | No | Sender email for alerts |
 | `DISCOVERY_MODE` | No | Set to `true` to auto-provision unknown API keys (for migration) |
+
+### Dashboard Auth Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `AUTH_SECRET` | Yes | 32+ random bytes used to sign session cookies (`openssl rand -hex 32`) |
+| `AUTH_ALLOWED_EMAILS` | Yes | Comma-separated list of email addresses allowed to sign in |
+| `EMAIL_FROM` | Yes | From-address for OTP emails (e.g. `Log Cannon <logs@yourdomain.com>`) |
+| `EMAIL_TRANSPORT` | No | `resend` in production; unset (default `smtp` → Inbucket) for local dev |
+| `OTP_EXPIRY_MINUTES` | No | OTP validity window (default `10`) |
+| `COMPOSE_PROFILES` | No | Set to `dev` locally to start the Inbucket service; leave unset in prod |
 
 ### Queue Consumer Variables (for edge ingestion)
 
