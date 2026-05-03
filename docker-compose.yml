@@ -52,6 +52,7 @@ services:
         condition: service_healthy
       inbucket:
         condition: service_started
+        required: false
     restart: unless-stopped
 
   inbucket:
