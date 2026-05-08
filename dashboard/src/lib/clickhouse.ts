@@ -1387,12 +1387,17 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
       WHERE timestamp > now() - INTERVAL 24 HOUR
     `),
 
-    // Oldest and newest log timestamps
+    // Oldest and newest log timestamps.
+    // Filter implausible timestamps (epoch-zero rows from misconfigured clients
+    // poison min(); far-future rows would poison max()) so the displayed range
+    // reflects real log activity, not bogus payloads.
     queryClickHouse<{ oldest: string; newest: string }>(`
       SELECT
         formatDateTime(min(timestamp), '%Y-%m-%d %H:%i:%S') as oldest,
         formatDateTime(max(timestamp), '%Y-%m-%d %H:%i:%S') as newest
       FROM logs.events
+      WHERE timestamp > toDateTime('2000-01-01 00:00:00')
+        AND timestamp < toDateTime('2100-01-01 00:00:00')
     `),
 
     // Table size from system.parts
@@ -1402,7 +1407,7 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
       WHERE database = 'logs' AND table = 'events' AND active = 1
     `),
 
-    // Rows and size per partition
+    // Rows and size per partition (one row per daily partition).
     queryClickHouse<{ partition: string; rows: number; size_bytes: number }>(`
       SELECT
         partition,
@@ -1412,7 +1417,6 @@ export async function getSystemMetrics(): Promise<SystemMetrics> {
       WHERE database = 'logs' AND table = 'events' AND active = 1
       GROUP BY partition
       ORDER BY partition DESC
-      LIMIT 30
     `),
 
     // Disk usage
