@@ -16,7 +16,8 @@ ch_query() {
 }
 
 log() {
-    echo "[$(date -Iseconds)] $1"
+    # Write to stderr so callers using $(fn) don't capture log output as data.
+    echo "[$(date -Iseconds)] $1" >&2
 }
 
 has_r2() {

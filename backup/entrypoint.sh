@@ -3,8 +3,11 @@ set -e
 
 BACKUP_CRON="${BACKUP_CRON:-0 3,15 * * *}"
 
-# Persist Docker env vars so cron jobs can access them
-env | grep -E '^(CLICKHOUSE_|BACKUP_|R2_)' > /etc/environment.docker
+# Persist Docker env vars so cron jobs can access them.
+# Quote values so entries with spaces (e.g. BACKUP_CRON="0 3,15 * * *") source cleanly.
+env | grep -E '^(CLICKHOUSE_|BACKUP_|R2_)' \
+    | sed -E 's/^([^=]+)=(.*)$/\1='\''\2'\''/' \
+    > /etc/environment.docker
 
 # Generate rclone config for Cloudflare R2 if credentials are present
 if [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ] && [ -n "$R2_ACCOUNT_ID" ]; then
