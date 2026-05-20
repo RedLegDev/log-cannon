@@ -124,7 +124,7 @@ collect_protected_fulls() {
     local protected=""
 
     if [ "$source" = "local" ]; then
-        for meta in "$BACKUP_DIR"/logs-incr-*/.backup_meta 2>/dev/null; do
+        for meta in "$BACKUP_DIR"/logs-incr-*/.backup_meta; do
             [ -f "$meta" ] || continue
             local base
             base=$(grep "^base=" "$meta" | cut -d= -f2)
