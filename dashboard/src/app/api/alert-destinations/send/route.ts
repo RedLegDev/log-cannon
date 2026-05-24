@@ -114,10 +114,11 @@ async function sendEmail(
   properties: Record<string, unknown>,
   eventLink: string
 ): Promise<void> {
-  const resendApiKey = process.env.RESEND_API_KEY;
-  if (!resendApiKey) {
-    throw new Error('RESEND_API_KEY not configured — cannot send email');
+  const saasMailApiKey = process.env.SAASMAIL_API_KEY;
+  if (!saasMailApiKey) {
+    throw new Error('SAASMAIL_API_KEY not configured — cannot send email');
   }
+  const saasMailUrl = process.env.SAASMAIL_API_URL || 'https://mail.redleg.dev';
 
   const fromEmail = config.from || process.env.ALERT_FROM_EMAIL || 'alerts@yourdomain.com';
   const levelColors: Record<string, string> = {
@@ -170,24 +171,24 @@ async function sendEmail(
 
   const subject = `[${event.level}] ${event.source}: ${event.message.slice(0, 80)}`;
 
-  const res = await fetch('https://api.resend.com/emails', {
+  const form = new FormData();
+  form.append('payload', JSON.stringify({
+    to: config.email,
+    fromAddress: fromEmail,
+    subject,
+    bodyHtml: html,
+    bodyText: textBody,
+  }));
+
+  const res = await fetch(`${saasMailUrl}/api/send`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${resendApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from: fromEmail,
-      to: [config.email],
-      subject,
-      text: textBody,
-      html,
-    }),
+    headers: { Authorization: `Bearer ${saasMailApiKey}` },
+    body: form,
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Resend API returned ${res.status}: ${text.slice(0, 200)}`);
+    throw new Error(`SaaSMail API returned ${res.status}: ${text.slice(0, 200)}`);
   }
 }
 

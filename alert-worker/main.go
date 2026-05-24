@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strconv"
@@ -72,12 +73,13 @@ func main() {
 	database := getEnv("CLICKHOUSE_DATABASE", "logs")
 	user := getEnv("CLICKHOUSE_USER", "default")
 	password := getEnv("CLICKHOUSE_PASSWORD", "")
-	resendAPIKey := os.Getenv("RESEND_API_KEY")
+	saasMailAPIKey := os.Getenv("SAASMAIL_API_KEY")
+	saasMailURL := getEnv("SAASMAIL_API_URL", "https://mail.redleg.dev")
 	fromEmail := getEnv("ALERT_FROM_EMAIL", "alerts@yourdomain.com")
 	dashboardURL := getEnv("DASHBOARD_URL", "https://logs.redleg.dev")
 
-	if resendAPIKey == "" {
-		log.Println("Warning: RESEND_API_KEY not set - email destinations will not work")
+	if saasMailAPIKey == "" {
+		log.Println("Warning: SAASMAIL_API_KEY not set - email destinations will not work")
 	}
 
 	// Connect to ClickHouse
@@ -168,7 +170,7 @@ func main() {
 
 			// Send alert
 			log.Printf("[%s] Sending alert: %s", alert.ID, alert.Name)
-			dispatchAlert(conn, alert, result, resendAPIKey, fromEmail, dashboardURL)
+			dispatchAlert(conn, alert, result, saasMailAPIKey, saasMailURL, fromEmail, dashboardURL)
 
 			// Update last_triggered_at in database
 			if err := updateLastTriggered(conn, alert.ID); err != nil {
@@ -601,27 +603,39 @@ func escapeHTML(s string) string {
 	return s
 }
 
-func sendEmail(apiKey, from, to, subject, textBody, htmlBody string) error {
-	payload := map[string]interface{}{
-		"from":    from,
-		"to":      []string{to},
-		"subject": subject,
-		"text":    textBody,
-		"html":    htmlBody,
+func sendEmail(apiKey, apiURL, from, to, subject, textBody, htmlBody string) error {
+	type mailPayload struct {
+		To          string `json:"to"`
+		FromAddress string `json:"fromAddress"`
+		Subject     string `json:"subject"`
+		BodyText    string `json:"bodyText"`
+		BodyHTML    string `json:"bodyHtml"`
 	}
-
-	jsonBody, err := json.Marshal(payload)
+	p := mailPayload{
+		To:          to,
+		FromAddress: from,
+		Subject:     subject,
+		BodyText:    textBody,
+		BodyHTML:    htmlBody,
+	}
+	payloadJSON, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewBuffer(jsonBody))
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("payload", string(payloadJSON)); err != nil {
+		return err
+	}
+	writer.Close()
+
+	req, err := http.NewRequest("POST", apiURL+"/api/send", &body)
 	if err != nil {
 		return err
 	}
-
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -631,7 +645,7 @@ func sendEmail(apiKey, from, to, subject, textBody, htmlBody string) error {
 
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("resend error (status %d): %s", resp.StatusCode, respBody)
+		return fmt.Errorf("saasmail error (status %d): %s", resp.StatusCode, respBody)
 	}
 
 	return nil
@@ -703,7 +717,7 @@ func sendWebhook(cfg WebhookConfig, payload WebhookPayload) error {
 }
 
 func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
-	resendAPIKey, fromEmail, dashboardURL string) {
+	saasMailAPIKey, saasMailURL, fromEmail, dashboardURL string) {
 
 	textBody, htmlBody := formatAlertBody(alert, result, dashboardURL)
 
@@ -725,11 +739,11 @@ func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
 				if cfg.From != "" {
 					from = cfg.From
 				}
-				if resendAPIKey == "" {
-					log.Printf("[%s] Cannot send email to %s: RESEND_API_KEY not set", alert.ID, cfg.Email)
+				if saasMailAPIKey == "" {
+					log.Printf("[%s] Cannot send email to %s: SAASMAIL_API_KEY not set", alert.ID, cfg.Email)
 					continue
 				}
-				if err := sendEmail(resendAPIKey, from, cfg.Email, alert.Subject, textBody, htmlBody); err != nil {
+				if err := sendEmail(saasMailAPIKey, saasMailURL, from, cfg.Email, alert.Subject, textBody, htmlBody); err != nil {
 					log.Printf("[%s] Email to %s failed: %v", alert.ID, cfg.Email, err)
 				} else {
 					log.Printf("[%s] Email sent to %s via dest %s", alert.ID, cfg.Email, dest.Name)
@@ -764,11 +778,11 @@ func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
 
 	// Legacy recipients fallback
 	for _, recipient := range alert.Recipients {
-		if resendAPIKey == "" {
-			log.Printf("[%s] Cannot send email to %s: RESEND_API_KEY not set", alert.ID, recipient)
+		if saasMailAPIKey == "" {
+			log.Printf("[%s] Cannot send email to %s: SAASMAIL_API_KEY not set", alert.ID, recipient)
 			continue
 		}
-		if err := sendEmail(resendAPIKey, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
+		if err := sendEmail(saasMailAPIKey, saasMailURL, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
 			log.Printf("[%s] Failed to send email to %s: %v", alert.ID, recipient, err)
 		} else {
 			log.Printf("[%s] Email sent to %s", alert.ID, recipient)

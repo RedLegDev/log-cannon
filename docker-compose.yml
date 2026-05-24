@@ -32,7 +32,8 @@ services:
       - "${DASHBOARD_PORT:-3000}:3000"
     environment:
       - CLICKHOUSE_URL=http://clickhouse:8123
-      - RESEND_API_KEY=${RESEND_API_KEY}
+      - SAASMAIL_API_KEY=${SAASMAIL_API_KEY}
+      - SAASMAIL_API_URL=${SAASMAIL_API_URL:-https://mail.redleg.dev}
       - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.dev}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
       # Auth — required
@@ -40,9 +41,9 @@ services:
       - AUTH_ALLOWED_EMAILS=${AUTH_ALLOWED_EMAILS}
       - AUTH_DB_PATH=/app/data/auth.db
       - OTP_EXPIRY_MINUTES=${OTP_EXPIRY_MINUTES:-10}
-      # Email transport — "smtp" (Inbucket) for local, "resend" for prod
+      # Email transport — "smtp" (Inbucket) for local, "saasmail" for prod
       - EMAIL_TRANSPORT=${EMAIL_TRANSPORT:-smtp}
-      - EMAIL_FROM=${EMAIL_FROM:-Log Cannon <logs@redleg.dev>}
+      - EMAIL_FROM=${EMAIL_FROM:-Log Cannon <support@redleg.app>}
       - SMTP_HOST=${SMTP_HOST:-inbucket}
       - SMTP_PORT=${SMTP_PORT:-2500}
     volumes:
@@ -71,7 +72,8 @@ services:
       - CLICKHOUSE_DATABASE=logs
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
-      - RESEND_API_KEY=${RESEND_API_KEY}
+      - SAASMAIL_API_KEY=${SAASMAIL_API_KEY}
+      - SAASMAIL_API_URL=${SAASMAIL_API_URL:-https://mail.redleg.dev}
       - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.dev}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
     depends_on:

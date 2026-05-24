@@ -97,35 +97,39 @@ export async function sendOtpEmail(
     }
   }
 
-  if (transport === "resend") {
-    const resendApiKey = process.env.RESEND_API_KEY;
-    if (!resendApiKey) {
-      return { ok: false, error: "RESEND_API_KEY not configured" };
+  if (transport === "saasmail") {
+    const apiKey = process.env.SAASMAIL_API_KEY;
+    if (!apiKey) {
+      return { ok: false, error: "SAASMAIL_API_KEY not configured" };
     }
+    const mailApiUrl =
+      process.env.SAASMAIL_API_URL || "https://mail.redleg.dev";
     try {
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: fromEmail,
-          to: [toEmail],
+      const form = new FormData();
+      form.append(
+        "payload",
+        JSON.stringify({
+          to: toEmail,
+          fromAddress: fromEmail,
           subject,
-          html,
-          text,
+          bodyHtml: html,
+          bodyText: text,
         }),
+      );
+      const res = await fetch(`${mailApiUrl}/api/send`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
       });
       if (!res.ok) {
         const errBody = await res.text();
-        console.error("Resend send failed:", res.status, errBody);
+        console.error("SaaSMail send failed:", res.status, errBody);
         return { ok: false, error: errBody };
       }
       return { ok: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error("Resend send exception:", message);
+      console.error("SaaSMail send exception:", message);
       return { ok: false, error: message };
     }
   }
