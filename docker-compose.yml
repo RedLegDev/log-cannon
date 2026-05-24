@@ -34,7 +34,7 @@ services:
       - CLICKHOUSE_URL=http://clickhouse:8123
       - SAASMAIL_API_KEY=${SAASMAIL_API_KEY}
       - SAASMAIL_API_URL=${SAASMAIL_API_URL:-https://mail.redleg.dev}
-      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.dev}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.app}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
       # Auth — required
       - AUTH_SECRET=${AUTH_SECRET}
@@ -74,7 +74,7 @@ services:
       - CLICKHOUSE_PASSWORD=
       - SAASMAIL_API_KEY=${SAASMAIL_API_KEY}
       - SAASMAIL_API_URL=${SAASMAIL_API_URL:-https://mail.redleg.dev}
-      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.dev}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.app}
       - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
     depends_on:
       clickhouse:
