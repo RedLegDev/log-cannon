@@ -1,0 +1,75 @@
+version: 2
+
+updates:
+  # ── JavaScript / TypeScript ──────────────────────────────────────────────
+  # dashboard (Next.js, npm + package-lock.json)
+  - package-ecosystem: "npm"
+    directory: "/dashboard"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      dashboard-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # workers (Cloudflare Workers, pnpm + pnpm-lock.yaml — uses the npm ecosystem)
+  - package-ecosystem: "npm"
+    directory: "/workers"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      workers-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Go ───────────────────────────────────────────────────────────────────
+  - package-ecosystem: "gomod"
+    directory: "/alert-worker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      alert-worker-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "gomod"
+    directory: "/queue-consumer"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      queue-consumer-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Docker base images ─────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directories:
+      - "/alert-worker"
+      - "/backup"
+      - "/clickhouse"
+      - "/dashboard"
+      - "/queue-consumer"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
