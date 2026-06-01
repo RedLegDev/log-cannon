@@ -8,13 +8,31 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+      timezone: "America/New_York"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(dashboard)"
+      prefix-development: "chore(dashboard-dev)"
     groups:
-      dashboard-minor-patch:
+      dashboard-production:
         applies-to: version-updates
+        dependency-type: "production"
         update-types:
           - "minor"
           - "patch"
+      dashboard-development:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      dashboard-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   # workers (Cloudflare Workers, pnpm + pnpm-lock.yaml — uses the npm ecosystem)
   - package-ecosystem: "npm"
@@ -22,13 +40,31 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+      timezone: "America/New_York"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(workers)"
+      prefix-development: "chore(workers-dev)"
     groups:
-      workers-minor-patch:
+      workers-production:
         applies-to: version-updates
+        dependency-type: "production"
         update-types:
           - "minor"
           - "patch"
+      workers-development:
+        applies-to: version-updates
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+      workers-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   # ── Go ───────────────────────────────────────────────────────────────────
   - package-ecosystem: "gomod"
@@ -36,28 +72,49 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+      timezone: "America/New_York"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "chore(alert-worker)"
     groups:
       alert-worker-minor-patch:
         applies-to: version-updates
         update-types:
           - "minor"
           - "patch"
+      alert-worker-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   - package-ecosystem: "gomod"
     directory: "/queue-consumer"
     schedule:
       interval: "weekly"
       day: "monday"
+      timezone: "America/New_York"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "chore(queue-consumer)"
     groups:
       queue-consumer-minor-patch:
         applies-to: version-updates
         update-types:
           - "minor"
           - "patch"
+      queue-consumer-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
 
   # ── Docker base images ─────────────────────────────────────────────────────
+  # Only pinned tags are updated; floating tags (e.g. :latest) are ignored by Dependabot.
   - package-ecosystem: "docker"
     directories:
       - "/alert-worker"
@@ -68,8 +125,19 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+      timezone: "America/New_York"
     open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(docker)"
     groups:
       docker-base-images:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      docker-security:
+        applies-to: security-updates
         patterns:
           - "*"
