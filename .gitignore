@@ -33,6 +33,7 @@ coverage/
 # Go binaries
 ingest-api/ingest-api
 alert-worker/alert-worker
+queue-consumer/queue-consumer
 
 # Docker volumes
 clickhouse-data/
