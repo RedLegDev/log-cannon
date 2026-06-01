@@ -15,23 +15,34 @@ function formatUtc(iso: string | null): string | null {
 export function BuildFooter() {
   const { commit, commitFull, buildTime, commitUrl } = getBuildInfo();
   const built = formatUtc(buildTime);
+  const hasCommit = commitFull !== 'dev';
+
+  if (!hasCommit && !built) {
+    return (
+      <footer className="text-center py-4 text-xs text-text-muted font-mono">
+        dev build
+      </footer>
+    );
+  }
 
   return (
     <footer className="text-center py-4 text-xs text-text-muted font-mono">
-      {commitUrl ? (
-        <a
-          href={commitUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={commitFull}
-          className="hover:text-cannon-fire transition-colors"
-        >
-          {commit}
-        </a>
-      ) : (
-        <span title={commitFull}>{commit}</span>
-      )}
-      {built && <span> · built {built}</span>}
+      {hasCommit &&
+        (commitUrl ? (
+          <a
+            href={commitUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={commitFull}
+            className="hover:text-cannon-fire transition-colors"
+          >
+            {commit}
+          </a>
+        ) : (
+          <span title={commitFull}>{commit}</span>
+        ))}
+      {hasCommit && built && <span> · </span>}
+      {built && <span>built {built}</span>}
     </footer>
   );
 }

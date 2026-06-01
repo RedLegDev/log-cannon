@@ -26,9 +26,13 @@ services:
   dashboard:
     build:
       context: ./dashboard
-      additional_contexts:
-        # Exposes the repo's git metadata to the image's build-stamp stage.
-        gitdir: ./.git
+      args:
+        # Build stamp shown in the UI. Set these as stack env vars (or in .env)
+        # to record the deployed commit; they default to "dev" if unset.
+        # Build time is always captured inside the image regardless.
+        GIT_COMMIT: ${GIT_COMMIT:-dev}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        GIT_BRANCH: ${GIT_BRANCH:-dev}
     expose:
       - "3000"
     ports:

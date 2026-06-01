@@ -151,7 +151,7 @@ export default function SystemPage() {
             <GitCommitHorizontal className="w-5 h-5 text-cannon-fire" />
             Build
           </h2>
-          {buildInfo.commit === 'dev' ? (
+          {buildInfo.commit === 'dev' && !buildInfo.buildTime ? (
             <p className="text-text-secondary text-sm">Development build (un-stamped)</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -162,30 +162,34 @@ export default function SystemPage() {
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs text-text-muted">Commit</div>
-                  <div className="flex items-center gap-2">
-                    {buildInfo.commitUrl ? (
-                      <a
-                        href={buildInfo.commitUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title={buildInfo.commitFull}
-                        className="font-mono text-sm text-text-primary hover:text-cannon-fire transition-colors"
+                  {buildInfo.commit === 'dev' ? (
+                    <span className="font-mono text-sm text-text-muted">unknown</span>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      {buildInfo.commitUrl ? (
+                        <a
+                          href={buildInfo.commitUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={buildInfo.commitFull}
+                          className="font-mono text-sm text-text-primary hover:text-cannon-fire transition-colors"
+                        >
+                          {buildInfo.commit}
+                        </a>
+                      ) : (
+                        <span title={buildInfo.commitFull} className="font-mono text-sm text-text-primary">
+                          {buildInfo.commit}
+                        </span>
+                      )}
+                      <button
+                        onClick={copyCommit}
+                        title="Copy full SHA"
+                        className="text-text-muted hover:text-cannon-fire transition-colors"
                       >
-                        {buildInfo.commit}
-                      </a>
-                    ) : (
-                      <span title={buildInfo.commitFull} className="font-mono text-sm text-text-primary">
-                        {buildInfo.commit}
-                      </span>
-                    )}
-                    <button
-                      onClick={copyCommit}
-                      title="Copy full SHA"
-                      className="text-text-muted hover:text-cannon-fire transition-colors"
-                    >
-                      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
+                        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
               {/* Branch */}
@@ -195,7 +199,9 @@ export default function SystemPage() {
                 </div>
                 <div>
                   <div className="text-xs text-text-muted">Branch</div>
-                  <div className="font-mono text-sm text-text-primary">{buildInfo.branch}</div>
+                  <div className="font-mono text-sm text-text-primary">
+                    {buildInfo.branch === 'dev' ? '—' : buildInfo.branch}
+                  </div>
                 </div>
               </div>
               {/* Built */}
@@ -206,7 +212,9 @@ export default function SystemPage() {
                 <div>
                   <div className="text-xs text-text-muted">Built</div>
                   <div className="font-mono text-sm text-text-primary">{formatTimestamp(buildInfo.buildTime)}</div>
-                  <div className="text-xs text-text-muted">commit {formatTimestamp(buildInfo.commitDate)}</div>
+                  {buildInfo.commitDate && (
+                    <div className="text-xs text-text-muted">commit {formatTimestamp(buildInfo.commitDate)}</div>
+                  )}
                 </div>
               </div>
             </div>
