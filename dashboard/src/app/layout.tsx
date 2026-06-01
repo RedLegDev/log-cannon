@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from 'next'
 import { Inter, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 import { Navigation } from '@/components/Navigation'
-import { BuildFooter } from '@/components/BuildFooter'
 
 const inter = Inter({
   subsets: ['latin'],
@@ -65,7 +64,6 @@ export default function RootLayout({
           <main className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8 pt-20">
             {children}
           </main>
-          <BuildFooter />
         </div>
       </body>
     </html>

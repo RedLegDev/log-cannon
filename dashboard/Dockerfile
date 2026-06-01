@@ -1,23 +1,3 @@
-# Build stamp: read git metadata (provided as the "gitdir" build context) and
-# emit version.json. Resilient to a missing/empty git context (local builds).
-FROM alpine/git AS stamp
-WORKDIR /src
-COPY --from=gitdir . /src/.git
-RUN set -e; \
-    if git -C /src rev-parse HEAD >/dev/null 2>&1; then \
-      commit=$(git -C /src rev-parse HEAD); \
-      short=$(git -C /src rev-parse --short=7 HEAD); \
-      cdate=$(git -C /src log -1 --format=%cI); \
-      branch=$(git -C /src rev-parse --abbrev-ref HEAD); \
-    else \
-      commit=dev; short=dev; cdate=; branch=dev; \
-    fi; \
-    btime=$(date -u +%Y-%m-%dT%H:%M:%SZ); \
-    if [ -n "$cdate" ]; then cdate_json="\"$cdate\""; else cdate_json=null; fi; \
-    printf '{"commit":"%s","commitFull":"%s","commitDate":%s,"buildTime":"%s","branch":"%s"}\n' \
-      "$short" "$commit" "$cdate_json" "$btime" "$branch" > /version.json; \
-    cat /version.json
-
 FROM node:24-alpine AS deps
 WORKDIR /app
 
@@ -32,10 +12,6 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-
-# Overwrite the committed "dev" fallback with the real build stamp before build,
-# so it compiles into the server bundle (no runtime fs / path assumptions).
-COPY --from=stamp /version.json ./src/generated/version.json
 
 ENV NEXT_TELEMETRY_DISABLED 1
 
