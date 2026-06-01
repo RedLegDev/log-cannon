@@ -13,36 +13,12 @@ function formatUtc(iso: string | null): string | null {
  * component — reads the baked stamp directly, no client fetch.
  */
 export function BuildFooter() {
-  const { commit, commitFull, buildTime, commitUrl } = getBuildInfo();
+  const { buildTime } = getBuildInfo();
   const built = formatUtc(buildTime);
-  const hasCommit = commitFull !== 'dev';
-
-  if (!hasCommit && !built) {
-    return (
-      <footer className="text-center py-4 text-xs text-text-muted font-mono">
-        dev build
-      </footer>
-    );
-  }
 
   return (
     <footer className="text-center py-4 text-xs text-text-muted font-mono">
-      {hasCommit &&
-        (commitUrl ? (
-          <a
-            href={commitUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={commitFull}
-            className="hover:text-cannon-fire transition-colors"
-          >
-            {commit}
-          </a>
-        ) : (
-          <span title={commitFull}>{commit}</span>
-        ))}
-      {hasCommit && built && <span> · </span>}
-      {built && <span>built {built}</span>}
+      {built ? `built ${built}` : 'dev build'}
     </footer>
   );
 }

@@ -13,13 +13,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Build stamp: commit, branch, and commit date come from the git-tracked
-# src/generated/version.json, written by the "Stamp build version" GitHub Action
-# on every push to main (Portainer's build context has no .git, so they can't be
-# read here). We only inject the actual image build time. An optional GIT_COMMIT
-# build arg overrides the commit for manual / registry builds.
-ARG GIT_COMMIT=
-RUN node -e "const fs=require('fs');const p='src/generated/version.json';const v=JSON.parse(fs.readFileSync(p));v.buildTime=new Date().toISOString();const c=process.env.GIT_COMMIT;if(c){v.commitFull=c;v.commit=c.slice(0,7);}fs.writeFileSync(p,JSON.stringify(v,null,2)+'\n');process.stdout.write(fs.readFileSync(p,'utf8'));"
+# Build stamp: record the image build time into src/generated/version.json so
+# the System page can show when this image was built. (Portainer's build context
+# has no .git, so there's no commit to read — build time is all we stamp.)
+RUN node -e "const fs=require('fs');const p='src/generated/version.json';const v=JSON.parse(fs.readFileSync(p));v.buildTime=new Date().toISOString();fs.writeFileSync(p,JSON.stringify(v,null,2)+'\n');process.stdout.write(fs.readFileSync(p,'utf8'));"
 
 ENV NEXT_TELEMETRY_DISABLED 1
 
