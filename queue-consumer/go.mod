@@ -1,8 +1,6 @@
 module github.com/logaggregator/queue-consumer
 
-go 1.22.0
-
-toolchain go1.22.12
+go 1.23.0
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.18.0
@@ -26,9 +24,9 @@ require (
 	github.com/shopspring/decimal v1.3.1 // indirect
 	go.opentelemetry.io/otel v1.31.0 // indirect
 	go.opentelemetry.io/otel/trace v1.31.0 // indirect
-	golang.org/x/net v0.33.0 // indirect
-	golang.org/x/sys v0.29.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
+	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/sys v0.31.0 // indirect
+	golang.org/x/text v0.23.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250102185135-69823020774d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250102185135-69823020774d // indirect
 	google.golang.org/grpc v1.69.2 // indirect
