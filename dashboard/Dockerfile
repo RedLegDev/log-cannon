@@ -13,20 +13,13 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Build stamp: baked into src/generated/version.json before `next build` so it
-# compiles into the server bundle. Values arrive as build args because the .git
-# dir is not present under Portainer's compose build context. Build time is
-# always captured; commit/date/branch default to "dev" when not supplied.
-ARG GIT_COMMIT=dev
-ARG GIT_COMMIT_DATE=
-ARG GIT_BRANCH=dev
-RUN set -e; \
-    short=$(printf '%s' "$GIT_COMMIT" | cut -c1-7); \
-    btime=$(date -u +%Y-%m-%dT%H:%M:%SZ); \
-    if [ -n "$GIT_COMMIT_DATE" ]; then cdate_json="\"$GIT_COMMIT_DATE\""; else cdate_json=null; fi; \
-    printf '{"commit":"%s","commitFull":"%s","commitDate":%s,"buildTime":"%s","branch":"%s"}\n' \
-      "$short" "$GIT_COMMIT" "$cdate_json" "$btime" "$GIT_BRANCH" > src/generated/version.json; \
-    cat src/generated/version.json
+# Build stamp: commit, branch, and commit date come from the git-tracked
+# src/generated/version.json, written by the "Stamp build version" GitHub Action
+# on every push to main (Portainer's build context has no .git, so they can't be
+# read here). We only inject the actual image build time. An optional GIT_COMMIT
+# build arg overrides the commit for manual / registry builds.
+ARG GIT_COMMIT=
+RUN node -e "const fs=require('fs');const p='src/generated/version.json';const v=JSON.parse(fs.readFileSync(p));v.buildTime=new Date().toISOString();const c=process.env.GIT_COMMIT;if(c){v.commitFull=c;v.commit=c.slice(0,7);}fs.writeFileSync(p,JSON.stringify(v,null,2)+'\n');process.stdout.write(fs.readFileSync(p,'utf8'));"
 
 ENV NEXT_TELEMETRY_DISABLED 1
 

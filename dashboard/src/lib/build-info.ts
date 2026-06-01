@@ -20,12 +20,15 @@ export interface BuildInfo {
 const REPO_URL = (process.env.GITHUB_REPO_URL || 'https://github.com/RedLegDev/log-cannon').replace(/\/+$/, '');
 
 /**
- * Resolves the build stamp baked into the image at `src/generated/version.json`
- * (written by the Docker `stamp` stage from the repo's git metadata).
+ * Resolves the build stamp baked into the image at `src/generated/version.json`.
+ * Commit/branch/date are written into that git-tracked file by the
+ * "Stamp build version" GitHub Action on every push to main; the Docker build
+ * adds the build time. (Portainer's build context has no .git, so the image
+ * can't read git metadata itself.)
  *
  * Runtime env vars `GIT_COMMIT` / `BUILD_TIME` take precedence when set, so a
- * non-GitOps or manual build can still report an accurate stamp without the
- * git context wired in. Falls back to the committed "dev" placeholder locally.
+ * manual or registry build can still report an accurate stamp. Falls back to
+ * the committed "dev" placeholder locally.
  */
 export function getBuildInfo(): BuildInfo {
   const commitFull = process.env.GIT_COMMIT || rawBuildInfo.commitFull || rawBuildInfo.commit || 'dev';

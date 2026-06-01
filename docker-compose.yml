@@ -25,14 +25,10 @@ services:
 
   dashboard:
     build:
+      # Build stamp (commit/branch/date) is read from the git-tracked
+      # src/generated/version.json, kept current by the stamp-version GitHub
+      # Action; the image only adds the build time. No build args needed.
       context: ./dashboard
-      args:
-        # Build stamp shown in the UI. Set these as stack env vars (or in .env)
-        # to record the deployed commit; they default to "dev" if unset.
-        # Build time is always captured inside the image regardless.
-        GIT_COMMIT: ${GIT_COMMIT:-dev}
-        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
-        GIT_BRANCH: ${GIT_BRANCH:-dev}
     expose:
       - "3000"
     ports:
