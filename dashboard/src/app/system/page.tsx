@@ -11,7 +11,11 @@ import {
   Loader2,
   RefreshCw,
   TrendingUp,
-  Calendar
+  Calendar,
+  GitBranch,
+  GitCommitHorizontal,
+  Copy,
+  Check
 } from 'lucide-react';
 
 interface PartitionInfo {
@@ -24,6 +28,23 @@ interface TableInfo {
   table: string;
   rows: number;
   size_bytes: number;
+}
+
+interface BuildInfo {
+  commit: string;
+  commitFull: string;
+  commitDate: string | null;
+  buildTime: string | null;
+  branch: string;
+  repoUrl: string | null;
+  commitUrl: string | null;
+}
+
+function formatTimestamp(iso: string | null): string {
+  if (!iso) return 'Unknown';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Unknown';
+  return d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
 }
 
 interface SystemMetrics {
@@ -59,6 +80,8 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const fetchMetrics = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
@@ -78,7 +101,19 @@ export default function SystemPage() {
 
   useEffect(() => {
     fetchMetrics();
+    fetch('/api/version')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setBuildInfo(data))
+      .catch(() => setBuildInfo(null));
   }, []);
+
+  const copyCommit = () => {
+    if (!buildInfo || buildInfo.commitFull === 'dev') return;
+    navigator.clipboard.writeText(buildInfo.commitFull).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
 
   // Determine disk usage color
   const getDiskColor = (percent: number) => {
@@ -108,6 +143,76 @@ export default function SystemPage() {
           Refresh
         </button>
       </div>
+
+      {/* Build Info */}
+      {buildInfo && (
+        <div className="card-cannon p-4 mb-6">
+          <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2 mb-4">
+            <GitCommitHorizontal className="w-5 h-5 text-cannon-fire" />
+            Build
+          </h2>
+          {buildInfo.commit === 'dev' ? (
+            <p className="text-text-secondary text-sm">Development build (un-stamped)</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {/* Commit */}
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-cannon-steel">
+                  <GitCommitHorizontal className="w-4 h-4 text-cannon-fire" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs text-text-muted">Commit</div>
+                  <div className="flex items-center gap-2">
+                    {buildInfo.commitUrl ? (
+                      <a
+                        href={buildInfo.commitUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={buildInfo.commitFull}
+                        className="font-mono text-sm text-text-primary hover:text-cannon-fire transition-colors"
+                      >
+                        {buildInfo.commit}
+                      </a>
+                    ) : (
+                      <span title={buildInfo.commitFull} className="font-mono text-sm text-text-primary">
+                        {buildInfo.commit}
+                      </span>
+                    )}
+                    <button
+                      onClick={copyCommit}
+                      title="Copy full SHA"
+                      className="text-text-muted hover:text-cannon-fire transition-colors"
+                    >
+                      {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {/* Branch */}
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-cannon-steel">
+                  <GitBranch className="w-4 h-4 text-text-muted" />
+                </div>
+                <div>
+                  <div className="text-xs text-text-muted">Branch</div>
+                  <div className="font-mono text-sm text-text-primary">{buildInfo.branch}</div>
+                </div>
+              </div>
+              {/* Built */}
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-cannon-steel">
+                  <Clock className="w-4 h-4 text-cannon-tracer" />
+                </div>
+                <div>
+                  <div className="text-xs text-text-muted">Built</div>
+                  <div className="font-mono text-sm text-text-primary">{formatTimestamp(buildInfo.buildTime)}</div>
+                  <div className="text-xs text-text-muted">commit {formatTimestamp(buildInfo.commitDate)}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Error Banner */}
       {error && (

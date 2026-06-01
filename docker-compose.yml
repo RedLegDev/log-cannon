@@ -26,6 +26,9 @@ services:
   dashboard:
     build:
       context: ./dashboard
+      additional_contexts:
+        # Exposes the repo's git metadata to the image's build-stamp stage.
+        gitdir: ./.git
     expose:
       - "3000"
     ports:
