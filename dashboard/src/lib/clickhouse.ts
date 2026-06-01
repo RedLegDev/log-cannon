@@ -272,6 +272,7 @@ export interface APIKey {
   scopes: string;
   created_at: string;
   enabled: number;
+  retention_days: number;
 }
 
 export async function getAPIKeys(): Promise<APIKey[]> {
@@ -282,7 +283,8 @@ export async function getAPIKeys(): Promise<APIKey[]> {
       name,
       scopes,
       formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
-      enabled
+      enabled,
+      retention_days
     FROM logs.api_keys
     ORDER BY created_at DESC
   `;
@@ -298,7 +300,8 @@ export async function getAPIKey(keyId: string): Promise<APIKey | null> {
       name,
       scopes,
       formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
-      enabled
+      enabled,
+      retention_days
     FROM logs.api_keys
     WHERE key_id = '${escapeString(keyId)}'
     LIMIT 1
@@ -358,6 +361,16 @@ export async function renameAPIKey(keyId: string, name: string): Promise<void> {
   await executeClickHouse(`
     ALTER TABLE logs.api_keys
     UPDATE name = '${escapeString(name)}'
+    WHERE key_id = '${escapeString(keyId)}'
+  `);
+}
+
+export async function setAPIKeyRetention(keyId: string, days: number): Promise<void> {
+  // Clamp to a non-negative integer; 0 = keep forever.
+  const safeDays = Math.max(0, Math.floor(Number.isFinite(days) ? days : 0));
+  await executeClickHouse(`
+    ALTER TABLE logs.api_keys
+    UPDATE retention_days = ${safeDays}
     WHERE key_id = '${escapeString(keyId)}'
   `);
 }

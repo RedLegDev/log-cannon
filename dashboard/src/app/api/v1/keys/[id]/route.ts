@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError, ApiScope } from '@/lib/api-auth';
-import { toggleAPIKey, renameAPIKey, deleteAPIKey, getAPIKeys, queryClickHouse } from '@/lib/clickhouse';
+import { toggleAPIKey, renameAPIKey, deleteAPIKey, getAPIKeys, setAPIKeyRetention, queryClickHouse } from '@/lib/clickhouse';
 
 const VALID_SCOPES: ApiScope[] = ['ingest', 'read', 'write', 'admin'];
 
@@ -57,6 +57,14 @@ export async function PATCH(
         WHERE key_id = '${id.replace(/'/g, "''")}'
       `;
       await queryClickHouse(updateSql);
+    }
+
+    if (body.retentionDays !== undefined) {
+      const days = Number(body.retentionDays);
+      if (!Number.isInteger(days) || days < 0) {
+        return apiError('validation_error', 'retentionDays must be an integer >= 0', 400);
+      }
+      await setAPIKeyRetention(id, days);
     }
 
     return NextResponse.json({ success: true });

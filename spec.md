@@ -733,9 +733,22 @@ Then visit `https://logs-dashboard.yourdomain.com` to see the dashboard.
 
 ---
 
+## Per-Service Data Retention
+
+Each API key (i.e. each log source) has a `retention_days` setting on `logs.api_keys`
+(`0` = keep forever, the default). The `retention-worker` service runs a trim pass on
+startup and every `RETENTION_INTERVAL_HOURS` (default 24): for each enabled key with
+`retention_days > 0`, it issues
+`ALTER TABLE logs.events DELETE WHERE source = '<name>' AND timestamp < now() - INTERVAL <N> DAY`.
+Set retention per service inline on the **API Keys** page in the dashboard.
+
+Per-source `ALTER ... DELETE` mutations are used (rather than native ClickHouse `TTL` or
+`DROP PARTITION`) because `logs.events` is partitioned by day across all sources, so a
+partition spans every service and can't be dropped per-source; a table-level `TTL` likewise
+can't vary by source. Policy edits take effect on the next pass.
+
 ## Future Enhancements (Out of Scope for v1)
 
-- TTL-based automatic data retention
 - Log level filtering per API key (use MinimumLevelAccepted)
 - Full-text search with ClickHouse text indexes
 - Materialized views for extracted properties (faster property queries)

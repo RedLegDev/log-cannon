@@ -88,6 +88,20 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  retention-worker:
+    build: ./retention-worker
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DATABASE=logs
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - RETENTION_INTERVAL_HOURS=${RETENTION_INTERVAL_HOURS:-24}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
   backup:
     build: ./backup
     environment:

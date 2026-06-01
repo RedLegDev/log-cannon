@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAPIKeys, createAPIKey, toggleAPIKey, renameAPIKey, deleteAPIKey, queryClickHouse } from '@/lib/clickhouse';
+import { getAPIKeys, createAPIKey, toggleAPIKey, renameAPIKey, deleteAPIKey, setAPIKeyRetention, queryClickHouse } from '@/lib/clickhouse';
 
 export async function GET() {
   try {
@@ -45,12 +45,22 @@ export async function POST(request: NextRequest) {
 
 export async function PATCH(request: NextRequest) {
   try {
-    const { keyId, enabled, name, scopes } = await request.json();
+    const { keyId, enabled, name, scopes, retentionDays } = await request.json();
     if (!keyId) {
       return NextResponse.json({ error: 'keyId is required' }, { status: 400 });
     }
 
     let updated = false;
+
+    // Handle retention update (0 = keep forever)
+    if (retentionDays !== undefined) {
+      const days = Number(retentionDays);
+      if (!Number.isInteger(days) || days < 0) {
+        return NextResponse.json({ error: 'retentionDays must be an integer >= 0' }, { status: 400 });
+      }
+      await setAPIKeyRetention(keyId, days);
+      updated = true;
+    }
 
     // Handle rename
     if (typeof name === 'string') {
@@ -81,7 +91,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     if (!updated) {
-      return NextResponse.json({ error: 'Either enabled, name, or scopes is required' }, { status: 400 });
+      return NextResponse.json({ error: 'Either enabled, name, scopes, or retentionDays is required' }, { status: 400 });
     }
 
     return NextResponse.json({ success: true });

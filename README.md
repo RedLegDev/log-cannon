@@ -96,6 +96,19 @@ docker exec -it log-cannon-clickhouse-1 clickhouse-client -q \
   "INSERT INTO logs.api_keys (api_key, name) VALUES ('$(openssl rand -hex 32)', 'my-app')"
 ```
 
+### Per-Service Retention
+
+Each API key has a `retention_days` setting (`0` = keep forever, the default). Set it
+inline on the **API Keys** page in the dashboard, or via SQL. The `retention-worker`
+service trims logs older than the configured window once per `RETENTION_INTERVAL_HOURS`
+(default 24h), per source:
+
+```bash
+# Keep only the last 14 days of logs for 'my-app'
+docker exec -it log-cannon-clickhouse-1 clickhouse-client -q \
+  "ALTER TABLE logs.api_keys UPDATE retention_days = 14 WHERE name = 'my-app'"
+```
+
 ### Discovery Mode (Migration from Seq)
 
 If you're migrating from Seq and don't have access to your existing API keys, enable **Discovery Mode** to auto-provision unknown keys:
@@ -157,6 +170,7 @@ log-cannon/
 ├── queue-consumer/    # Go service that pulls from CF Queue → ClickHouse
 ├── dashboard/         # Next.js web UI for log exploration
 ├── alert-worker/      # Go service for threshold-based alerting
+├── retention-worker/  # Go service that trims logs per-service retention window
 ├── clickhouse/        # Database schema initialization
 ├── backup/            # Automated backup with Cloudflare R2 offsite sync
 └── docker-compose.yml
@@ -169,6 +183,7 @@ log-cannon/
 | `RESEND_API_KEY` | Yes | Resend API key — used for alert emails and (when `EMAIL_TRANSPORT=resend`) dashboard OTP delivery |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Yes | Cloudflare tunnel token |
 | `ALERT_FROM_EMAIL` | No | Sender email for alerts |
+| `RETENTION_INTERVAL_HOURS` | No | How often the retention-worker trims expired logs (default `24`) |
 | `DISCOVERY_MODE` | No | Set to `true` to auto-provision unknown API keys (for migration) |
 
 ### Dashboard Auth Variables

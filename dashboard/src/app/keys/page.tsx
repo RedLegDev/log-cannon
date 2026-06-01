@@ -10,6 +10,7 @@ interface APIKey {
   scopes: string;
   created_at: string;
   enabled: number;
+  retention_days: number;
 }
 
 const SCOPE_OPTIONS = [
@@ -31,6 +32,7 @@ export default function APIKeysPage() {
   const [editingName, setEditingName] = useState('');
   const [newKeyScopes, setNewKeyScopes] = useState<string[]>(['ingest']);
   const [editingScopes, setEditingScopes] = useState<string[]>([]);
+  const [editingRetention, setEditingRetention] = useState('0');
 
   const fetchKeys = async () => {
     try {
@@ -108,12 +110,14 @@ export default function APIKeysPage() {
     setEditingKeyId(key.key_id);
     setEditingName(key.name);
     setEditingScopes(key.scopes ? key.scopes.split(',') : ['ingest']);
+    setEditingRetention(String(key.retention_days ?? 0));
   };
 
   const cancelEditing = () => {
     setEditingKeyId(null);
     setEditingName('');
     setEditingScopes([]);
+    setEditingRetention('0');
   };
 
   const handleSaveEdit = async (keyId: string) => {
@@ -126,7 +130,7 @@ export default function APIKeysPage() {
       const res = await fetch('/api/keys', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyId, name: editingName.trim(), scopes: editingScopes })
+        body: JSON.stringify({ keyId, name: editingName.trim(), scopes: editingScopes, retentionDays: Math.max(0, Math.floor(Number(editingRetention) || 0)) })
       });
       if (!res.ok) throw new Error('Failed to update key');
       cancelEditing();
@@ -289,6 +293,7 @@ export default function APIKeysPage() {
                   <th className="px-4 py-3 font-medium">Name</th>
                   <th className="px-4 py-3 font-medium">API Key</th>
                   <th className="px-4 py-3 font-medium">Scopes</th>
+                  <th className="px-4 py-3 font-medium">Retention</th>
                   <th className="px-4 py-3 font-medium hidden md:table-cell">Created</th>
                   <th className="px-4 py-3 text-center font-medium">Status</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
@@ -379,6 +384,28 @@ export default function APIKeysPage() {
                             </span>
                           ))}
                         </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {editingKeyId === key.key_id ? (
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number"
+                            min={0}
+                            value={editingRetention}
+                            onChange={(e) => setEditingRetention(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleSaveEdit(key.key_id);
+                              if (e.key === 'Escape') cancelEditing();
+                            }}
+                            className="input-cannon py-1 px-2 text-sm w-20"
+                          />
+                          <span className="text-text-muted text-xs">days</span>
+                        </div>
+                      ) : (
+                        <span className="text-text-secondary text-sm font-mono" title="0 = keep forever">
+                          {key.retention_days > 0 ? `${key.retention_days} days` : 'Forever'}
+                        </span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-text-muted text-sm font-mono hidden md:table-cell">
