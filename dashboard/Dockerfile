@@ -1,4 +1,4 @@
-FROM node:20-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 
 # Build deps for better-sqlite3 native module (falls back to source build if no musl prebuilt)
@@ -7,7 +7,7 @@ RUN apk add --no-cache python3 make g++
 COPY package.json ./
 RUN npm install
 
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -17,7 +17,7 @@ ENV NEXT_TELEMETRY_DISABLED 1
 
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV production
