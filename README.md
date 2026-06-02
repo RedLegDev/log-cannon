@@ -437,4 +437,4 @@ Issues and pull requests are welcome. The repo is a monorepo of independent serv
 
 ## License
 
-MIT
+MIT — see [`LICENSE.md`](LICENSE.md).
