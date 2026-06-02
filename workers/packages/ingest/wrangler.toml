@@ -17,7 +17,8 @@ binding = "INGEST_QUEUE"
 
 [[kv_namespaces]]
 binding = "API_KEYS"
-id = "3cdaa6591a6e415488072c7094cf3c36"
+# Create with: wrangler kv namespace create API_KEYS — then paste the id here.
+id = "<your-kv-namespace-id>"
 
 [vars]
 DISCOVERY_MODE = "true"
