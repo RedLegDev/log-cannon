@@ -64,7 +64,7 @@ export async function sendOtpEmail(
 ): Promise<SendOtpResult> {
   const transport = (process.env.EMAIL_TRANSPORT || "smtp").toLowerCase();
   const fromEmail =
-    process.env.EMAIL_FROM || "Log Cannon <logs@redleg.dev>";
+    process.env.EMAIL_FROM || "Log Cannon <logs@example.com>";
   const subject = "Your Log Cannon sign-in code";
   const html = buildOtpEmailHtml(code, expiryMinutes);
   const text = `Your Log Cannon sign-in code is ${code}. It expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.`;
@@ -102,8 +102,10 @@ export async function sendOtpEmail(
     if (!apiKey) {
       return { ok: false, error: "SAASMAIL_API_KEY not configured" };
     }
-    const mailApiUrl =
-      process.env.SAASMAIL_API_URL || "https://mail.redleg.dev";
+    const mailApiUrl = process.env.SAASMAIL_API_URL;
+    if (!mailApiUrl) {
+      return { ok: false, error: "SAASMAIL_API_URL not configured" };
+    }
     try {
       const form = new FormData();
       form.append(

@@ -2,13 +2,14 @@ name = "log-cannon-ingest"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
 
+# Replace yourdomain.com with the zone that fronts your ingest hostname.
 routes = [
-  { pattern = "logs.redleg.dev/v1/logs", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/v1/traces", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/ingest/otlp/*", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/ingest/webhook", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/ingest/clef", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/api/events/raw", zone_name = "redleg.dev" },
+  { pattern = "logs.yourdomain.com/v1/logs", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/traces", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/ingest/otlp/*", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/ingest/webhook", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/ingest/clef", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/api/events/raw", zone_name = "yourdomain.com" },
 ]
 
 [[queues.producers]]

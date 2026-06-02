@@ -25,9 +25,8 @@ services:
 
   dashboard:
     build:
-      # Build stamp (commit/branch/date) is read from the git-tracked
-      # src/generated/version.json, kept current by the stamp-version GitHub
-      # Action; the image only adds the build time. No build args needed.
+      # The image bakes a build time into src/generated/version.json; the
+      # runtime BUILD_TIME env var overrides it. No build args needed.
       context: ./dashboard
     expose:
       - "3000"
@@ -36,9 +35,9 @@ services:
     environment:
       - CLICKHOUSE_URL=http://clickhouse:8123
       - SAASMAIL_API_KEY=${SAASMAIL_API_KEY}
-      - SAASMAIL_API_URL=${SAASMAIL_API_URL:-https://mail.redleg.dev}
-      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.app}
-      - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
+      - SAASMAIL_API_URL=${SAASMAIL_API_URL:-}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@example.com}
+      - DASHBOARD_URL=${DASHBOARD_URL:-}
       # Auth — required
       - AUTH_SECRET=${AUTH_SECRET}
       - AUTH_ALLOWED_EMAILS=${AUTH_ALLOWED_EMAILS}
@@ -46,7 +45,7 @@ services:
       - OTP_EXPIRY_MINUTES=${OTP_EXPIRY_MINUTES:-10}
       # Email transport — "smtp" (Inbucket) for local, "saasmail" for prod
       - EMAIL_TRANSPORT=${EMAIL_TRANSPORT:-smtp}
-      - EMAIL_FROM=${EMAIL_FROM:-Log Cannon <support@redleg.app>}
+      - EMAIL_FROM=${EMAIL_FROM:-Log Cannon <logs@example.com>}
       - SMTP_HOST=${SMTP_HOST:-inbucket}
       - SMTP_PORT=${SMTP_PORT:-2500}
     volumes:
@@ -76,9 +75,9 @@ services:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
       - SAASMAIL_API_KEY=${SAASMAIL_API_KEY}
-      - SAASMAIL_API_URL=${SAASMAIL_API_URL:-https://mail.redleg.dev}
-      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@redleg.app}
-      - DASHBOARD_URL=${DASHBOARD_URL:-https://logs.redleg.dev}
+      - SAASMAIL_API_URL=${SAASMAIL_API_URL:-}
+      - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@example.com}
+      - DASHBOARD_URL=${DASHBOARD_URL:-}
     depends_on:
       clickhouse:
         condition: service_healthy

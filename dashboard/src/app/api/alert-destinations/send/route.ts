@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
       ? JSON.parse(event.properties || '{}')
       : event.properties;
 
-    const dashboardUrl = process.env.DASHBOARD_URL || 'https://logs.redleg.dev';
+    const dashboardUrl = process.env.DASHBOARD_URL || 'https://logs.example.com';
     const eventLink = `${dashboardUrl}/logs?id=${event.id}`;
 
     if (destination.type === 'webhook') {
@@ -118,9 +118,12 @@ async function sendEmail(
   if (!saasMailApiKey) {
     throw new Error('SAASMAIL_API_KEY not configured — cannot send email');
   }
-  const saasMailUrl = process.env.SAASMAIL_API_URL || 'https://mail.redleg.dev';
+  const saasMailUrl = process.env.SAASMAIL_API_URL;
+  if (!saasMailUrl) {
+    throw new Error('SAASMAIL_API_URL not configured — cannot send email');
+  }
 
-  const fromEmail = config.from || process.env.ALERT_FROM_EMAIL || 'alerts@yourdomain.com';
+  const fromEmail = config.from || process.env.ALERT_FROM_EMAIL || 'alerts@example.com';
   const levelColors: Record<string, string> = {
     'Fatal': '#dc2626',
     'Error': '#dc2626',

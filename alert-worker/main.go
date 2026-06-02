@@ -74,9 +74,9 @@ func main() {
 	user := getEnv("CLICKHOUSE_USER", "default")
 	password := getEnv("CLICKHOUSE_PASSWORD", "")
 	saasMailAPIKey := os.Getenv("SAASMAIL_API_KEY")
-	saasMailURL := getEnv("SAASMAIL_API_URL", "https://mail.redleg.dev")
-	fromEmail := getEnv("ALERT_FROM_EMAIL", "alerts@yourdomain.com")
-	dashboardURL := getEnv("DASHBOARD_URL", "https://logs.redleg.dev")
+	saasMailURL := getEnv("SAASMAIL_API_URL", "")
+	fromEmail := getEnv("ALERT_FROM_EMAIL", "alerts@example.com")
+	dashboardURL := getEnv("DASHBOARD_URL", "")
 
 	if saasMailAPIKey == "" {
 		log.Println("Warning: SAASMAIL_API_KEY not set - email destinations will not work")
@@ -505,7 +505,7 @@ func formatAlertBody(alert Alert, result map[string]interface{}, dashboardURL st
 							<table role="presentation" style="width: 100%%;">
 								<tr>
 									<td>
-										<img src="https://logs.redleg.dev/icons/icon.svg" width="32" height="32" alt="Log Cannon" style="vertical-align: middle;">
+										<img src="https://logs.example.com/icons/icon.svg" width="32" height="32" alt="Log Cannon" style="vertical-align: middle;">
 										<span style="margin-left: 12px; font-size: 18px; font-weight: 700; color: #ffffff; vertical-align: middle;">LOG <span style="color: #FF4D2A;">CANNON</span></span>
 									</td>
 									<td align="right">

@@ -523,7 +523,7 @@ async function handleOTLP(
   // cap. Without this the entire batch is enqueued as one message and CF
   // Queues rejects it, surfacing as a 5xx that CF Workers Observability
   // retries (and eventually drops) — exactly the symptom we saw on
-  // https://logs.redleg.dev/v1/logs. Dispatch matches the consumer's
+  // the /v1/logs route. Dispatch matches the consumer's
   // content-type rule (queue-consumer/otlp.go): exact protobuf media types
   // get the protobuf splitter; everything else is treated as JSON.
   const isProtobuf =

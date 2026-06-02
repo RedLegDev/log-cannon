@@ -31,9 +31,9 @@ npm-debug.log*
 coverage/
 
 # Go binaries
-ingest-api/ingest-api
 alert-worker/alert-worker
 queue-consumer/queue-consumer
+retention-worker/retention-worker
 
 # Docker volumes
 clickhouse-data/
