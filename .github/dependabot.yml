@@ -17,6 +17,16 @@ updates:
       prefix: "chore(dashboard)"
       prefix-development: "chore(dashboard-dev)"
     groups:
+      # Keep all React packages on the same version across every bump
+      # (incl. majors) — react-dom must match react, and a split major
+      # update leaves react-dom behind, breaking `npm install`.
+      dashboard-react:
+        applies-to: version-updates
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
       dashboard-production:
         applies-to: version-updates
         dependency-type: "production"
