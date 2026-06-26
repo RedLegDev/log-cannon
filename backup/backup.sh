@@ -136,7 +136,13 @@ collect_protected_fulls() {
 
 # Prune local backups (chain-aware)
 log "Checking local retention (keeping $BACKUP_RETAIN_LOCAL)..."
-LOCAL_BACKUPS=$(find "$BACKUP_DIR" -maxdepth 1 -type d \( -name "logs-full-*" -o -name "logs-incr-*" -o -name "logs-[0-9]*" \) 2>/dev/null | sort)
+# Sort chronologically by the trailing YYYY-MM-DD-HHMMSS timestamp, NOT lexically.
+# A plain `sort` orders "logs-full-*" before "logs-incr-*" ('f' < 'i') regardless of
+# date, so a freshly created full looks like the oldest backup and gets pruned the
+# moment it's made — leaving the original base full pinned forever and the chain
+# unable to re-base. Keying on the last 17 chars (the timestamp) fixes the ordering.
+LOCAL_BACKUPS=$(find "$BACKUP_DIR" -maxdepth 1 -type d \( -name "logs-full-*" -o -name "logs-incr-*" -o -name "logs-[0-9]*" \) 2>/dev/null \
+    | awk -F/ '{n=$NF; print substr(n, length(n)-16) "\t" $0}' | sort | cut -f2-)
 LOCAL_COUNT=$(echo "$LOCAL_BACKUPS" | grep -c "." || true)
 
 if [ "$LOCAL_COUNT" -gt "$BACKUP_RETAIN_LOCAL" ]; then
@@ -158,7 +164,10 @@ fi
 
 # Prune R2 backups (chain-aware)
 if has_r2; then
-    R2_DIRS=$(rclone lsd "r2:${R2_BUCKET}/" --config "$RCLONE_CONF" 2>/dev/null | awk '{print $NF}' | grep "^logs-" | sort)
+    # Same timestamp-keyed ordering as local pruning (see note above) so newly
+    # created fulls aren't mistaken for the oldest backup and purged from R2.
+    R2_DIRS=$(rclone lsd "r2:${R2_BUCKET}/" --config "$RCLONE_CONF" 2>/dev/null | awk '{print $NF}' | grep "^logs-" \
+        | awk '{print substr($0, length($0)-16) "\t" $0}' | sort | cut -f2-)
     R2_COUNT=$(echo "$R2_DIRS" | grep -c "^logs-" || true)
 
     if [ "$R2_COUNT" -gt "$BACKUP_RETAIN_OFFSITE" ]; then
