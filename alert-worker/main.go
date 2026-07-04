@@ -76,10 +76,13 @@ func main() {
 	saasMailAPIKey := os.Getenv("SAASMAIL_API_KEY")
 	saasMailURL := getEnv("SAASMAIL_API_URL", "")
 	fromEmail := getEnv("ALERT_FROM_EMAIL", "alerts@example.com")
-	dashboardURL := getEnv("DASHBOARD_URL", "")
+	dashboardURL := strings.TrimRight(getEnv("DASHBOARD_URL", ""), "/")
 
 	if saasMailAPIKey == "" {
 		log.Println("Warning: SAASMAIL_API_KEY not set - email destinations will not work")
+	}
+	if !strings.HasPrefix(dashboardURL, "http://") && !strings.HasPrefix(dashboardURL, "https://") {
+		log.Printf("Warning: DASHBOARD_URL is not an absolute URL (got %q) - email links will be broken. Set it to your dashboard origin, e.g. https://logs.yourdomain.com", dashboardURL)
 	}
 
 	// Connect to ClickHouse
@@ -505,7 +508,7 @@ func formatAlertBody(alert Alert, result map[string]interface{}, dashboardURL st
 							<table role="presentation" style="width: 100%%;">
 								<tr>
 									<td>
-										<img src="https://logs.example.com/icons/icon.svg" width="32" height="32" alt="Log Cannon" style="vertical-align: middle;">
+										<img src="%s/icons/icon.svg" width="32" height="32" alt="Log Cannon" style="vertical-align: middle;">
 										<span style="margin-left: 12px; font-size: 18px; font-weight: 700; color: #ffffff; vertical-align: middle;">LOG <span style="color: #FF4D2A;">CANNON</span></span>
 									</td>
 									<td align="right">
@@ -579,6 +582,7 @@ func formatAlertBody(alert Alert, result map[string]interface{}, dashboardURL st
 </body>
 </html>`,
 		escapeHTML(alert.Subject),
+		dashboardURL,
 		escapeHTML(alert.Name),
 		escapeHTML(alert.Description),
 		triggeredTime,
