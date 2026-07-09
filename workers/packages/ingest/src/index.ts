@@ -18,6 +18,61 @@ interface QueuePayload {
   body: string;
   contentType: string;
   preset?: string;
+  /**
+   * Request-scoped Cloudflare geo/network context captured once at the edge
+   * (from `request.cf` + headers). The consumer applies these as event
+   * properties, filling only keys the event doesn't already carry — never
+   * overwriting a value the caller stamped itself. Keys here are the exact
+   * property names downstream analytics read (cf_asn, geo_*, cf_is_bot,
+   * user_agent). Currently attached on the CLEF path only.
+   */
+  enrich?: Record<string, string>;
+}
+
+/** Narrowed view of the `request.cf` fields we read (workers-types exposes
+ * these under a broad generic). Every field is optional — Cloudflare omits
+ * them outside a real edge request, and botManagement requires Bot Management. */
+interface CfGeoContext {
+  asn?: number;
+  country?: string;
+  region?: string;
+  city?: string;
+  botManagement?: { verifiedBot?: boolean };
+}
+
+/**
+ * Capture per-request geo/network context from the Cloudflare edge so the
+ * consumer can enrich events that lack it (e.g. browser beacons, which carry
+ * a real user IP but can't self-report ASN/geo). Keys match the exact property
+ * names downstream analytics already read. No raw client IP is captured (PII).
+ *
+ * Returns undefined only when nothing at all is available, keeping the queue
+ * payload byte-identical to before on that path — so this is a pure no-op for
+ * ingest when there's nothing to add and can't fail the request.
+ *
+ * `cf_is_bot` mirrors Cloudflare's `verifiedBot`: true only for allow-listed
+ * good crawlers (Googlebot, etc.), false/absent for everything else including
+ * malicious bots. This matches the existing platform convention; it is NOT a
+ * general bot-likelihood score (that would be `botManagement.score`). Under
+ * `wrangler dev` `request.cf` is a stub, so user_agent/cf_is_bot can still
+ * attach locally; real geo/ASN only appear on a deployed edge.
+ */
+function buildEnrichment(request: Request): Record<string, string> | undefined {
+  const enrich: Record<string, string> = {};
+
+  const ua = request.headers.get("user-agent");
+  if (ua) enrich.user_agent = ua;
+
+  const cf = request.cf as CfGeoContext | undefined;
+  if (cf) {
+    if (cf.asn != null) enrich.cf_asn = String(cf.asn);
+    if (cf.country) enrich.geo_country = cf.country;
+    if (cf.region) enrich.geo_region = cf.region;
+    if (cf.city) enrich.geo_city = cf.city;
+    enrich.cf_is_bot = String(cf.botManagement?.verifiedBot ?? false);
+  }
+
+  return Object.keys(enrich).length > 0 ? enrich : undefined;
 }
 
 // --- Auth ---
@@ -431,6 +486,7 @@ async function handleCLEF(
   const bodyBytes = await readBody(request);
   const contentType =
     request.headers.get("Content-Type") ?? "application/json";
+  const enrich = buildEnrichment(request);
 
   // Fast path: small bodies go in a single queue message.
   if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
@@ -439,6 +495,7 @@ async function handleCLEF(
       source,
       body: encodeBody(bodyBytes),
       contentType,
+      enrich,
     });
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
@@ -459,6 +516,7 @@ async function handleCLEF(
     format: "clef",
     source,
     contentType,
+    enrich,
   });
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);

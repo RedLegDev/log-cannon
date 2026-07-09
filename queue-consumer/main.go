@@ -26,6 +26,11 @@ type QueuePayload struct {
 	Body        string `json:"body"`         // base64-encoded raw request body
 	ContentType string `json:"contentType"`
 	Preset      string `json:"preset,omitempty"`
+	// Enrich holds request-scoped Cloudflare geo/network context captured at
+	// the edge (cf_asn, geo_*, cf_is_bot, user_agent). Applied as event
+	// properties, filling only keys an event doesn't already carry. Currently
+	// set on the CLEF path only.
+	Enrich map[string]string `json:"enrich,omitempty"`
 }
 
 // QueuePullResponse is the Cloudflare Queue pull API response.
@@ -232,7 +237,7 @@ func (c *Consumer) poll(ctx context.Context) error {
 func (c *Consumer) processPayload(payload QueuePayload, rawBody []byte) ([]LogEvent, error) {
 	switch payload.Format {
 	case "clef":
-		return parseCLEFBody(rawBody, payload.Source)
+		return parseCLEFBody(rawBody, payload.Source, payload.Enrich)
 	case "webhook":
 		return parseWebhookBody(rawBody, payload.Source, payload.Preset)
 	case "otlp-logs":
