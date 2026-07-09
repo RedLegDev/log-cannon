@@ -9,8 +9,11 @@ import (
 	"time"
 )
 
-// parseCLEFBody parses an NDJSON CLEF body into LogEvents.
-func parseCLEFBody(body []byte, source string) ([]LogEvent, error) {
+// parseCLEFBody parses an NDJSON CLEF body into LogEvents. The optional
+// enrich map carries request-scoped geo/network context captured at the edge;
+// each key is added as a property only when the event doesn't already provide
+// a non-empty value for it (never overwriting caller-stamped fields).
+func parseCLEFBody(body []byte, source string, enrich map[string]string) ([]LogEvent, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -24,7 +27,7 @@ func parseCLEFBody(body []byte, source string) ([]LogEvent, error) {
 			continue
 		}
 
-		event, err := parseCLEFLine(line, source)
+		event, err := parseCLEFLine(line, source, enrich)
 		if err != nil {
 			return nil, fmt.Errorf("line %d: %w", lineNum, err)
 		}
@@ -36,7 +39,7 @@ func parseCLEFBody(body []byte, source string) ([]LogEvent, error) {
 	return events, scanner.Err()
 }
 
-func parseCLEFLine(line string, source string) (*LogEvent, error) {
+func parseCLEFLine(line string, source string, enrich map[string]string) (*LogEvent, error) {
 	var raw map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return nil, fmt.Errorf("invalid JSON")
@@ -103,6 +106,12 @@ func parseCLEFLine(line string, source string) (*LogEvent, error) {
 		eventType = computeEventType(messageTemplate, message)
 	}
 
+	// Fill edge-captured geo/network context, but only for keys the event
+	// doesn't already carry with a non-empty value. Server-side callers stamp
+	// their own geo/ASN, so this never overwrites; it only backfills events
+	// (e.g. browser beacons) that arrive without it.
+	applyEnrichment(raw, enrich)
+
 	propsJSON := "{}"
 	if len(raw) > 0 {
 		b, _ := json.Marshal(raw)
@@ -119,6 +128,31 @@ func parseCLEFLine(line string, source string) (*LogEvent, error) {
 		Source:          source,
 		Properties:      propsJSON,
 	}, nil
+}
+
+// applyEnrichment backfills geo/network context into an event's property map.
+// A key is written only when the event has no value for it, or its value is an
+// empty string / null — an explicit non-empty value the caller provided always
+// wins. No-op when enrich is empty.
+func applyEnrichment(raw map[string]interface{}, enrich map[string]string) {
+	for k, v := range enrich {
+		if v == "" {
+			continue
+		}
+		if existing, ok := raw[k]; ok {
+			switch e := existing.(type) {
+			case nil:
+				// null present — treat as absent, fill it.
+			case string:
+				if e != "" {
+					continue // caller provided a value; don't overwrite.
+				}
+			default:
+				continue // any non-string, non-null value wins.
+			}
+		}
+		raw[k] = v
+	}
 }
 
 func renderMessageTemplate(template string, properties map[string]interface{}) string {
