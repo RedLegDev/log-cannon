@@ -106,10 +106,8 @@ func parseCLEFLine(line string, source string, enrich map[string]string) (*LogEv
 		eventType = computeEventType(messageTemplate, message)
 	}
 
-	// Fill edge-captured geo/network context, but only for keys the event
-	// doesn't already carry with a non-empty value. Server-side callers stamp
-	// their own geo/ASN, so this never overwrites; it only backfills events
-	// (e.g. browser beacons) that arrive without it.
+	// Backfill edge-captured geo/network context (fill-if-missing; see
+	// applyEnrichment). Runs after @-field handling so it only touches props.
 	applyEnrichment(raw, enrich)
 
 	propsJSON := "{}"

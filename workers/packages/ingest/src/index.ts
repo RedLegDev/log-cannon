@@ -43,10 +43,19 @@ interface CfGeoContext {
 /**
  * Capture per-request geo/network context from the Cloudflare edge so the
  * consumer can enrich events that lack it (e.g. browser beacons, which carry
- * a real user IP but can't self-report ASN/geo). Returns undefined when
- * nothing is available (e.g. `request.cf` absent in local dev), so the queue
- * payload stays byte-identical to today. Keys match the exact property names
- * downstream analytics already read. No raw client IP is captured (PII).
+ * a real user IP but can't self-report ASN/geo). Keys match the exact property
+ * names downstream analytics already read. No raw client IP is captured (PII).
+ *
+ * Returns undefined only when nothing at all is available, keeping the queue
+ * payload byte-identical to before on that path — so this is a pure no-op for
+ * ingest when there's nothing to add and can't fail the request.
+ *
+ * `cf_is_bot` mirrors Cloudflare's `verifiedBot`: true only for allow-listed
+ * good crawlers (Googlebot, etc.), false/absent for everything else including
+ * malicious bots. This matches the existing platform convention; it is NOT a
+ * general bot-likelihood score (that would be `botManagement.score`). Under
+ * `wrangler dev` `request.cf` is a stub, so user_agent/cf_is_bot can still
+ * attach locally; real geo/ASN only appear on a deployed edge.
  */
 function buildEnrichment(request: Request): Record<string, string> | undefined {
   const enrich: Record<string, string> = {};
