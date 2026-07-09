@@ -36,7 +36,7 @@ Serilog / OTel / Webhooks
 
 The Worker is deliberately thin — it only authenticates the request against a KV namespace and pushes the raw body to the queue. All parsing happens in the Go queue consumer on your server, using the same code paths regardless of source format. When your server goes offline the Worker keeps accepting logs and the queue holds them (up to 4 days) until the consumer drains the backlog.
 
-> **Cloudflare is a hard dependency.** Ingestion requires a Cloudflare account with Workers and Queues; access uses a Cloudflare Tunnel. Storage, the dashboard, alerting, retention, and backups are fully self-hosted.
+> **Cloudflare is a hard dependency.** Ingestion requires a Cloudflare account with Workers and Queues; access uses a Cloudflare Tunnel. Storage, the dashboard, alerting, retention, and backups are fully self-hosted. 
 
 ## Quick Start
 
