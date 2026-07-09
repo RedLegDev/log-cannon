@@ -23,3 +23,33 @@ id = "<your-kv-namespace-id>"
 
 [vars]
 DISCOVERY_MODE = "true"
+
+# --- Red Leg Dev production deploy (logs.redleg.dev) ---
+# Deployed via `wrangler deploy --env production` (Cloudflare Workers Builds).
+# The top-level config above stays generic for self-hosters; this env carries
+# the real routes + KV binding. None of these are secrets: the ingest hostname
+# is already public and a KV namespace id is an identifier, not a credential.
+# API keys / other secrets live in the Cloudflare dashboard, not here.
+[env.production]
+name = "log-cannon-ingest"
+routes = [
+  { pattern = "logs.redleg.dev/v1/logs", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/v1/traces", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/otlp/*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/webhook", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/clef", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/api/events/raw", zone_name = "redleg.dev" },
+]
+
+[[env.production.queues.producers]]
+queue = "log-cannon-ingest"
+binding = "INGEST_QUEUE"
+
+[[env.production.kv_namespaces]]
+binding = "API_KEYS"
+id = "3cdaa6591a6e415488072c7094cf3c36"
+
+# Prod runs with discovery OFF: unknown API keys are rejected rather than
+# auto-registered. Existing tenant keys in KV are unaffected.
+[env.production.vars]
+DISCOVERY_MODE = "false"
