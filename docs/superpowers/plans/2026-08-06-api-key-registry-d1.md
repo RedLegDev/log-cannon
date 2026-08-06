@@ -112,10 +112,20 @@ migrations_dir = "migrations"
 Append to `.gitignore`:
 
 ```
-# Key-registry migration artifacts — contain live API key values.
-/scripts/.seed-*.json
-/scripts/.seed-*.sql
+# Key-registry migration artifacts — these contain LIVE API key values.
+# Keep this pattern broad. A narrower `/scripts/.seed-*` form does NOT match
+# the generated `scripts/.seed.sql` (no hyphen), which leaves every live key
+# untracked but committable in a public repo.
+/scripts/.seed*
 ```
+
+Verify the pattern actually covers what the later steps generate, rather than assuming:
+
+```bash
+git check-ignore -v scripts/.seed.sql scripts/.seed-kv.json scripts/.seed-ch.json
+```
+
+Expected: a matching rule printed for **every** path. A path with no output is not ignored.
 
 - [ ] **Step 5: Apply the migration to production D1**
 
