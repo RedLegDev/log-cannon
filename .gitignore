@@ -41,5 +41,8 @@ clickhouse-data/
 .superpowers/
 
 # Key-registry migration artifacts — contain live API key values.
-/scripts/.seed-*.json
-/scripts/.seed-*.sql
+# Key-registry migration artifacts — these contain LIVE API key values.
+# Pattern is deliberately broad: an earlier `.seed-*` form missed the
+# generated `.seed.sql` (no hyphen), leaving 33 live keys untracked but
+# committable in a public repo.
+/scripts/.seed*
