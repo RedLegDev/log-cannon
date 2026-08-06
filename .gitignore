@@ -38,3 +38,8 @@ retention-worker/retention-worker
 # Docker volumes
 clickhouse-data/
 .claude/settings.local.json
+.superpowers/
+
+# Key-registry migration artifacts — contain live API key values.
+/scripts/.seed-*.json
+/scripts/.seed-*.sql

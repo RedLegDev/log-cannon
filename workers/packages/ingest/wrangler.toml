@@ -21,6 +21,13 @@ binding = "API_KEYS"
 # Create with: wrangler kv namespace create API_KEYS — then paste the id here.
 id = "<your-kv-namespace-id>"
 
+[[d1_databases]]
+binding = "KEYS_DB"
+database_name = "log-cannon-keys"
+# Create with: wrangler d1 create log-cannon-keys — then paste the id here.
+database_id = "<your-d1-database-id>"
+migrations_dir = "migrations"
+
 [vars]
 DISCOVERY_MODE = "true"
 
@@ -48,6 +55,12 @@ binding = "INGEST_QUEUE"
 [[env.production.kv_namespaces]]
 binding = "API_KEYS"
 id = "3cdaa6591a6e415488072c7094cf3c36"
+
+[[env.production.d1_databases]]
+binding = "KEYS_DB"
+database_name = "log-cannon-keys"
+database_id = "5809a419-53ba-4f3e-9c8f-f830339c8f25"
+migrations_dir = "migrations"
 
 # Prod runs with discovery OFF: unknown API keys are rejected rather than
 # auto-registered. Existing tenant keys in KV are unaffected.
