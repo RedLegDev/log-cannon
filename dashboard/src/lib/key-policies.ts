@@ -64,7 +64,7 @@ ORDER BY source
  * unprotected. That's acceptable: it fails safe (over-retaining briefly),
  * never under-retaining.
  */
-export async function syncKeyPolicies(): Promise<void> {
+export async function syncKeyPolicies(): Promise<number> {
   await executeClickHouse(CREATE_TABLE_SQL);
 
   const keys = await listKeys();
@@ -94,4 +94,6 @@ export async function syncKeyPolicies(): Promise<void> {
       : `1 = 1`;
 
   await executeClickHouse(`ALTER TABLE logs.key_policies DELETE WHERE ${deleteWhere}`);
+
+  return sources.length;
 }
