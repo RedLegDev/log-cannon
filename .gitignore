@@ -40,7 +40,6 @@ clickhouse-data/
 .claude/settings.local.json
 .superpowers/
 
-# Key-registry migration artifacts — contain live API key values.
 # Key-registry migration artifacts — these contain LIVE API key values.
 # Pattern is deliberately broad: an earlier `.seed-*` form missed the
 # generated `.seed.sql` (no hyphen), leaving 33 live keys untracked but

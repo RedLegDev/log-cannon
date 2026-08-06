@@ -134,15 +134,23 @@ curl -X POST https://logs.yourdomain.com/v1/keys \
 
 See [Edge Ingestion Setup](#edge-ingestion-setup) for bootstrapping the first admin key.
 
+**Changes:** `GET`/`POST /api/v1/keys` (the dashboard's REST API) now return `created_at` as an ISO 8601 timestamp, not the previous ClickHouse-formatted string. The field name is unchanged.
+
 ## Per-Service Retention
 
-Each API key has a `retention_days` setting (`0` = keep forever, the default). Set it inline on the **API Keys** page, or via SQL. The `retention-worker` trims logs older than the configured window once per `RETENTION_INTERVAL_HOURS` (default 24h), per source:
+Each API key has a `retention_days` setting (`0` = keep forever, the default). `logs.api_keys` is no longer read by anything — do not hand-edit it; the dashboard's periodic projection sync will overwrite or `ALTER ... DELETE` anything there that doesn't match the D1 registry. Set retention through one of the two paths that actually work:
+
+- The **API Keys** page in the dashboard, or
+- `PATCH /v1/keys/{keyId}` against the ingest Worker with an admin-scoped key:
 
 ```bash
-# Keep only the last 14 days of logs for 'my-app'
-docker exec -it log-cannon-clickhouse-1 clickhouse-client -q \
-  "ALTER TABLE logs.api_keys UPDATE retention_days = 14 WHERE name = 'my-app'"
+curl -X PATCH https://logs.yourdomain.com/v1/keys/your-key-id \
+  -H "X-Api-Key: your-admin-scoped-key" \
+  -H "Content-Type: application/json" \
+  -d '{"retentionDays": 14}'
 ```
+
+Either path updates D1 immediately; the dashboard projects that change into ClickHouse `logs.key_policies` after every mutation and on a periodic sync (see `dashboard/src/instrumentation.ts`). The `retention-worker` trims logs older than the configured window once per `RETENTION_INTERVAL_HOURS` (default 24h), per source — so a retention change can take up to a day to actually trim anything, even though it reaches D1 and the projection right away. "I set 7 days and nothing happened yet" is expected until the worker's next pass.
 
 ## Custom Dashboards
 
