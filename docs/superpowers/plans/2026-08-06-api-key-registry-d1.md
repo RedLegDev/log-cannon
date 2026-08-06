@@ -837,7 +837,34 @@ GROUP BY source ORDER BY last_seen DESC
 
 Expected: the high-volume sources present before the deploy are still reporting. A source that has gone silent is a seed gap — roll back and fix.
 
-- [ ] **Step 6: Commit the deploy note**
+- [ ] **Step 6: Backfill the renamed source's history**
+
+Run this **only after** Step 5 confirms live producers are healthy. The seed renames the PEPOCS key from its generated `discovered-DDXKgcKt` label to `PEPOCS`, so events written from the cutover forward carry the new name. Backfilling closes the split.
+
+Repo owner decided: rename **and** backfill. Only this one source needs it — the other eight `discovered-*` sources are dormant (last activity April/June 2026) and are left alone.
+
+```sql
+-- ~70,892 rows as of 2026-08-06.
+ALTER TABLE logs.events UPDATE source = 'PEPOCS' WHERE source = 'discovered-DDXKgcKt'
+```
+
+ClickHouse mutations are asynchronous. Confirm completion before declaring the task done:
+
+```sql
+SELECT is_done, parts_to_do FROM system.mutations
+WHERE table = 'events' ORDER BY create_time DESC LIMIT 1
+```
+
+Expected: `is_done = 1`. Then verify the split is closed:
+
+```sql
+SELECT source, count() FROM logs.events
+WHERE source IN ('PEPOCS', 'discovered-DDXKgcKt') GROUP BY source
+```
+
+Expected: one row, `PEPOCS`. A surviving `discovered-DDXKgcKt` row count means the mutation is still running — re-check `system.mutations` rather than re-issuing the ALTER.
+
+- [ ] **Step 7: Commit the deploy note**
 
 No code change. Record the deployed version id in the PR/issue thread for rollback reference.
 

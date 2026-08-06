@@ -113,7 +113,11 @@ Steps 5–7 are separately reversible; the D1 schema and seed (1–4) are additi
 - `queue-consumer` changes; it never reads the key store.
 - Changing how `source` is derived. Override precedence stays as-is; only retention's *matching* is corrected.
 
+## Resolved decisions
+
+- **Rename `discovered-*` and backfill history.** Only one such source is live: `discovered-DDXKgcKt` (PEPOCS), ~70,892 events, last seen 2026-08-06. It is renamed to `PEPOCS` in D1 and its existing rows are rewritten with a ClickHouse mutation, closing the split. The other eight `discovered-*` sources are dormant (last activity April/June 2026) and are left as they are.
+- **A key-store failure returns 500, not 403.** `authenticate()` returns 403 only for the two known auth failures (`Invalid API key`, `API key is disabled`); anything else — D1 outage, timeout, schema fault — is a 500. Seq/Serilog sinks treat 4xx as non-retryable and drop the batch, so classifying an outage as 403 would convert a transient D1 problem into permanent log loss across every client at once. This corrects behaviour inherited from the KV implementation, where the simpler read path made the risk tolerable.
+
 ## Open questions
 
-- Step 4: accept the history split on rename, or backfill `events.source`? Decide per source.
 - Should the admin API be rate-limited, given it is reachable at the edge?
