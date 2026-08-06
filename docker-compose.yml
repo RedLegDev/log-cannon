@@ -48,6 +48,10 @@ services:
       - EMAIL_FROM=${EMAIL_FROM:-Log Cannon <logs@example.com>}
       - SMTP_HOST=${SMTP_HOST:-inbucket}
       - SMTP_PORT=${SMTP_PORT:-2500}
+      # Key registry — the dashboard manages keys through the ingest Worker's
+      # admin API rather than owning a store of its own.
+      - LOG_CANNON_INGEST_URL=${LOG_CANNON_INGEST_URL:-https://logs.redleg.dev}
+      - LOG_CANNON_ADMIN_KEY=${LOG_CANNON_ADMIN_KEY}
     volumes:
       - auth-data:/app/data
     depends_on:

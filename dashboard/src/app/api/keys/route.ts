@@ -1,19 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAPIKeys, createAPIKey, toggleAPIKey, renameAPIKey, deleteAPIKey, setAPIKeyRetention, queryClickHouse } from '@/lib/clickhouse';
+import { listKeys, createKey, updateKey, deleteKey } from '@/lib/key-registry';
+
+const VALID_SCOPES = ['ingest', 'read', 'write', 'admin'];
+
+function fail(error: unknown, fallback: string) {
+  return NextResponse.json(
+    { error: error instanceof Error ? error.message : fallback },
+    { status: 500 }
+  );
+}
 
 export async function GET() {
   try {
-    const keys = await getAPIKeys();
-    return NextResponse.json(keys);
+    return NextResponse.json(await listKeys());
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to fetch API keys' },
-      { status: 500 }
-    );
+    return fail(error, 'Failed to fetch API keys');
   }
 }
 
-const VALID_SCOPES = ['ingest', 'read', 'write', 'admin'];
+function normalizeScopes(scopes: unknown): string | NextResponse {
+  if (scopes === undefined) return 'ingest';
+  const list = typeof scopes === 'string' ? scopes.split(',').map(s => s.trim()) : (scopes as string[]);
+  const invalid = list.filter(s => !VALID_SCOPES.includes(s));
+  if (invalid.length > 0) {
+    return NextResponse.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, { status: 400 });
+  }
+  return list.join(',');
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,24 +35,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Name is required' }, { status: 400 });
     }
 
-    // Validate scopes if provided
-    let scopesStr = 'ingest'; // default
-    if (scopes) {
-      const scopeList = typeof scopes === 'string' ? scopes.split(',').map(s => s.trim()) : scopes;
-      const invalidScopes = scopeList.filter((s: string) => !VALID_SCOPES.includes(s));
-      if (invalidScopes.length > 0) {
-        return NextResponse.json({ error: `Invalid scopes: ${invalidScopes.join(', ')}` }, { status: 400 });
-      }
-      scopesStr = scopeList.join(',');
-    }
+    const scopesStr = normalizeScopes(scopes);
+    if (scopesStr instanceof NextResponse) return scopesStr;
 
-    const apiKey = await createAPIKey(name, scopesStr);
-    return NextResponse.json({ apiKey, scopes: scopesStr });
+    const created = await createKey(name, scopesStr);
+    return NextResponse.json({ apiKey: created.apiKey, scopes: created.scopes.join(',') });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to create API key' },
-      { status: 500 }
-    );
+    return fail(error, 'Failed to create API key');
   }
 }
 
@@ -50,56 +52,39 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'keyId is required' }, { status: 400 });
     }
 
-    let updated = false;
+    const patch: { name?: string; enabled?: boolean; scopes?: string; retentionDays?: number } = {};
 
-    // Handle retention update (0 = keep forever)
     if (retentionDays !== undefined) {
       const days = Number(retentionDays);
       if (!Number.isInteger(days) || days < 0) {
         return NextResponse.json({ error: 'retentionDays must be an integer >= 0' }, { status: 400 });
       }
-      await setAPIKeyRetention(keyId, days);
-      updated = true;
+      patch.retentionDays = days;
     }
-
-    // Handle rename
     if (typeof name === 'string') {
       if (!name.trim()) {
         return NextResponse.json({ error: 'Name cannot be empty' }, { status: 400 });
       }
-      await renameAPIKey(keyId, name.trim());
-      updated = true;
+      patch.name = name.trim();
     }
-
-    // Handle toggle
-    if (typeof enabled === 'boolean') {
-      await toggleAPIKey(keyId, enabled);
-      updated = true;
-    }
-
-    // Handle scopes update
+    if (typeof enabled === 'boolean') patch.enabled = enabled;
     if (scopes !== undefined) {
-      const scopeList = typeof scopes === 'string' ? scopes.split(',').map(s => s.trim()) : scopes;
-      const invalidScopes = scopeList.filter((s: string) => !VALID_SCOPES.includes(s));
-      if (invalidScopes.length > 0) {
-        return NextResponse.json({ error: `Invalid scopes: ${invalidScopes.join(', ')}` }, { status: 400 });
-      }
-      const scopesStr = scopeList.join(',');
-      const escapedKeyId = keyId.replace(/'/g, "''");
-      await queryClickHouse(`ALTER TABLE logs.api_keys UPDATE scopes = '${scopesStr}' WHERE key_id = '${escapedKeyId}'`);
-      updated = true;
+      const scopesStr = normalizeScopes(scopes);
+      if (scopesStr instanceof NextResponse) return scopesStr;
+      patch.scopes = scopesStr;
     }
 
-    if (!updated) {
-      return NextResponse.json({ error: 'Either enabled, name, scopes, or retentionDays is required' }, { status: 400 });
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json(
+        { error: 'Either enabled, name, scopes, or retentionDays is required' },
+        { status: 400 }
+      );
     }
 
+    await updateKey(keyId, patch);
     return NextResponse.json({ success: true });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to update API key' },
-      { status: 500 }
-    );
+    return fail(error, 'Failed to update API key');
   }
 }
 
@@ -109,12 +94,9 @@ export async function DELETE(request: NextRequest) {
     if (!keyId) {
       return NextResponse.json({ error: 'keyId is required' }, { status: 400 });
     }
-    await deleteAPIKey(keyId);
+    await deleteKey(keyId);
     return NextResponse.json({ success: true });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to delete API key' },
-      { status: 500 }
-    );
+    return fail(error, 'Failed to delete API key');
   }
 }
