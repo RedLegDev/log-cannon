@@ -10,6 +10,10 @@ routes = [
   { pattern = "logs.yourdomain.com/ingest/webhook", zone_name = "yourdomain.com" },
   { pattern = "logs.yourdomain.com/ingest/clef", zone_name = "yourdomain.com" },
   { pattern = "logs.yourdomain.com/api/events/raw", zone_name = "yourdomain.com" },
+  # Key registry admin API. Without these the handler deploys but is unreachable —
+  # the request falls through to the dashboard and 307s to its login page.
+  { pattern = "logs.yourdomain.com/v1/keys", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/keys/*", zone_name = "yourdomain.com" },
 ]
 
 [[queues.producers]]
@@ -46,6 +50,10 @@ routes = [
   { pattern = "logs.redleg.dev/ingest/webhook", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/ingest/clef", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/api/events/raw", zone_name = "redleg.dev" },
+  # Key registry admin API. Without these the handler deploys but is unreachable —
+  # the request falls through to the dashboard and 307s to its login page.
+  { pattern = "logs.redleg.dev/v1/keys", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/v1/keys/*", zone_name = "redleg.dev" },
 ]
 
 [[env.production.queues.producers]]
