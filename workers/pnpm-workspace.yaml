@@ -1,2 +1,14 @@
 packages:
   - "packages/ingest"
+
+# pnpm 11 requires an explicit decision per dependency that ships a build
+# script, and exits 1 until every one is resolved. Without this stanza
+# `pnpm install` fails, which breaks both `pnpm add` and the production deploy
+# command (`pnpm --filter @log-cannon/ingest exec wrangler deploy --env production`).
+allowBuilds:
+  # Wrangler bundles the Worker with esbuild, and runs it locally on workerd
+  # (also used by @cloudflare/vitest-pool-workers for the test harness).
+  esbuild: true
+  workerd: true
+  # Image processing, pulled in transitively. The Worker never touches it.
+  sharp: false
