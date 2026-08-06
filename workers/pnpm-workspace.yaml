@@ -1,6 +1,17 @@
 packages:
   - "packages/ingest"
 
+# @cloudflare/vitest-pool-workers@0.12.21 declares a `vitest: 2.0.x - 3.2.x`
+# peer range, but its own peer deps auto-install @vitest/runner@4.x and
+# @vitest/snapshot@4.x, which coexist alongside the 3.2.7 copies pulled in by
+# our pinned `vitest@^3.2.7`. That leaves two versions of each resolved at
+# once — tests pass by luck today, but a future `pnpm install` could resolve
+# differently and break the harness. Force both to the 3.2.7 line so exactly
+# one copy of each resolves, matching what the pool package actually supports.
+overrides:
+  "@vitest/runner": 3.2.7
+  "@vitest/snapshot": 3.2.7
+
 # pnpm 11 requires an explicit decision per dependency that ships a build
 # script, and exits 1 until every one is resolved. Without this stanza
 # `pnpm install` fails, which breaks both `pnpm add` and the production deploy
