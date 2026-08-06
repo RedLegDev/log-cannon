@@ -108,3 +108,112 @@ export async function validateKey(
   if (!record.enabled) throw new Error("API key is disabled");
   return record;
 }
+
+export const VALID_SCOPES: Scope[] = ["ingest", "read", "write", "admin"];
+
+export function invalidScopes(scopes: string[]): string[] {
+  return scopes.filter((s) => !VALID_SCOPES.includes(s as Scope));
+}
+
+/** 32 chars of base62, matching the dashboard's historical key format. */
+export function generateAPIKey(): string {
+  const alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+export async function listKeys(db: D1Database): Promise<APIKeyRecord[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT api_key, key_id, name, enabled, scopes, retention_days, created_at
+       FROM api_keys ORDER BY created_at DESC`,
+    )
+    .all<Row>();
+  return results.map(toRecord);
+}
+
+export async function createKey(
+  db: D1Database,
+  name: string,
+  scopes: string,
+  now: string = new Date().toISOString(),
+): Promise<APIKeyRecord> {
+  const apiKey = generateAPIKey();
+  const keyId = crypto.randomUUID();
+
+  await db
+    .prepare(
+      `INSERT INTO api_keys (api_key, key_id, name, enabled, scopes, retention_days, created_at)
+       VALUES (?, ?, ?, 1, ?, 0, ?)`,
+    )
+    .bind(apiKey, keyId, name, scopes, now)
+    .run();
+
+  return {
+    apiKey,
+    keyId,
+    name,
+    enabled: true,
+    scopes: parseScopes(scopes),
+    retentionDays: 0,
+    createdAt: now,
+  };
+}
+
+export interface KeyPatch {
+  name?: string;
+  enabled?: boolean;
+  scopes?: string;
+  retentionDays?: number;
+}
+
+export async function updateKey(
+  db: D1Database,
+  keyId: string,
+  patch: KeyPatch,
+): Promise<boolean> {
+  const sets: string[] = [];
+  const binds: unknown[] = [];
+
+  if (patch.name !== undefined) {
+    sets.push("name = ?");
+    binds.push(patch.name);
+  }
+  if (patch.enabled !== undefined) {
+    sets.push("enabled = ?");
+    binds.push(patch.enabled ? 1 : 0);
+  }
+  if (patch.scopes !== undefined) {
+    sets.push("scopes = ?");
+    binds.push(patch.scopes);
+  }
+  if (patch.retentionDays !== undefined) {
+    sets.push("retention_days = ?");
+    binds.push(patch.retentionDays);
+  }
+  if (sets.length === 0) return false;
+
+  binds.push(keyId);
+  const result = await db
+    .prepare(`UPDATE api_keys SET ${sets.join(", ")} WHERE key_id = ?`)
+    .bind(...binds)
+    .run();
+
+  // A mutated key may be cached in this isolate; drop the whole cache rather
+  // than track key_id → api_key. Other isolates still honour the TTL.
+  KEY_CACHE.clear();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+export async function deleteKey(
+  db: D1Database,
+  keyId: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare("DELETE FROM api_keys WHERE key_id = ?")
+    .bind(keyId)
+    .run();
+  KEY_CACHE.clear();
+  return (result.meta.changes ?? 0) > 0;
+}

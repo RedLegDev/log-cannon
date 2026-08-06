@@ -1,6 +1,7 @@
 // --- Types ---
 
 import { validateKey, type APIKeyRecord } from "./keys";
+import { handleAdminKeys } from "./admin";
 
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
@@ -577,15 +578,30 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
-    if (request.method !== "POST" && request.method !== "GET") {
-      return errorResponse(405, "Method not allowed");
-    }
 
     const path = new URL(request.url).pathname;
 
     // Health check (GET)
     if (path === "/health") {
+      if (request.method !== "GET") {
+        return errorResponse(405, "Method not allowed");
+      }
       return jsonResponse({ status: "ok" });
+    }
+
+    // Admin API. Must be dispatched before the POST-only gate below, which
+    // would otherwise 405 the GET/PATCH/DELETE verbs this API needs. Note
+    // this also means it must come before the old blanket GET/POST-only
+    // gate that used to sit here — PATCH/DELETE need to reach this branch.
+    if (path === "/v1/keys" || path.startsWith("/v1/keys/")) {
+      let adminKey: APIKeyRecord;
+      try {
+        adminKey = await authenticate(request, env);
+      } catch (e) {
+        if (e instanceof AuthError) return errorResponse(e.status, e.message);
+        return errorResponse(500, "Internal error");
+      }
+      return await handleAdminKeys(request, env.KEYS_DB, adminKey);
     }
 
     if (request.method !== "POST") {
