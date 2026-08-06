@@ -1444,9 +1444,11 @@ export async function DELETE(request: NextRequest) {
 }
 ```
 
-- [ ] **Step 3: Remove the ClickHouse key CRUD**
+- [ ] **Step 3: Leave the ClickHouse key CRUD in place for now**
 
-In `dashboard/src/lib/clickhouse.ts`, delete `getAPIKeys`, `createAPIKey`, `toggleAPIKey`, `renameAPIKey`, `deleteAPIKey`, `setAPIKeyRetention`, and `generateAPIKey` (roughly lines 284–385). Leave everything else untouched.
+Do **not** delete `getAPIKeys`, `createAPIKey`, `toggleAPIKey`, `renameAPIKey`, `deleteAPIKey`, `setAPIKeyRetention`, or `generateAPIKey` from `dashboard/src/lib/clickhouse.ts` yet. `api-auth.ts`, `mcp/route.ts`, and the `v1/keys` routes still call into that path and do not migrate until Task 8. Removing them here would break the dashboard build mid-plan.
+
+They become dead code at the end of this task and are deleted in Task 8 Step 5, once the last consumer is migrated.
 
 - [ ] **Step 4: Wire the dashboard credentials**
 
@@ -1569,10 +1571,18 @@ In `dashboard/src/app/api/mcp/route.ts`, replace the `FROM logs.api_keys` query 
 
 In `dashboard/src/app/api/v1/keys/route.ts` and `dashboard/src/app/api/v1/keys/[id]/route.ts`, replace each `ALTER TABLE logs.api_keys` / `INSERT INTO logs.api_keys` statement with the corresponding `createKey` / `updateKey` / `deleteKey` / `listKeys` call from `@/lib/key-registry`. Authentication via `authenticateApiKey` is unchanged.
 
-- [ ] **Step 5: Verify no ClickHouse key references remain in the dashboard**
+- [ ] **Step 5: Remove the now-dead ClickHouse key CRUD**
 
-Run: `grep -rn "logs.api_keys" dashboard/src`
-Expected: no output.
+Every consumer has moved, so delete `getAPIKeys`, `createAPIKey`, `toggleAPIKey`, `renameAPIKey`, `deleteAPIKey`, `setAPIKeyRetention`, and `generateAPIKey` from `dashboard/src/lib/clickhouse.ts` (roughly lines 284–385). Leave everything else in that file untouched.
+
+Then verify no references remain:
+
+```bash
+grep -rn "logs.api_keys" dashboard/src
+grep -rn "createAPIKey\|toggleAPIKey\|renameAPIKey\|deleteAPIKey\|setAPIKeyRetention\|getAPIKeys" dashboard/src
+```
+
+Expected: no output from either.
 
 - [ ] **Step 6: Update the agent and self-hoster docs**
 
