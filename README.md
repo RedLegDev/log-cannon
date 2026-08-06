@@ -18,7 +18,7 @@ Serilog / OTel / Webhooks
         │
         ▼
 ┌─ Cloudflare edge ─────────────────────────┐
-│  Ingest Worker ───────────► CF Queue      │   validates API key (KV),
+│  Ingest Worker ───────────► CF Queue      │   validates API key (D1),
 │  (CLEF · webhook · OTel)    (buffers ≤4d)  │   enqueues the raw payload
 └──────────────────────────┬────────────────┘
                            │ pull
@@ -34,7 +34,7 @@ Serilog / OTel / Webhooks
 └────────────────────────────────────────────┘
 ```
 
-The Worker is deliberately thin — it only authenticates the request against a KV namespace and pushes the raw body to the queue. All parsing happens in the Go queue consumer on your server, using the same code paths regardless of source format. When your server goes offline the Worker keeps accepting logs and the queue holds them (up to 4 days) until the consumer drains the backlog.
+The Worker is deliberately thin — it only authenticates the request against its D1 key registry and pushes the raw body to the queue. All parsing happens in the Go queue consumer on your server, using the same code paths regardless of source format. When your server goes offline the Worker keeps accepting logs and the queue holds them (up to 4 days) until the consumer drains the backlog.
 
 > **Cloudflare is a hard dependency.** Ingestion requires a Cloudflare account with Workers and Queues; access uses a Cloudflare Tunnel. Storage, the dashboard, alerting, retention, and backups are fully self-hosted. 
 
@@ -63,7 +63,7 @@ This brings up ClickHouse, the dashboard, the alert/retention/backup workers, an
 
 ### 2. Deploy the ingest Worker
 
-The Worker is what your log clients actually talk to. See [Edge Ingestion Setup](#edge-ingestion-setup) below for the full walkthrough (create a Queue + KV namespace, populate API keys, deploy).
+The Worker is what your log clients actually talk to. See [Edge Ingestion Setup](#edge-ingestion-setup) below for the full walkthrough (create a Queue + D1 database, bootstrap an admin key, deploy).
 
 ### 3. Point a client at it
 
@@ -123,14 +123,16 @@ Two things send email: dashboard sign-in OTPs and alert notifications.
 
 ## Create an API Key
 
-API keys live in ClickHouse and gate ingestion. Create one directly:
+API keys live in D1, behind the ingest Worker — there is no separate store to keep in sync. Create and manage them from the **API Keys** page in the dashboard (it talks to the Worker's admin API), or directly against the Worker:
 
 ```bash
-docker exec -it log-cannon-clickhouse-1 clickhouse-client -q \
-  "INSERT INTO logs.api_keys (api_key, name) VALUES ('$(openssl rand -hex 32)', 'my-app')"
+curl -X POST https://logs.yourdomain.com/v1/keys \
+  -H "X-Api-Key: your-admin-scoped-key" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-app","scopes":"ingest"}'
 ```
 
-Then mirror it into the Worker's KV namespace so the edge can authenticate it (see [Edge Ingestion Setup](#edge-ingestion-setup)). New keys are also manageable from the **API Keys** page in the dashboard.
+See [Edge Ingestion Setup](#edge-ingestion-setup) for bootstrapping the first admin key.
 
 ## Per-Service Retention
 
@@ -141,21 +143,6 @@ Each API key has a `retention_days` setting (`0` = keep forever, the default). S
 docker exec -it log-cannon-clickhouse-1 clickhouse-client -q \
   "ALTER TABLE logs.api_keys UPDATE retention_days = 14 WHERE name = 'my-app'"
 ```
-
-## Discovery Mode (migration from Seq)
-
-If you're migrating from Seq and don't have your existing API keys handy, enable **Discovery Mode** to auto-provision unknown keys instead of rejecting them:
-
-```bash
-DISCOVERY_MODE=true   # in .env
-```
-
-When enabled, unknown keys are accepted immediately and registered as sources named `discovered-{key-prefix}` (first 8 chars), which then appear in the dashboard for you to rename. Typical workflow:
-
-1. Set `DISCOVERY_MODE=true` and point your apps at Log Cannon (same endpoint format as Seq).
-2. Apps send logs → keys auto-provision.
-3. Review and rename discovered sources in the dashboard.
-4. Set `DISCOVERY_MODE=false` when migration is complete.
 
 ## Custom Dashboards
 
@@ -254,45 +241,43 @@ Tools are scoped to your key's permissions. See the **MCP** page in the dashboar
 
 ## Edge Ingestion Setup
 
-Your log clients talk to a single Cloudflare Worker that validates API keys (against KV) and enqueues raw payloads onto a Cloudflare Queue. The Go `queue-consumer` (already running in Compose) drains the queue into ClickHouse.
+Your log clients talk to a single Cloudflare Worker that validates API keys (against D1) and enqueues raw payloads onto a Cloudflare Queue. The Go `queue-consumer` (already running in Compose) drains the queue into ClickHouse.
 
 ### 1. Create Cloudflare resources
 
 ```bash
 npx wrangler queues create log-cannon-ingest   # note the Queue ID
-npx wrangler kv namespace create API_KEYS       # note the namespace ID
 ```
 
-### 2. Populate API keys in KV
-
-The KV key is the raw API key string; the value is JSON with the source name:
+### 2. Create the key registry
 
 ```bash
-npx wrangler kv key put --namespace-id=YOUR_KV_NAMESPACE_ID \
-  "your-api-key-here" '{"name":"order-service","enabled":true}'
+npx wrangler d1 create log-cannon-keys        # note the database ID
+npx wrangler d1 migrations apply log-cannon-keys --remote
 ```
 
-To bulk-sync from your existing ClickHouse `api_keys` table:
+Keys are managed in the dashboard UI, or directly through the Worker's admin
+API. Bootstrap the first admin key by hand:
 
 ```bash
-docker exec log-cannon-clickhouse-1 clickhouse-client -q \
-  "SELECT api_key, name FROM logs.api_keys WHERE enabled = 1 FORMAT JSONEachRow" \
-  | while IFS= read -r row; do
-      key=$(echo "$row" | jq -r .api_key)
-      name=$(echo "$row" | jq -r .name)
-      npx wrangler kv key put --namespace-id=YOUR_KV_NAMESPACE_ID \
-        "$key" "{\"name\":\"$name\",\"enabled\":true}"
-    done
+npx wrangler d1 execute log-cannon-keys --remote --command \
+  "INSERT INTO api_keys (api_key, key_id, name, enabled, scopes, retention_days, created_at)
+   VALUES ('your-admin-key', lower(hex(randomblob(16))), 'admin', 1, 'admin', 0, datetime('now'))"
 ```
+
+Set that key as `LOG_CANNON_ADMIN_KEY` in your `.env` so the dashboard can
+manage keys. There is no second store to keep in sync.
 
 ### 3. Configure the Worker
 
-Update `workers/packages/ingest/wrangler.toml` with your KV namespace ID and routes:
+Update `workers/packages/ingest/wrangler.toml` with your D1 database ID and routes:
 
 ```toml
-[[kv_namespaces]]
-binding = "API_KEYS"
-id = "YOUR_KV_NAMESPACE_ID"    # ← replace
+[[d1_databases]]
+binding = "KEYS_DB"
+database_name = "log-cannon-keys"
+database_id = "YOUR_D1_DATABASE_ID"    # ← replace
+migrations_dir = "migrations"
 
 routes = [
   { pattern = "logs.yourdomain.com/ingest/*", zone_name = "yourdomain.com" },
@@ -403,8 +388,8 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 | `SAASMAIL_API_KEY` / `SAASMAIL_API_URL` | If `saasmail`, or for alerts | HTTP email API credentials/endpoint |
 | `ALERT_FROM_EMAIL` | No | Sender for alert emails |
 | `RETENTION_INTERVAL_HOURS` | No | How often retention trims expired logs (default `24`) |
-| `DISCOVERY_MODE` | No | `true` to auto-provision unknown API keys (migration) |
 | `CF_ACCOUNT_ID` / `CF_QUEUE_ID` / `CF_API_TOKEN` | Yes | Queue consumer → Cloudflare Queue access |
+| `LOG_CANNON_INGEST_URL` / `LOG_CANNON_ADMIN_KEY` | Yes | Ingest Worker URL and admin-scoped key so the dashboard can manage the D1 key registry |
 | `R2_*` | No | Offsite backup credentials (see Backup & Restore) |
 | `COMPOSE_PROFILES` | No | `dev` locally to start the Inbucket mailbox |
 
@@ -425,7 +410,7 @@ log-cannon/
 
 ## Tech Stack
 
-- **Edge ingestion**: Cloudflare Workers (TypeScript) + Queues + KV
+- **Edge ingestion**: Cloudflare Workers (TypeScript) + Queues + D1
 - **Queue consumer / alert / retention workers**: Go 1.22+
 - **Dashboard / API / MCP**: Next.js, React 18, Tailwind CSS
 - **Storage**: ClickHouse

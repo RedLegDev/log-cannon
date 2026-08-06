@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError, ApiScope } from '@/lib/api-auth';
-import { toggleAPIKey, renameAPIKey, deleteAPIKey, getAPIKeys, setAPIKeyRetention, queryClickHouse } from '@/lib/clickhouse';
+import { listKeys, updateKey, deleteKey } from '@/lib/key-registry';
 
 const VALID_SCOPES: ApiScope[] = ['ingest', 'read', 'write', 'admin'];
 
@@ -15,24 +15,25 @@ export async function PATCH(
     const { id } = await params;
 
     // Verify the key exists
-    const keys = await getAPIKeys();
-    const key = keys.find(k => k.key_id === id);
+    const keys = await listKeys();
+    const key = keys.find(k => k.keyId === id);
 
     if (!key) {
       return apiError('not_found', `API key not found: ${id}`, 404);
     }
 
     const body = await request.json();
+    const patch: { name?: string; enabled?: boolean; scopes?: string; retentionDays?: number } = {};
 
     if (body.name !== undefined) {
       if (typeof body.name !== 'string' || !body.name) {
         return apiError('validation_error', 'name must be a non-empty string', 400);
       }
-      await renameAPIKey(id, body.name);
+      patch.name = body.name;
     }
 
     if (body.enabled !== undefined) {
-      await toggleAPIKey(id, Boolean(body.enabled));
+      patch.enabled = Boolean(body.enabled);
     }
 
     if (body.scopes !== undefined) {
@@ -51,12 +52,7 @@ export async function PATCH(
         return apiError('validation_error', `Invalid scopes: ${invalidScopes.join(', ')}`, 400);
       }
 
-      const updateSql = `
-        ALTER TABLE logs.api_keys
-        UPDATE scopes = '${scopesStr}'
-        WHERE key_id = '${id.replace(/'/g, "''")}'
-      `;
-      await queryClickHouse(updateSql);
+      patch.scopes = scopesStr;
     }
 
     if (body.retentionDays !== undefined) {
@@ -64,7 +60,11 @@ export async function PATCH(
       if (!Number.isInteger(days) || days < 0) {
         return apiError('validation_error', 'retentionDays must be an integer >= 0', 400);
       }
-      await setAPIKeyRetention(id, days);
+      patch.retentionDays = days;
+    }
+
+    if (Object.keys(patch).length > 0) {
+      await updateKey(id, patch);
     }
 
     return NextResponse.json({ success: true });
@@ -85,14 +85,14 @@ export async function DELETE(
     const { id } = await params;
 
     // Verify the key exists
-    const keys = await getAPIKeys();
-    const exists = keys.some(k => k.key_id === id);
+    const keys = await listKeys();
+    const exists = keys.some(k => k.keyId === id);
 
     if (!exists) {
       return apiError('not_found', `API key not found: ${id}`, 404);
     }
 
-    await deleteAPIKey(id);
+    await deleteKey(id);
 
     return NextResponse.json({ success: true });
   } catch (error) {

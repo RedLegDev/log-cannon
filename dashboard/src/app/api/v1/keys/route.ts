@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError, ApiScope } from '@/lib/api-auth';
-import { getAPIKeys, createAPIKey, queryClickHouse } from '@/lib/clickhouse';
+import { listKeys, createKey } from '@/lib/key-registry';
 
 const VALID_SCOPES: ApiScope[] = ['ingest', 'read', 'write', 'admin'];
 
@@ -54,16 +54,16 @@ export async function GET(request: NextRequest) {
   if (auth instanceof NextResponse) return auth;
 
   try {
-    const keys = await getAPIKeys();
+    const keys = await listKeys();
 
     // Don't expose the actual API key values
     const data = keys.map(k => ({
-      id: k.key_id,
+      id: k.keyId,
       name: k.name,
       // Show only prefix of key for identification
-      key_prefix: k.api_key.slice(0, 8) + '...',
-      enabled: Boolean(k.enabled),
-      created_at: k.created_at,
+      key_prefix: k.apiKey.slice(0, 8) + '...',
+      enabled: k.enabled,
+      created_at: k.createdAt,
     }));
 
     return NextResponse.json({ data });
@@ -85,23 +85,15 @@ export async function POST(request: NextRequest) {
       return apiError('validation_error', 'Invalid request', 400, { fields: validation.errors });
     }
 
-    // Create the key (returns the full key value)
-    const apiKey = await createAPIKey(validation.data.name);
-
-    // Update scopes for the newly created key
-    const updateSql = `
-      ALTER TABLE logs.api_keys
-      UPDATE scopes = '${validation.data.scopes}'
-      WHERE api_key = '${apiKey.replace(/'/g, "''")}'
-    `;
-    await queryClickHouse(updateSql);
+    // Create the key (returns the full key value and its final scopes)
+    const created = await createKey(validation.data.name, validation.data.scopes);
 
     // Return the full key (only time it's shown)
     return NextResponse.json({
       success: true,
-      api_key: apiKey,
-      name: validation.data.name,
-      scopes: validation.data.scopes,
+      api_key: created.apiKey,
+      name: created.name,
+      scopes: created.scopes.join(','),
       message: 'Store this API key securely. It will not be shown again.',
     }, { status: 201 });
   } catch (error) {

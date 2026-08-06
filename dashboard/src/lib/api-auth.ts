@@ -1,15 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { queryClickHouse } from './clickhouse';
+import { lookupKey } from './key-registry';
 
 export type ApiScope = 'ingest' | 'read' | 'write' | 'admin';
-
-interface ApiKeyRecord {
-  key_id: string;
-  api_key: string;
-  name: string;
-  scopes: string;
-  enabled: number;
-}
 
 export interface AuthenticatedRequest {
   keyId: string;
@@ -64,43 +56,22 @@ export async function authenticateApiKey(
     return apiError('unauthorized', 'Missing API key. Provide X-Api-Key header or Authorization: Bearer <key>', 401);
   }
 
-  // Look up the key
-  const sql = `
-    SELECT
-      toString(key_id) as key_id,
-      api_key,
-      name,
-      scopes,
-      enabled
-    FROM logs.api_keys
-    WHERE api_key = '${apiKey.replace(/'/g, "''")}'
-    LIMIT 1
-  `;
-
   try {
-    const results = await queryClickHouse<ApiKeyRecord>(sql);
-
-    if (results.length === 0) {
-      return apiError('unauthorized', 'Invalid API key', 401);
+    const record = await lookupKey(apiKey);
+    if (!record || !record.enabled) {
+      return apiError('unauthorized', 'Invalid or disabled API key', 401);
     }
 
-    const key = results[0];
-
-    if (!key.enabled) {
-      return apiError('unauthorized', 'API key is disabled', 401);
-    }
-
-    const scopes = parseScopes(key.scopes);
-
+    const scopes = record.scopes as ApiScope[];
     if (!hasScope(scopes, requiredScope)) {
-      return apiError('forbidden', `API key lacks required scope: ${requiredScope}`, 403);
+      return apiError(
+        'forbidden',
+        `This key lacks the required '${requiredScope}' scope`,
+        403
+      );
     }
 
-    return {
-      keyId: key.key_id,
-      keyName: key.name,
-      scopes,
-    };
+    return { keyId: record.keyId, keyName: record.name, scopes };
   } catch (error) {
     console.error('API key authentication error:', error);
     return apiError('internal_error', 'Authentication failed', 500);

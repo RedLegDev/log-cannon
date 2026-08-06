@@ -265,84 +265,6 @@ export async function getSources(timeFilter?: TimeFilter): Promise<string[]> {
   return results.map(r => r.source);
 }
 
-export interface APIKey {
-  key_id: string;
-  api_key: string;
-  name: string;
-  scopes: string;
-  created_at: string;
-  enabled: number;
-  retention_days: number;
-}
-
-export async function getAPIKeys(): Promise<APIKey[]> {
-  const sql = `
-    SELECT
-      toString(key_id) as key_id,
-      api_key,
-      name,
-      scopes,
-      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
-      enabled,
-      retention_days
-    FROM logs.api_keys
-    ORDER BY created_at DESC
-  `;
-
-  return queryClickHouse<APIKey>(sql);
-}
-
-export async function getAPIKey(keyId: string): Promise<APIKey | null> {
-  const sql = `
-    SELECT
-      toString(key_id) as key_id,
-      api_key,
-      name,
-      scopes,
-      formatDateTime(created_at, '%Y-%m-%d %H:%i:%S') as created_at,
-      enabled,
-      retention_days
-    FROM logs.api_keys
-    WHERE key_id = '${escapeString(keyId)}'
-    LIMIT 1
-  `;
-
-  const results = await queryClickHouse<APIKey>(sql);
-  return results.length > 0 ? results[0] : null;
-}
-
-export async function createAPIKey(name: string, scopes: string = 'ingest'): Promise<string> {
-  const apiKey = generateAPIKey();
-  const sql = `
-    INSERT INTO logs.api_keys (api_key, name, scopes, enabled)
-    VALUES ('${escapeString(apiKey)}', '${escapeString(name)}', '${escapeString(scopes)}', 1)
-  `;
-
-  await fetch(CLICKHOUSE_URL, {
-    method: 'POST',
-    body: sql,
-    headers: { 'Content-Type': 'text/plain' },
-    cache: 'no-store'
-  });
-
-  return apiKey;
-}
-
-export async function toggleAPIKey(keyId: string, enabled: boolean): Promise<void> {
-  const sql = `
-    ALTER TABLE logs.api_keys
-    UPDATE enabled = ${enabled ? 1 : 0}
-    WHERE key_id = '${escapeString(keyId)}'
-  `;
-
-  await fetch(CLICKHOUSE_URL, {
-    method: 'POST',
-    body: sql,
-    headers: { 'Content-Type': 'text/plain' },
-    cache: 'no-store'
-  });
-}
-
 async function executeClickHouse(sql: string): Promise<void> {
   const response = await fetch(CLICKHOUSE_URL, {
     method: 'POST',
@@ -355,47 +277,6 @@ async function executeClickHouse(sql: string): Promise<void> {
     const errorText = await response.text();
     throw new Error(`ClickHouse query failed: ${errorText}`);
   }
-}
-
-export async function renameAPIKey(keyId: string, name: string): Promise<void> {
-  await executeClickHouse(`
-    ALTER TABLE logs.api_keys
-    UPDATE name = '${escapeString(name)}'
-    WHERE key_id = '${escapeString(keyId)}'
-  `);
-}
-
-export async function setAPIKeyRetention(keyId: string, days: number): Promise<void> {
-  // Clamp to a non-negative integer; 0 = keep forever.
-  const safeDays = Math.max(0, Math.floor(Number.isFinite(days) ? days : 0));
-  await executeClickHouse(`
-    ALTER TABLE logs.api_keys
-    UPDATE retention_days = ${safeDays}
-    WHERE key_id = '${escapeString(keyId)}'
-  `);
-}
-
-export async function deleteAPIKey(keyId: string): Promise<void> {
-  const sql = `
-    ALTER TABLE logs.api_keys
-    DELETE WHERE key_id = '${escapeString(keyId)}'
-  `;
-
-  await fetch(CLICKHOUSE_URL, {
-    method: 'POST',
-    body: sql,
-    headers: { 'Content-Type': 'text/plain' },
-    cache: 'no-store'
-  });
-}
-
-function generateAPIKey(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < 32; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
 }
 
 // Saved Queries

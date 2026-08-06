@@ -61,3 +61,21 @@ export async function updateKey(
 export async function deleteKey(keyId: string): Promise<void> {
   await call(`/v1/keys/${encodeURIComponent(keyId)}`, { method: 'DELETE' });
 }
+
+// Short-lived cache so per-request dashboard API auth does not make an edge
+// round-trip on every call. Deliberately shorter than the Worker's 5-minute
+// isolate cache — dashboard auth guards read/write/admin, not ingest.
+const AUTH_CACHE_TTL_MS = 30_000;
+let authCache: { keys: KeyRecord[]; expiresAt: number } | null = null;
+
+export async function lookupKey(apiKey: string): Promise<KeyRecord | null> {
+  const now = Date.now();
+  if (!authCache || authCache.expiresAt <= now) {
+    authCache = { keys: await listKeys(), expiresAt: now + AUTH_CACHE_TTL_MS };
+  }
+  return authCache.keys.find(k => k.apiKey === apiKey) ?? null;
+}
+
+export function __resetAuthCache(): void {
+  authCache = null;
+}
