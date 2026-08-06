@@ -6,7 +6,6 @@ import { handleAdminKeys } from "./admin";
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
   KEYS_DB: D1Database;
-  DISCOVERY_MODE?: string;
 }
 
 interface QueuePayload {

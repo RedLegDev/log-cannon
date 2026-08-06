@@ -32,8 +32,6 @@ database_name = "log-cannon-keys"
 database_id = "<your-d1-database-id>"
 migrations_dir = "migrations"
 
-[vars]
-DISCOVERY_MODE = "true"
 
 # --- Red Leg Dev production deploy (logs.redleg.dev) ---
 # Deployed via `wrangler deploy --env production` (Cloudflare Workers Builds).
@@ -70,7 +68,3 @@ database_name = "log-cannon-keys"
 database_id = "5809a419-53ba-4f3e-9c8f-f830339c8f25"
 migrations_dir = "migrations"
 
-# Prod runs with discovery OFF: unknown API keys are rejected rather than
-# auto-registered. Existing tenant keys in KV are unaffected.
-[env.production.vars]
-DISCOVERY_MODE = "false"
