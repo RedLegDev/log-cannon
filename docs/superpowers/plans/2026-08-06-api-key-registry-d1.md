@@ -1689,3 +1689,87 @@ git commit -m "refactor(dashboard): read key auth from the registry; document D1
 - Deciding, per source, whether to backfill `events.source` for renamed `discovered-*` keys.
 
 Until Plan 2 lands, `retention-worker` still reads ClickHouse `logs.api_keys`, which is now frozen — retention behaviour is unchanged from today, neither better nor worse.
+
+---
+
+## Addendum: retention projection (Tasks 9–10)
+
+Task 8 introduced a regression. The dashboard's retention control now writes `retentionDays` to D1, but `retention-worker/main.go:110` still reads `retention_days` from ClickHouse `logs.api_keys`, which is now frozen. Existing policies (21 keys at 21 days) keep working because the frozen table retains its values; **new edits are inert and newly created keys have no ClickHouse row at all, so their logs are never trimmed.**
+
+The repo owner chose to pull the projection forward from Plan 2 rather than ship the regression documented.
+
+**Why this is two tasks, not one.** Restoring the control (Task 9) and fixing the pre-existing source-matching bug (Task 10) are separable, and Task 9 alone closes the regression. Task 10 is the larger piece: retention today is a property of a *key*, but `events.source` can be overridden per-event by an OTLP `service.name` or a webhook preset, so a key-derived policy can never match those sources. Fixing that means configuring retention against observed sources, which is new UI.
+
+---
+
+### Task 9: `logs.key_policies` projection, retention-worker reads it
+
+**Files:**
+- Create: `dashboard/src/lib/key-policies.ts`
+- Modify: `dashboard/src/app/api/keys/route.ts`, `dashboard/src/app/api/v1/keys/route.ts`, `dashboard/src/app/api/v1/keys/[id]/route.ts`
+- Modify: `retention-worker/main.go:102-131`
+- Create: `clickhouse/init/009_key_policies.sql`
+
+**Interfaces:**
+- Produces `syncKeyPolicies(): Promise<void>` — idempotent; creates the table if absent, then replaces its contents from the D1 registry.
+
+**Schema.** `ReplacingMergeTree` keyed by `source`, so repeated syncs collapse rather than accumulate. The table is tiny (one row per key name), so `FINAL` is cheap.
+
+```sql
+CREATE TABLE IF NOT EXISTS logs.key_policies (
+  source         String,
+  retention_days UInt32,
+  updated_at     DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY source;
+```
+
+Per `AGENTS.md`, `clickhouse/init/*.sql` runs only on a fresh data dir, so the init file alone will not create this on the running production instance. `syncKeyPolicies()` therefore issues `CREATE TABLE IF NOT EXISTS` itself before writing — that is deliberate, and it removes any need for a manual migration step on prod.
+
+**Aggregation rule — preserve it exactly.** Several keys share a name (`Esferas`, `GWSC.io`, `WOTC Genius` each have two). `retention-worker` currently groups by name and takes `max(retention_days)`, documented as "the least destructive choice." The projection must apply the same rule, or a source with two keys could start being trimmed on the shorter window.
+
+- [ ] **Step 1: Write the projection module**
+
+Create `dashboard/src/lib/key-policies.ts`. It reads the registry via `listKeys()` and writes the projection. Group by `name`, take the max `retentionDays`, and include only positive values (0 means keep forever and must not produce a row).
+
+- [ ] **Step 2: Call it after every key mutation**
+
+In `dashboard/src/app/api/keys/route.ts` and both `v1/keys` routes, call `syncKeyPolicies()` after each successful POST, PATCH, and DELETE. A sync failure must not fail the mutation — the registry write already succeeded and is the source of truth. Log the failure and return success.
+
+- [ ] **Step 3: Point retention-worker at the projection**
+
+In `retention-worker/main.go`, replace the `fetchPolicies` query:
+
+```go
+	query := `
+		SELECT source, retention_days
+		FROM logs.key_policies FINAL
+		WHERE retention_days > 0
+	`
+```
+
+The `RetentionPolicy` struct and `trimSource` are unchanged — `Source` still maps to `events.source`.
+
+- [ ] **Step 4: Verify**
+
+`cd dashboard && npm run build`, then `cd retention-worker && go build ./... && go vet ./...`.
+
+- [ ] **Step 5: Verify the projection matches today's live policy**
+
+After deploying the dashboard, the projection must reproduce the 21 policies currently in `logs.api_keys`. Compare:
+
+```sql
+SELECT source, retention_days FROM logs.key_policies FINAL ORDER BY source
+```
+
+against the frozen `SELECT name, max(retention_days) FROM logs.api_keys WHERE enabled = 1 AND retention_days > 0 GROUP BY name`. Any source present in the old set but missing from the new one would silently stop being trimmed.
+
+- [ ] **Step 6: Commit**
+
+---
+
+### Task 10: retention configured per observed source (closes the OTLP gap)
+
+Not started. `events.source` is overridden per-event by OTLP `service.name` (`queue-consumer/otlp.go:41-43,78-80`) and webhook preset `SourceField` (`webhook.go:261`), so sources like `adrenaline-body-works`, `wagner-dashboard`, and `execupgrades-*` have no key of that name and can never match a key-derived policy. This predates the migration.
+
+Closing it means retention stops being a key property and becomes per-source config, set in the dashboard against sources actually observed in `logs.events`. That is a UI change plus a write path into `key_policies` for sources with no corresponding key, and it should be specced on its own rather than bolted onto this plan.
