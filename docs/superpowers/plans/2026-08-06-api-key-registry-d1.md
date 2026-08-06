@@ -853,9 +853,25 @@ Run this **only after** Step 5 confirms live producers are healthy. The seed ren
 
 Repo owner decided: rename **and** backfill. Only this one source needs it — the other eight `discovered-*` sources are dormant (last activity April/June 2026) and are left alone.
 
+**`ALTER TABLE ... UPDATE source` does not work.** `logs.events` is a `MergeTree` whose
+sorting key is `source, toStartOfHour(timestamp), level`, and ClickHouse refuses to update a
+key column (`Code: 420 CANNOT_UPDATE_COLUMN`). It has to be copy-then-delete, with a
+verification gate between the two — the table has no dedup, so a half-completed rename leaves
+doubled rows under two names.
+
 ```sql
--- ~70,892 rows as of 2026-08-06.
-ALTER TABLE logs.events UPDATE source = 'PEPOCS' WHERE source = 'discovered-DDXKgcKt'
+-- 1. Copy with the new name. Explicit column list; source is the 8th column.
+INSERT INTO logs.events
+  SELECT id, timestamp, level, message_template, message, exception, event_type,
+         'PEPOCS' AS source, properties
+  FROM logs.events WHERE source = 'discovered-DDXKgcKt';
+
+-- 2. GATE: both must show the same count (~70,892) before deleting anything.
+SELECT source, count() FROM logs.events
+  WHERE source IN ('discovered-DDXKgcKt','PEPOCS') GROUP BY source;
+
+-- 3. Only if step 2 matched:
+ALTER TABLE logs.events DELETE WHERE source = 'discovered-DDXKgcKt';
 ```
 
 ClickHouse mutations are asynchronous. Confirm completion before declaring the task done:
