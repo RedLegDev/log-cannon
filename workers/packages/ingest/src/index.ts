@@ -1,13 +1,10 @@
 // --- Types ---
 
-interface APIKeyEntry {
-  name: string;
-  enabled: boolean;
-}
+import { validateKey, type APIKeyRecord } from "./keys";
 
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
-  API_KEYS: KVNamespace;
+  KEYS_DB: D1Database;
   DISCOVERY_MODE?: string;
 }
 
@@ -93,52 +90,6 @@ function extractAPIKey(request: Request): string {
   if (auth && auth.startsWith("Bearer ")) return auth.slice(7);
 
   return "";
-}
-
-// In-memory API key cache, scoped to the Worker isolate. Cloudflare reuses
-// isolates across many requests, so a Map populated by one request serves
-// hits for all subsequent requests in the same isolate at zero KV cost.
-// At ~10 distinct API keys × ~27M requests/month, this drops KV reads from
-// ~27M to roughly (isolate recycles × distinct keys) — typically <1% of the
-// uncached rate.
-//
-// Trade-off: when a key is disabled or deleted in KV, warm isolates serve
-// the stale cached entry for up to KEY_CACHE_TTL_MS. Acceptable for an
-// ingest endpoint where compromise response is "rotate + redeploy", not
-// "instant revoke."
-interface CachedKey {
-  entry: APIKeyEntry;
-  expiresAt: number;
-}
-const KEY_CACHE = new Map<string, CachedKey>();
-const KEY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-async function validateAPIKey(apiKey: string, env: Env): Promise<string> {
-  const now = Date.now();
-
-  const cached = KEY_CACHE.get(apiKey);
-  if (cached && cached.expiresAt > now) {
-    if (!cached.entry.enabled) throw new Error("API key is disabled");
-    return cached.entry.name;
-  }
-
-  const entry = await env.API_KEYS.get<APIKeyEntry>(apiKey, "json");
-
-  if (entry) {
-    KEY_CACHE.set(apiKey, { entry, expiresAt: now + KEY_CACHE_TTL_MS });
-    if (!entry.enabled) throw new Error("API key is disabled");
-    return entry.name;
-  }
-
-  if (env.DISCOVERY_MODE === "true") {
-    const name = `discovered-${apiKey.slice(0, 8)}`;
-    const newEntry: APIKeyEntry = { name, enabled: true };
-    await env.API_KEYS.put(apiKey, JSON.stringify(newEntry));
-    KEY_CACHE.set(apiKey, { entry: newEntry, expiresAt: now + KEY_CACHE_TTL_MS });
-    return name;
-  }
-
-  throw new Error("Invalid API key");
 }
 
 // --- HTTP helpers ---
@@ -465,12 +416,15 @@ class AuthError extends Error {
   }
 }
 
-async function authenticate(request: Request, env: Env): Promise<string> {
+async function authenticate(
+  request: Request,
+  env: Env,
+): Promise<APIKeyRecord> {
   const apiKey = extractAPIKey(request);
   if (!apiKey) throw new AuthError(401, "API key required");
 
   try {
-    return await validateAPIKey(apiKey, env);
+    return await validateKey(apiKey, env.KEYS_DB);
   } catch {
     throw new AuthError(403, "Invalid or disabled API key");
   }
@@ -629,13 +583,14 @@ export default {
     }
 
     // Authenticate
-    let source: string;
+    let key: APIKeyRecord;
     try {
-      source = await authenticate(request, env);
+      key = await authenticate(request, env);
     } catch (e) {
       if (e instanceof AuthError) return errorResponse(e.status, e.message);
       return errorResponse(500, "Internal error");
     }
+    const source = key.name;
 
     // Route
     try {
