@@ -423,10 +423,20 @@ async function authenticate(
   const apiKey = extractAPIKey(request);
   if (!apiKey) throw new AuthError(401, "API key required");
 
+  // Distinguish a known auth rejection (bad/disabled key — genuinely the
+  // client's fault, safe as a non-retryable 4xx) from everything else (D1
+  // outage, query timeout, schema drift — the client did nothing wrong).
+  // Seq/Serilog sinks treat 4xx as terminal and drop the batch but retry
+  // 5xx, so collapsing both cases into 403 turns a transient D1 blip into
+  // silent, permanent log loss across every client at once.
   try {
     return await validateKey(apiKey, env.KEYS_DB);
-  } catch {
-    throw new AuthError(403, "Invalid or disabled API key");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (msg === "Invalid API key" || msg === "API key is disabled") {
+      throw new AuthError(403, "Invalid or disabled API key");
+    }
+    throw new AuthError(500, "Key store unavailable");
   }
 }
 
