@@ -4,13 +4,13 @@ import { useState, useEffect } from 'react';
 import { Key, Plus, Copy, Check, X, Trash2, ToggleLeft, ToggleRight, AlertCircle, Loader2, Terminal, Pencil } from 'lucide-react';
 
 interface APIKey {
-  key_id: string;
-  api_key: string;
+  apiKey: string;
+  keyId: string;
   name: string;
-  scopes: string;
-  created_at: string;
-  enabled: number;
-  retention_days: number;
+  scopes: string[];
+  enabled: boolean;
+  retentionDays: number;
+  createdAt: string;
 }
 
 const SCOPE_OPTIONS = [
@@ -76,12 +76,12 @@ export default function APIKeysPage() {
     }
   };
 
-  const handleToggle = async (keyId: string, currentEnabled: number) => {
+  const handleToggle = async (keyId: string, currentEnabled: boolean) => {
     try {
       const res = await fetch('/api/keys', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyId, enabled: currentEnabled === 0 })
+        body: JSON.stringify({ keyId, enabled: !currentEnabled })
       });
       if (!res.ok) throw new Error('Failed to toggle key');
       await fetchKeys();
@@ -107,10 +107,10 @@ export default function APIKeysPage() {
   };
 
   const startEditing = (key: APIKey) => {
-    setEditingKeyId(key.key_id);
+    setEditingKeyId(key.keyId);
     setEditingName(key.name);
-    setEditingScopes(key.scopes ? key.scopes.split(',') : ['ingest']);
-    setEditingRetention(String(key.retention_days ?? 0));
+    setEditingScopes(key.scopes && key.scopes.length > 0 ? key.scopes : ['ingest']);
+    setEditingRetention(String(key.retentionDays ?? 0));
   };
 
   const cancelEditing = () => {
@@ -301,23 +301,23 @@ export default function APIKeysPage() {
               </thead>
               <tbody>
                 {keys.map((key) => (
-                  <tr key={key.key_id} className="border-t border-cannon-graphite hover:bg-cannon-steel/50 transition-colors">
+                  <tr key={key.keyId} className="border-t border-cannon-graphite hover:bg-cannon-steel/50 transition-colors">
                     <td className="px-4 py-3">
-                      {editingKeyId === key.key_id ? (
+                      {editingKeyId === key.keyId ? (
                         <div className="flex items-center gap-2">
                           <input
                             type="text"
                             value={editingName}
                             onChange={(e) => setEditingName(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleSaveEdit(key.key_id);
+                              if (e.key === 'Enter') handleSaveEdit(key.keyId);
                               if (e.key === 'Escape') cancelEditing();
                             }}
                             className="input-cannon py-1 px-2 text-sm w-40"
                             autoFocus
                           />
                           <button
-                            onClick={() => handleSaveEdit(key.key_id)}
+                            onClick={() => handleSaveEdit(key.keyId)}
                             className="p-1 rounded hover:bg-cannon-tracer/20 text-cannon-tracer"
                             title="Save"
                           >
@@ -338,14 +338,14 @@ export default function APIKeysPage() {
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
                         <code className="text-text-muted font-mono text-sm">
-                          {maskKey(key.api_key)}
+                          {maskKey(key.apiKey)}
                         </code>
                         <button
-                          onClick={() => copyToClipboard(key.api_key, key.key_id)}
+                          onClick={() => copyToClipboard(key.apiKey, key.keyId)}
                           className="p-1.5 rounded hover:bg-cannon-graphite text-text-muted hover:text-text-primary transition-colors"
                           title="Copy full key"
                         >
-                          {copiedId === key.key_id ? (
+                          {copiedId === key.keyId ? (
                             <Check className="w-4 h-4 text-cannon-tracer" />
                           ) : (
                             <Copy className="w-4 h-4" />
@@ -354,7 +354,7 @@ export default function APIKeysPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      {editingKeyId === key.key_id ? (
+                      {editingKeyId === key.keyId ? (
                         <div className="flex flex-wrap gap-1">
                           {SCOPE_OPTIONS.map(scope => (
                             <button
@@ -374,7 +374,7 @@ export default function APIKeysPage() {
                         </div>
                       ) : (
                         <div className="flex flex-wrap gap-1">
-                          {(key.scopes || 'ingest').split(',').map(scope => (
+                          {(key.scopes && key.scopes.length > 0 ? key.scopes : ['ingest']).map(scope => (
                             <span
                               key={scope}
                               className="px-2 py-0.5 rounded text-xs font-medium bg-cannon-steel text-text-secondary"
@@ -387,7 +387,7 @@ export default function APIKeysPage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {editingKeyId === key.key_id ? (
+                      {editingKeyId === key.keyId ? (
                         <div className="flex items-center gap-1.5">
                           <input
                             type="number"
@@ -395,7 +395,7 @@ export default function APIKeysPage() {
                             value={editingRetention}
                             onChange={(e) => setEditingRetention(e.target.value)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleSaveEdit(key.key_id);
+                              if (e.key === 'Enter') handleSaveEdit(key.keyId);
                               if (e.key === 'Escape') cancelEditing();
                             }}
                             className="input-cannon py-1 px-2 text-sm w-20"
@@ -404,12 +404,12 @@ export default function APIKeysPage() {
                         </div>
                       ) : (
                         <span className="text-text-secondary text-sm font-mono" title="0 = keep forever">
-                          {key.retention_days > 0 ? `${key.retention_days} days` : 'Forever'}
+                          {key.retentionDays > 0 ? `${key.retentionDays} days` : 'Forever'}
                         </span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-text-muted text-sm font-mono hidden md:table-cell">
-                      {key.created_at}
+                      {key.createdAt}
                     </td>
                     <td className="px-4 py-3 text-center">
                       <span
@@ -433,7 +433,7 @@ export default function APIKeysPage() {
                           <Pencil className="w-5 h-5" />
                         </button>
                         <button
-                          onClick={() => handleToggle(key.key_id, key.enabled)}
+                          onClick={() => handleToggle(key.keyId, key.enabled)}
                           className={`p-2 rounded-lg transition-colors ${
                             key.enabled
                               ? 'text-cannon-warning hover:bg-cannon-warning/20'
@@ -444,7 +444,7 @@ export default function APIKeysPage() {
                           {key.enabled ? <ToggleRight className="w-5 h-5" /> : <ToggleLeft className="w-5 h-5" />}
                         </button>
                         <button
-                          onClick={() => handleDelete(key.key_id, key.name)}
+                          onClick={() => handleDelete(key.keyId, key.name)}
                           className="p-2 rounded-lg text-cannon-critical hover:bg-cannon-critical/20 transition-colors"
                           title="Delete"
                         >
