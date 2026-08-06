@@ -100,18 +100,16 @@ func runRetentionPass(conn driver.Conn) {
 }
 
 func fetchPolicies(conn driver.Conn) ([]RetentionPolicy, error) {
-	// Only enabled keys with a positive retention window. retention_days = 0 means
-	// keep forever and is excluded here.
-	//
-	// Multiple API keys can share the same name (= source), so group by name to trim
-	// each source once per pass. If same-named keys disagree on retention, keep the
-	// longer window (max) — the least destructive choice.
+	// logs.key_policies is a projection of the D1 key registry (see
+	// dashboard/src/lib/key-policies.ts), synced after every key mutation.
+	// It already applies the enabled filter, the max(retention_days) grouping
+	// for keys sharing a name, and the retention_days > 0 (keep forever)
+	// exclusion — so this query only needs to read it back with FINAL to
+	// collapse the ReplacingMergeTree.
 	query := `
-		SELECT name, max(retention_days) AS retention_days
-		FROM logs.api_keys
-		WHERE enabled = 1 AND retention_days > 0
-		GROUP BY name
-		HAVING retention_days > 0
+		SELECT source, retention_days
+		FROM logs.key_policies FINAL
+		WHERE retention_days > 0
 	`
 
 	rows, err := conn.Query(context.Background(), query)

@@ -1,8 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError, ApiScope } from '@/lib/api-auth';
 import { listKeys, createKey } from '@/lib/key-registry';
+import { syncKeyPolicies } from '@/lib/key-policies';
 
 const VALID_SCOPES: ApiScope[] = ['ingest', 'read', 'write', 'admin'];
+
+// The D1 write is the source of truth and has already succeeded by the time
+// this runs — a projection failure must never fail the key mutation.
+async function syncKeyPoliciesBestEffort(): Promise<void> {
+  try {
+    await syncKeyPolicies();
+  } catch (error) {
+    console.error('Failed to sync key policies to ClickHouse:', error);
+  }
+}
 
 function validateKeyInput(body: unknown): { valid: true; data: { name: string; scopes: string } } | { valid: false; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
@@ -87,6 +98,7 @@ export async function POST(request: NextRequest) {
 
     // Create the key (returns the full key value and its final scopes)
     const created = await createKey(validation.data.name, validation.data.scopes);
+    await syncKeyPoliciesBestEffort();
 
     // Return the full key (only time it's shown)
     return NextResponse.json({

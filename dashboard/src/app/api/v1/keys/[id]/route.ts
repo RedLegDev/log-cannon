@@ -1,8 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError, ApiScope } from '@/lib/api-auth';
 import { listKeys, updateKey, deleteKey } from '@/lib/key-registry';
+import { syncKeyPolicies } from '@/lib/key-policies';
 
 const VALID_SCOPES: ApiScope[] = ['ingest', 'read', 'write', 'admin'];
+
+// The D1 write is the source of truth and has already succeeded by the time
+// this runs — a projection failure must never fail the key mutation.
+async function syncKeyPoliciesBestEffort(): Promise<void> {
+  try {
+    await syncKeyPolicies();
+  } catch (error) {
+    console.error('Failed to sync key policies to ClickHouse:', error);
+  }
+}
 
 export async function PATCH(
   request: NextRequest,
@@ -65,6 +76,7 @@ export async function PATCH(
 
     if (Object.keys(patch).length > 0) {
       await updateKey(id, patch);
+      await syncKeyPoliciesBestEffort();
     }
 
     return NextResponse.json({ success: true });
@@ -93,6 +105,7 @@ export async function DELETE(
     }
 
     await deleteKey(id);
+    await syncKeyPoliciesBestEffort();
 
     return NextResponse.json({ success: true });
   } catch (error) {

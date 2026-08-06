@@ -1,7 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listKeys, createKey, updateKey, deleteKey } from '@/lib/key-registry';
+import { syncKeyPolicies } from '@/lib/key-policies';
 
 const VALID_SCOPES = ['ingest', 'read', 'write', 'admin'];
+
+// The D1 write is the source of truth and has already succeeded by the time
+// this runs — a projection failure must never fail the key mutation.
+async function syncKeyPoliciesBestEffort(): Promise<void> {
+  try {
+    await syncKeyPolicies();
+  } catch (error) {
+    console.error('Failed to sync key policies to ClickHouse:', error);
+  }
+}
 
 function fail(error: unknown, fallback: string) {
   return NextResponse.json(
@@ -39,6 +50,7 @@ export async function POST(request: NextRequest) {
     if (scopesStr instanceof NextResponse) return scopesStr;
 
     const created = await createKey(name, scopesStr);
+    await syncKeyPoliciesBestEffort();
     return NextResponse.json({ apiKey: created.apiKey, scopes: created.scopes.join(',') });
   } catch (error) {
     return fail(error, 'Failed to create API key');
@@ -82,6 +94,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     await updateKey(keyId, patch);
+    await syncKeyPoliciesBestEffort();
     return NextResponse.json({ success: true });
   } catch (error) {
     return fail(error, 'Failed to update API key');
@@ -95,6 +108,7 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'keyId is required' }, { status: 400 });
     }
     await deleteKey(keyId);
+    await syncKeyPoliciesBestEffort();
     return NextResponse.json({ success: true });
   } catch (error) {
     return fail(error, 'Failed to delete API key');
