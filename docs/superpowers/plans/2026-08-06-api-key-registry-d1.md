@@ -812,7 +812,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://logs.redleg.dev/ingest/
   --data '{"@t":"2026-08-06T00:00:00Z","@mt":"d1 cutover probe"}'
 ```
 
-Expected: `200`.
+Expected: **`201`** — `/ingest/clef` returns 201 with `{"MinimumLevelAccepted":null}`, which is the Seq API contract, not 200. Do not read 201 as a failure and roll back.
 
 - [ ] **Step 4: Verify an unknown key is rejected**
 
@@ -949,7 +949,9 @@ describe("/v1/keys", () => {
       headers: { "X-Seq-ApiKey": apiKey, "Content-Type": "application/json" },
       body: '{"@t":"2026-08-06T00:00:00Z","@mt":"hello"}',
     });
-    expect(ingested.status).toBe(200);
+    // 201 with {"MinimumLevelAccepted":null} is the Seq API contract for a
+    // successful CLEF ingest — see handleCLEF. Not 200.
+    expect(ingested.status).toBe(201);
   });
 
   it("rejects an invalid scope on create", async () => {
