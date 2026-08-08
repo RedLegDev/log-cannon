@@ -60,7 +60,12 @@ jobs:
         working-directory: workers
     steps:
       - uses: actions/checkout@v6
+      # defaults.run.working-directory does not apply to `uses:` steps, so this
+      # action starts at the repo root — where there is no package.json. Point it
+      # at the workspace root so it reads the pinned packageManager field.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: workers/package.json
       - uses: actions/setup-node@v6
         with:
           node-version: 22
