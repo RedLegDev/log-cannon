@@ -49,11 +49,15 @@ The Worker is intentionally dumb — it never parses payloads. All format handli
 | `dashboard` | `tsc --noEmit`, `eslint . --quiet`, `next build` |
 | `docker` (×2: dashboard, queue-consumer) | image builds; the dashboard image must also load better-sqlite3 in the runner stage |
 
-Test coverage is uneven — `queue-consumer` and the ingest Worker have suites, the other two Go services have none, and the dashboard has no unit tests (`next build` + `tsc` are the gate).
+Test coverage is uneven — `queue-consumer` and the ingest Worker have suites, the other two Go services have none, and the dashboard has no unit tests (`next build` + `tsc` are the gate). Tracked in [#60](https://github.com/RedLegDev/log-cannon/issues/60); treat green CI on `alert-worker`, `retention-worker` and the dashboard as "it compiles", not "it works".
 
 **Why the `docker` job exists separately.** `better-sqlite3` is a native module compiled against the image's Node ABI, and `dashboard/Dockerfile` hand-copies its files into the runner stage. A dependency bump can typecheck and `next build` clean and still fail to produce a working image — v13 did exactly that by dropping `bindings`/`file-uri-to-path`. If you touch `better-sqlite3` or the Node base image, the app-level jobs passing means nothing; watch the `docker` job.
 
-**Lint is a ratchet, not a clean slate.** `eslint . --quiet` gates on errors only. `react-hooks/set-state-in-effect` and `react-hooks/immutability` are downgraded to warnings in `dashboard/eslint.config.mjs` because they flag 13 pre-existing spots; run plain `npx eslint .` to see them. Clear those and drop the overrides — don't add new ones to silence new findings.
+**The dashboard image does not build from the lockfile.** `dashboard/Dockerfile` copies only `package.json` and runs `npm install`, so the image re-resolves semver ranges at build time and can ship versions CI never tested. Tracked in [#58](https://github.com/RedLegDev/log-cannon/issues/58). Until that's fixed, a green `docker` job does not mean the deployed image matches `package-lock.json`.
+
+**Lint is a ratchet, not a clean slate.** `eslint . --quiet` gates on errors only. `react-hooks/set-state-in-effect` and `react-hooks/immutability` are downgraded to warnings in `dashboard/eslint.config.mjs` because they flag 13 pre-existing spots ([#59](https://github.com/RedLegDev/log-cannon/issues/59) lists every one); run plain `npx eslint .` to see them. Clear those and drop the overrides — don't add new ones to silence new findings.
+
+**Node base image.** The dashboard stays on `node:24-alpine` (LTS) by choice; the move to node:26 is verified and deferred until Node 26 reaches LTS in Oct 2026 ([#61](https://github.com/RedLegDev/log-cannon/issues/61)). Don't take a dependabot Node bump without reading that issue.
 
 **pnpm in CI:** `defaults.run.working-directory` does not apply to `uses:` steps, so `pnpm/action-setup` needs `package_json_file: workers/package.json` to find the pinned `packageManager`.
 
