@@ -1,4 +1,5 @@
 {
   "name": "log-cannon-workers",
-  "private": true
+  "private": true,
+  "packageManager": "pnpm@11.10.0"
 }
