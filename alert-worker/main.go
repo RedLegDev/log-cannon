@@ -796,7 +796,8 @@ func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
 
 // deriveService extracts a short service slug from an alert name.
 // e.g. "MyApp - Database Failures" → "myapp"
-//      "AcmeCorp Errors"           → "acmecorp"
+//
+//	"AcmeCorp Errors"           → "acmecorp"
 func deriveService(alertName string) string {
 	name := strings.ToLower(alertName)
 	// Take everything before the first " - " or " errors" or " alert"

@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same branch supersedes an in-flight run. main is exempt so
+# every commit that could be deployed keeps its own result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [queue-consumer, alert-worker, retention-worker]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      # gofmt exits 0 even when it reports files, so assert on empty output.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needs to run on:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
+
+  workers:
+    name: workers (ingest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: workers/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --filter @log-cannon/ingest exec tsc --noEmit -p tsconfig.json
+
+      - name: Test
+        run: pnpm --filter @log-cannon/ingest test
+
+      # Catches wrangler.toml / binding regressions without deploying. The
+      # --env production block is the one that actually ships, so check that one.
+      - name: Deploy config (dry run)
+        run: pnpm --filter @log-cannon/ingest exec wrangler deploy --env production --dry-run
+        env:
+          WRANGLER_SEND_METRICS: "false"
+
+  dashboard:
+    name: dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # next build typechecks too, but running tsc first gives a clearer failure.
+      - name: Typecheck
+        run: npm run typecheck
+
+      # --quiet gates on errors only. Warnings are pre-existing React 19 hook
+      # findings, tracked in eslint.config.mjs.
+      - name: Lint
+        run: npx eslint . --quiet
+
+      - name: Build
+        run: npx next build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  # The images are what actually get deployed, and they catch a class of failure
+  # the app-level jobs cannot: better-sqlite3 is a native module compiled against
+  # the image's Node ABI, and the runner stage hand-copies its files. A dependency
+  # bump can typecheck and build clean here and still fail to produce an image.
+  docker:
+    name: docker (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: dashboard
+            context: dashboard
+          - image: queue-consumer
+            context: queue-consumer
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: false
+          load: true
+          tags: log-cannon-${{ matrix.image }}:ci
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # Building the image proves it compiles; this proves it loads. The native
+      # module has failed at require-time before while the build stayed green.
+      - name: Verify better-sqlite3 loads in the runner stage
+        if: matrix.image == 'dashboard'
+        run: |
+          docker run --rm --entrypoint node log-cannon-dashboard:ci -e "
+            const Database = require('better-sqlite3');
+            const db = new Database('/tmp/ci-check.db');
+            db.pragma('journal_mode = WAL');
+            db.exec('CREATE TABLE t (email TEXT PRIMARY KEY, v TEXT NOT NULL)');
+            db.prepare('INSERT INTO t VALUES (?, ?) ON CONFLICT(email) DO UPDATE SET v = excluded.v').run('a@b', 'x');
+            const row = db.prepare('DELETE FROM t WHERE email = ? RETURNING email').get('a@b');
+            if (row === undefined) throw new Error('DELETE ... RETURNING returned no row');
+            console.log('better-sqlite3', require('better-sqlite3/package.json').version, 'OK on', process.version);
+          "

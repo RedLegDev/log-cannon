@@ -163,7 +163,8 @@ func trimSource(conn driver.Conn, p RetentionPolicy) {
 	log.Printf("[%s] Trimming ~%d row(s) older than %d days", p.Source, cnt, p.RetentionDays)
 }
 
-// escapeString mirrors the dashboard's ClickHouse string escaping (single quote -> '').
+// escapeString mirrors the dashboard's ClickHouse string escaping, doubling
+// each single quote.
 func escapeString(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }

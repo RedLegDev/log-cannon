@@ -21,9 +21,9 @@ import (
 
 // QueuePayload mirrors the TypeScript QueuePayload from the Workers.
 type QueuePayload struct {
-	Format      string `json:"format"`      // "clef", "webhook", "otlp-logs", "otlp-traces"
+	Format      string `json:"format"` // "clef", "webhook", "otlp-logs", "otlp-traces"
 	Source      string `json:"source"`
-	Body        string `json:"body"`         // base64-encoded raw request body
+	Body        string `json:"body"` // base64-encoded raw request body
 	ContentType string `json:"contentType"`
 	Preset      string `json:"preset,omitempty"`
 	// Enrich holds request-scoped Cloudflare geo/network context captured at
@@ -104,12 +104,12 @@ func main() {
 	log.Println("Connected to ClickHouse")
 
 	consumer := &Consumer{
-		conn:        conn,
-		accountID:   cfAccountID,
-		queueID:     cfQueueID,
-		apiToken:    cfAPIToken,
-		httpClient:  &http.Client{Timeout: 30 * time.Second},
-		batchSize:   batchSize,
+		conn:       conn,
+		accountID:  cfAccountID,
+		queueID:    cfQueueID,
+		apiToken:   cfAPIToken,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+		batchSize:  batchSize,
 	}
 
 	// Graceful shutdown

@@ -45,3 +45,6 @@ clickhouse-data/
 # generated `.seed.sql` (no hyphen), leaving 33 live keys untracked but
 # committable in a public repo.
 /scripts/.seed*
+
+# TypeScript incremental build cache
+*.tsbuildinfo
