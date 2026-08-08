@@ -35,10 +35,27 @@ The Worker is intentionally dumb — it never parses payloads. All format handli
 
 - **Everything (server side):** `docker compose up -d`. Add `COMPOSE_PROFILES=dev` for the bundled Inbucket mailbox.
 - **Go services:** each has its own `go.mod`. From the service dir: `go build ./...`, `go vet ./...`, `go run .`.
-- **Dashboard:** `cd dashboard && npm install && npm run dev` (`build`, `start`, `lint` also available). Next.js, React 18, Tailwind.
-- **Worker:** `cd workers && pnpm install`, then `cd packages/ingest && pnpm wrangler deploy` (or `pnpm wrangler dev`). pnpm workspace; the Worker is **not** part of Compose.
+- **Dashboard:** `cd dashboard && npm install && npm run dev` (`build`, `start`, `lint`, `typecheck` also available). Next.js, React 19, Tailwind 3.
+- **Worker:** `cd workers && pnpm install`, then `cd packages/ingest && pnpm wrangler deploy` (or `pnpm wrangler dev`). pnpm workspace; the Worker is **not** part of Compose. Tests: `pnpm --filter @log-cannon/ingest test` (vitest on workerd).
 
-There is currently no automated test suite; `.github/` holds only Dependabot config.
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every PR:
+
+| Job | Gates |
+|-----|-------|
+| `go` (×3: queue-consumer, alert-worker, retention-worker) | `gofmt -l` must be empty, then vet, build, test |
+| `workers` | `tsc --noEmit`, vitest, and `wrangler deploy --env production --dry-run` |
+| `dashboard` | `tsc --noEmit`, `eslint . --quiet`, `next build` |
+| `docker` (×2: dashboard, queue-consumer) | image builds; the dashboard image must also load better-sqlite3 in the runner stage |
+
+Test coverage is uneven — `queue-consumer` and the ingest Worker have suites, the other two Go services have none, and the dashboard has no unit tests (`next build` + `tsc` are the gate).
+
+**Why the `docker` job exists separately.** `better-sqlite3` is a native module compiled against the image's Node ABI, and `dashboard/Dockerfile` hand-copies its files into the runner stage. A dependency bump can typecheck and `next build` clean and still fail to produce a working image — v13 did exactly that by dropping `bindings`/`file-uri-to-path`. If you touch `better-sqlite3` or the Node base image, the app-level jobs passing means nothing; watch the `docker` job.
+
+**Lint is a ratchet, not a clean slate.** `eslint . --quiet` gates on errors only. `react-hooks/set-state-in-effect` and `react-hooks/immutability` are downgraded to warnings in `dashboard/eslint.config.mjs` because they flag 13 pre-existing spots; run plain `npx eslint .` to see them. Clear those and drop the overrides — don't add new ones to silence new findings.
+
+**pnpm in CI:** `defaults.run.working-directory` does not apply to `uses:` steps, so `pnpm/action-setup` needs `package_json_file: workers/package.json` to find the pinned `packageManager`.
 
 ## Conventions & gotchas
 
