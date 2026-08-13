@@ -4,8 +4,8 @@ WORKDIR /app
 # Build deps for better-sqlite3 native module (falls back to source build if no musl prebuilt)
 RUN apk add --no-cache python3 make g++
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 FROM node:24-alpine AS builder
 WORKDIR /app
