@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useFetch } from '@/hooks/useFetch';
 import {
   Archive,
   AlertCircle,
@@ -67,30 +68,21 @@ function TypeBadge({ type }: { type: Backup['type'] }) {
 }
 
 export default function BackupsPage() {
-  const [backups, setBackups] = useState<Backup[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data: backups, loading, error, refetch } = useFetch<Backup[]>('/api/v1/backups', {
+    initialData: [],
+    select: (json) => (json as { backups: Backup[] }).backups,
+    errorMessage: 'Failed to fetch backups',
+  });
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchBackups = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const res = await fetch('/api/v1/backups');
-      if (!res.ok) throw new Error('Failed to fetch backups');
-      const data = await res.json();
-      setBackups(data.backups);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch backups');
+      await refetch();
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   };
-
-  useEffect(() => {
-    fetchBackups();
-  }, []);
 
   const totalSize = backups.reduce((sum, b) => sum + b.size, 0);
   const fullCount = backups.filter((b) => b.type === 'full' || b.type === 'legacy').length;

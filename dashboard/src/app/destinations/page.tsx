@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useFetch } from '@/hooks/useFetch';
 import { Plus, X, Trash2, ToggleLeft, ToggleRight, AlertCircle, Loader2, Pencil, Mail, Webhook, ChevronDown, ChevronUp, Send } from 'lucide-react';
 
 interface Destination {
@@ -25,9 +26,10 @@ interface ParsedWebhookConfig {
 }
 
 export default function DestinationsPage() {
-  const [destinations, setDestinations] = useState<Destination[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data: destinations, loading, error, setError, refetch: fetchDestinations } = useFetch<Destination[]>('/api/alert-destinations', {
+    initialData: [],
+    errorMessage: 'Failed to fetch destinations',
+  });
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingDest, setEditingDest] = useState<Destination | null>(null);
 
@@ -41,24 +43,6 @@ export default function DestinationsPage() {
   const [formHeaders, setFormHeaders] = useState<{ key: string; value: string }[]>([]);
   const [formTimeout, setFormTimeout] = useState(10);
   const [saving, setSaving] = useState(false);
-
-  const fetchDestinations = async () => {
-    try {
-      const res = await fetch('/api/alert-destinations');
-      if (!res.ok) throw new Error('Failed to fetch destinations');
-      const data = await res.json();
-      setDestinations(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch destinations');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchDestinations();
-  }, []);
 
   const resetForm = () => {
     setFormName('');

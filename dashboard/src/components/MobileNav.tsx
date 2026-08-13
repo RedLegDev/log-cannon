@@ -53,10 +53,11 @@ interface MobileNavProps {
 
 export function MobileNav({ currentPath, onSignOut }: MobileNavProps) {
   const [isOpen, setIsOpen] = useState(false)
-
-  useEffect(() => {
+  const [pathWhenOpen, setPathWhenOpen] = useState(currentPath)
+  if (currentPath !== pathWhenOpen) {
+    setPathWhenOpen(currentPath)
     setIsOpen(false)
-  }, [currentPath])
+  }
 
   useEffect(() => {
     if (isOpen) {

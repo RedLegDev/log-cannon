@@ -62,9 +62,14 @@ const navItems: NavItem[] = [
 
 function NavDropdown({ item, pathname }: { item: NavDropdownItem; pathname: string }) {
   const [open, setOpen] = useState(false)
+  const [pathWhenOpen, setPathWhenOpen] = useState(pathname)
   const ref = useRef<HTMLDivElement>(null)
 
   const isChildActive = item.children.some((child) => pathname === child.href)
+  if (pathname !== pathWhenOpen) {
+    setPathWhenOpen(pathname)
+    setOpen(false)
+  }
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -84,11 +89,6 @@ function NavDropdown({ item, pathname }: { item: NavDropdownItem; pathname: stri
       document.removeEventListener('keydown', handleEscape)
     }
   }, [open])
-
-  // Close on route change
-  useEffect(() => {
-    setOpen(false)
-  }, [pathname])
 
   return (
     <div ref={ref} className="relative">

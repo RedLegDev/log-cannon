@@ -48,7 +48,7 @@ export default function LiveTailPage() {
   const [logs, setLogs] = useState<LogEvent[]>([])
   const [isRunning, setIsRunning] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [lastTimestamp, setLastTimestamp] = useState<string | null>(null)
+  const lastTimestampRef = useRef<string | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
   const containerRef = useRef<HTMLDivElement>(null)
   const [newLogIds, setNewLogIds] = useState<Set<string>>(new Set())
@@ -56,8 +56,8 @@ export default function LiveTailPage() {
   const fetchLogs = useCallback(async () => {
     try {
       const params = new URLSearchParams()
-      if (lastTimestamp) {
-        params.set('since', lastTimestamp)
+      if (lastTimestampRef.current) {
+        params.set('since', lastTimestampRef.current)
       }
 
       const response = await fetch(`/api/logs/live?${params.toString()}`)
@@ -70,20 +70,27 @@ export default function LiveTailPage() {
         setTimeout(() => setNewLogIds(new Set()), 500)
 
         setLogs(prev => [...data.logs, ...prev].slice(0, 500))
-        setLastTimestamp(data.logs[0].timestamp)
+        lastTimestampRef.current = data.logs[0].timestamp
       }
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to fetch logs')
     }
-  }, [lastTimestamp])
+  }, [])
 
   useEffect(() => {
     if (!isRunning) return
 
-    fetchLogs()
-    const interval = setInterval(fetchLogs, 2000)
-    return () => clearInterval(interval)
+    const interval = setInterval(() => {
+      void fetchLogs()
+    }, 2000)
+    const timeout = window.setTimeout(() => {
+      void fetchLogs()
+    }, 0)
+    return () => {
+      clearInterval(interval)
+      window.clearTimeout(timeout)
+    }
   }, [isRunning, fetchLogs])
 
   useEffect(() => {
@@ -147,7 +154,7 @@ export default function LiveTailPage() {
           <button
             onClick={() => {
               setLogs([])
-              setLastTimestamp(null)
+              lastTimestampRef.current = null
             }}
             className="flex items-center gap-2 px-4 py-2 rounded-lg font-medium btn-cannon-secondary"
           >

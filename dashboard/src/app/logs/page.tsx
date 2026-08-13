@@ -205,7 +205,23 @@ export default async function LogExplorerPage({
           </div>
         </div>
       ) : (
-        <LogExplorer initialLogs={logs} highlightedLogId={resolvedParams.id} />
+        <LogExplorer
+          key={[
+            resolvedParams.source,
+            resolvedParams.level,
+            resolvedParams.search,
+            resolvedParams.time,
+            resolvedParams.from,
+            resolvedParams.to,
+            resolvedParams.id,
+            ...Object.entries(resolvedParams)
+              .filter(([key]) => key.startsWith('prop.'))
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([key, value]) => `${key}=${value}`),
+          ].join('|')}
+          initialLogs={logs}
+          highlightedLogId={resolvedParams.id}
+        />
       )}
     </div>
   )

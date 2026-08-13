@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useFetch } from '@/hooks/useFetch';
 import {
   Database,
   HardDrive,
@@ -66,35 +67,24 @@ function formatNumber(num: number): string {
 }
 
 export default function SystemPage() {
-  const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data: metrics, loading, error, refetch } = useFetch<SystemMetrics | null>('/api/system', {
+    initialData: null,
+    errorMessage: 'Failed to fetch system metrics',
+  });
+  const { data: buildInfo } = useFetch<BuildInfo | null>('/api/version', {
+    initialData: null,
+    optional: true,
+  });
   const [refreshing, setRefreshing] = useState(false);
-  const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
 
   const fetchMetrics = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const res = await fetch('/api/system');
-      if (!res.ok) throw new Error('Failed to fetch system metrics');
-      const data = await res.json();
-      setMetrics(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch system metrics');
+      await refetch();
     } finally {
-      setLoading(false);
       setRefreshing(false);
     }
   };
-
-  useEffect(() => {
-    fetchMetrics();
-    fetch('/api/version')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => setBuildInfo(data))
-      .catch(() => setBuildInfo(null));
-  }, []);
 
   // Determine disk usage color
   const getDiskColor = (percent: number) => {

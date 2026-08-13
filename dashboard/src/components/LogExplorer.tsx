@@ -37,6 +37,7 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
 
   // Check if viewing historical data (custom range with end date)
   const isHistoricalView = searchParams.has('to')
+  const tailing = isTailing && !isHistoricalView
 
   // Build query string from current search params for the live API
   const buildQueryParams = useCallback(() => {
@@ -109,35 +110,26 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
     }
   }, [buildQueryParams, isAtTop])
 
-  // Keep logsRef in sync with logs state
   useEffect(() => {
     logsRef.current = logs
   }, [logs])
 
   // Polling effect
   useEffect(() => {
-    if (!isTailing) return
+    if (!tailing) return
 
-    const interval = setInterval(fetchNewLogs, 2000)
-    // Fetch immediately when starting
-    fetchNewLogs()
+    const interval = setInterval(() => {
+      void fetchNewLogs()
+    }, 2000)
+    const timeout = window.setTimeout(() => {
+      void fetchNewLogs()
+    }, 0)
 
-    return () => clearInterval(interval)
-  }, [isTailing, fetchNewLogs])
-
-  // Reset logs when search params change (new search)
-  useEffect(() => {
-    setLogs(initialLogs)
-    setLastTimestamp(initialLogs.length > 0 ? initialLogs[0].timestamp : null)
-    setNewLogCount(0)
-  }, [initialLogs])
-
-  // Disable tailing when viewing historical data
-  useEffect(() => {
-    if (isHistoricalView && isTailing) {
-      setIsTailing(false)
+    return () => {
+      clearInterval(interval)
+      window.clearTimeout(timeout)
     }
-  }, [isHistoricalView, isTailing])
+  }, [tailing, fetchNewLogs])
 
   // Intersection observer for scroll detection
   useEffect(() => {
@@ -201,7 +193,7 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
           title={isHistoricalView ? 'Tailing disabled for historical time ranges' : undefined}
           className={`
             flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all
-            ${isTailing
+            ${tailing
               ? 'bg-cannon-tracer/20 text-cannon-tracer border border-cannon-tracer/30 animate-pulse-slow'
               : 'bg-cannon-steel text-text-secondary hover:text-text-primary hover:bg-cannon-graphite border border-cannon-graphite'
             }
@@ -209,7 +201,7 @@ export function LogExplorer({ initialLogs, highlightedLogId }: LogExplorerProps)
           `}
         >
           <Radio className="w-4 h-4" />
-          {isTailing ? 'Tailing...' : 'Tail'}
+          {tailing ? 'Tailing...' : 'Tail'}
         </button>
       </div>
 

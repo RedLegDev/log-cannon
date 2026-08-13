@@ -55,7 +55,7 @@ Test coverage is uneven — `queue-consumer` and the ingest Worker have suites, 
 
 **The dashboard image installs from the lockfile.** `dashboard/Dockerfile` copies `package.json` + `package-lock.json` and runs `npm ci` (no `--omit=dev` — `next build` needs devDeps). A green `docker` job means the image matches the lockfile, including the native `better-sqlite3` ABI compiled in the runner stage.
 
-**Lint is a ratchet, not a clean slate.** `eslint . --quiet` gates on errors only. `react-hooks/set-state-in-effect` and `react-hooks/immutability` are downgraded to warnings in `dashboard/eslint.config.mjs` because they flag 13 pre-existing spots ([#59](https://github.com/RedLegDev/log-cannon/issues/59) lists every one); run plain `npx eslint .` to see them. Clear those and drop the overrides — don't add new ones to silence new findings.
+**Lint is a ratchet, not a clean slate.** `eslint . --quiet` gates the dashboard job. Don't add rule overrides to silence new findings — fix the code. Client data loading goes through `dashboard/src/hooks/useFetch.ts` (setState in the fetch callbacks, not the effect body) so `react-hooks/set-state-in-effect` stays satisfied.
 
 **Node base image.** The dashboard stays on `node:24-alpine` (LTS) by choice; the move to node:26 is verified and deferred until Node 26 reaches LTS in Oct 2026 ([#61](https://github.com/RedLegDev/log-cannon/issues/61)). Don't take a dependabot Node bump without reading that issue.
 

@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Bell, Plus, X, Trash2, ToggleLeft, ToggleRight, AlertCircle, Loader2, Pencil, Play, ChevronDown, ChevronUp } from 'lucide-react';
+import { useFetch } from '@/hooks/useFetch';
 
 interface Alert {
   id: string;
@@ -36,16 +37,18 @@ interface TestResult {
 }
 
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data: alerts, loading, error, setError, refetch: fetchAlerts } = useFetch<Alert[]>('/api/alerts', {
+    initialData: [],
+    errorMessage: 'Failed to fetch alerts',
+  });
+  const { data: availableDestinations } = useFetch<Destination[]>('/api/alert-destinations', {
+    initialData: [],
+    optional: true,
+  });
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingAlert, setEditingAlert] = useState<Alert | null>(null);
   const [testingAlertId, setTestingAlertId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
-
-  // Destinations
-  const [availableDestinations, setAvailableDestinations] = useState<Destination[]>([]);
 
   // Form state
   const [formName, setFormName] = useState('');
@@ -57,34 +60,6 @@ export default function AlertsPage() {
   const [formDestinationIds, setFormDestinationIds] = useState<string[]>([]);
   const [formSubject, setFormSubject] = useState('');
   const [saving, setSaving] = useState(false);
-
-  const fetchAlerts = async () => {
-    try {
-      const res = await fetch('/api/alerts');
-      if (!res.ok) throw new Error('Failed to fetch alerts');
-      const data = await res.json();
-      setAlerts(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch alerts');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchDestinations = async () => {
-    try {
-      const res = await fetch('/api/alert-destinations');
-      if (res.ok) setAvailableDestinations(await res.json());
-    } catch {
-      // silently fail - destinations are optional
-    }
-  };
-
-  useEffect(() => {
-    fetchAlerts();
-    fetchDestinations();
-  }, []);
 
   const resetForm = () => {
     setFormName('');

@@ -37,9 +37,12 @@ export function WidgetContainer({ widget, dashboardName, children }: WidgetConta
     }
   }, [dashboardName, widget.id]);
 
-  // Initial fetch
+  // Initial fetch — timer callback so setState is not in the effect body
   useEffect(() => {
-    fetchData();
+    const timeoutId = window.setTimeout(() => {
+      void fetchData();
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
   }, [fetchData]);
 
   // Auto-refresh (per-widget interval)

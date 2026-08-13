@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useFetch } from '@/hooks/useFetch';
 
 interface SavedQuery {
   id: string;
@@ -15,26 +15,10 @@ interface SavedQuery {
 }
 
 export default function QueriesPage() {
-  const [queries, setQueries] = useState<SavedQuery[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchQueries();
-  }, []);
-
-  async function fetchQueries() {
-    try {
-      const res = await fetch('/api/queries');
-      if (!res.ok) throw new Error('Failed to fetch queries');
-      const data = await res.json();
-      setQueries(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch queries');
-    } finally {
-      setLoading(false);
-    }
-  }
+  const { data: queries, loading, error, setData } = useFetch<SavedQuery[]>('/api/queries', {
+    initialData: [],
+    errorMessage: 'Failed to fetch queries',
+  });
 
   async function handleDelete(id: string) {
     if (!confirm('Delete this saved query?')) return;
@@ -46,7 +30,7 @@ export default function QueriesPage() {
         body: JSON.stringify({ id })
       });
       if (!res.ok) throw new Error('Failed to delete query');
-      setQueries(queries.filter(q => q.id !== id));
+      setData((current) => current.filter(q => q.id !== id));
     } catch (e) {
       alert(e instanceof Error ? e.message : 'Failed to delete query');
     }

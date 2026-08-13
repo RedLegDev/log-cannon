@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useFetch } from '@/hooks/useFetch';
 import { Key, Plus, Copy, Check, X, Trash2, ToggleLeft, ToggleRight, AlertCircle, Loader2, Terminal, Pencil } from 'lucide-react';
 
 interface APIKey {
@@ -21,9 +22,10 @@ const SCOPE_OPTIONS = [
 ];
 
 export default function APIKeysPage() {
-  const [keys, setKeys] = useState<APIKey[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data: keys, loading, error, setError, refetch: fetchKeys } = useFetch<APIKey[]>('/api/keys', {
+    initialData: [],
+    errorMessage: 'Failed to fetch API keys',
+  });
   const [newKeyName, setNewKeyName] = useState('');
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -33,24 +35,6 @@ export default function APIKeysPage() {
   const [newKeyScopes, setNewKeyScopes] = useState<string[]>(['ingest']);
   const [editingScopes, setEditingScopes] = useState<string[]>([]);
   const [editingRetention, setEditingRetention] = useState('0');
-
-  const fetchKeys = async () => {
-    try {
-      const res = await fetch('/api/keys');
-      if (!res.ok) throw new Error('Failed to fetch keys');
-      const data = await res.json();
-      setKeys(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch API keys');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchKeys();
-  }, []);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
