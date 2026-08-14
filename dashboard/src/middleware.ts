@@ -1,10 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { parseSessionCookie, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 
+// Cookie-session UI routes (including /api/alerts) are NOT public — they
+// rely on this middleware. /api/v1/* and /api/mcp authenticate themselves
+// with an API key; do not add other /api/* prefixes here without checking
+// that the handler actually does its own auth.
 const PUBLIC_PREFIXES = [
   "/api/v1/",
   "/api/mcp",
-  "/api/alerts",
 ];
 
 const PUBLIC_PATHS = new Set([
