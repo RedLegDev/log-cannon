@@ -123,6 +123,29 @@ updates:
         patterns:
           - "*"
 
+  - package-ecosystem: "gomod"
+    directory: "/retention-worker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "chore(retention-worker)"
+    groups:
+      retention-worker-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+      retention-worker-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
   # ── Docker base images ─────────────────────────────────────────────────────
   # Only pinned tags are updated; floating tags (e.g. :latest) are ignored by Dependabot.
   - package-ecosystem: "docker"
@@ -132,6 +155,7 @@ updates:
       - "/clickhouse"
       - "/dashboard"
       - "/queue-consumer"
+      - "/retention-worker"
     schedule:
       interval: "weekly"
       day: "monday"
