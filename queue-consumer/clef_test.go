@@ -89,3 +89,43 @@ func TestApplyEnrichment_NilIsNoop(t *testing.T) {
 		t.Errorf("nil enrich changed properties: %+v", p)
 	}
 }
+
+func TestParseCLEFBody_SkipsBadLineKeepsSiblings(t *testing.T) {
+	body := []byte("" +
+		`{"@t":"2026-01-01T00:00:00Z","@mt":"one"}` + "\n" +
+		`not-json` + "\n" +
+		`{"@t":"2026-01-01T00:00:01Z","@mt":"three"}` + "\n")
+
+	events, err := parseCLEFBody(body, "svc", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	if events[0].MessageTemplate != "one" || events[1].MessageTemplate != "three" {
+		t.Errorf("templates = %q, %q; want one, three", events[0].MessageTemplate, events[1].MessageTemplate)
+	}
+}
+
+func TestParseCLEFBody_AllBadLinesError(t *testing.T) {
+	body := []byte("not-json\n{\"@mt\":\"missing @t\"}\n")
+
+	events, err := parseCLEFBody(body, "svc", nil)
+	if err == nil {
+		t.Fatal("expected error when every line fails")
+	}
+	if events != nil {
+		t.Errorf("got %d events, want nil", len(events))
+	}
+}
+
+func TestParseCLEFBody_EmptyIsOK(t *testing.T) {
+	events, err := parseCLEFBody([]byte("\n\n"), "svc", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("got %d events, want 0", len(events))
+	}
+}

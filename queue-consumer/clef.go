@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -13,11 +14,18 @@ import (
 // enrich map carries request-scoped geo/network context captured at the edge;
 // each key is added as a property only when the event doesn't already provide
 // a non-empty value for it (never overwriting caller-stamped fields).
+//
+// A malformed line is skipped (same as webhook ingest) so one bad event in a
+// Serilog batch does not drop the rest of the chunk. The payload is only
+// rejected when every non-empty line fails — then the queue message can be
+// dead-lettered instead of retried forever.
 func parseCLEFBody(body []byte, source string, enrich map[string]string) ([]LogEvent, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	var events []LogEvent
+	skipped := 0
+	var lastErr error
 	lineNum := 0
 
 	for scanner.Scan() {
@@ -29,14 +37,27 @@ func parseCLEFBody(body []byte, source string, enrich map[string]string) ([]LogE
 
 		event, err := parseCLEFLine(line, source, enrich)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", lineNum, err)
+			skipped++
+			lastErr = fmt.Errorf("line %d: %w", lineNum, err)
+			continue
 		}
 		if event != nil {
 			events = append(events, *event)
 		}
 	}
 
-	return events, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return events, err
+	}
+
+	if skipped > 0 {
+		log.Printf("CLEF ingest: %d malformed line(s) skipped", skipped)
+	}
+	if len(events) == 0 && lastErr != nil {
+		return nil, fmt.Errorf("all %d CLEF line(s) failed to parse (last: %w)", skipped, lastErr)
+	}
+
+	return events, nil
 }
 
 func parseCLEFLine(line string, source string, enrich map[string]string) (*LogEvent, error) {
