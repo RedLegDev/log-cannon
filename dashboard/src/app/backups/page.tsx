@@ -68,7 +68,7 @@ function TypeBadge({ type }: { type: Backup['type'] }) {
 }
 
 export default function BackupsPage() {
-  const { data: backups, loading, error, refetch } = useFetch<Backup[]>('/api/v1/backups', {
+  const { data: backups, loading, error, refetch } = useFetch<Backup[]>('/api/backups', {
     initialData: [],
     select: (json) => (json as { backups: Backup[] }).backups,
     errorMessage: 'Failed to fetch backups',
