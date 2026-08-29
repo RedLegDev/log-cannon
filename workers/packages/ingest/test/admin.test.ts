@@ -95,4 +95,57 @@ describe("/v1/keys", () => {
     ).first();
     expect(row).toBeNull();
   });
+
+  it("returns 409 when deleting the last enabled admin key", async () => {
+    const res = await SELF.fetch("https://x/v1/keys/id-admin-key", {
+      method: "DELETE",
+      headers: { "X-Api-Key": "admin-key" },
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/wrangler d1 execute/);
+
+    const row = await env.KEYS_DB.prepare(
+      "SELECT key_id FROM api_keys WHERE key_id = 'id-admin-key'",
+    ).first();
+    expect(row).not.toBeNull();
+  });
+
+  it("returns 409 when demoting the last admin via scopes PATCH", async () => {
+    const res = await SELF.fetch("https://x/v1/keys/id-admin-key", {
+      method: "PATCH",
+      headers: { "X-Api-Key": "admin-key", "Content-Type": "application/json" },
+      body: JSON.stringify({ scopes: "ingest" }),
+    });
+    expect(res.status).toBe(409);
+
+    const row = await env.KEYS_DB.prepare(
+      "SELECT scopes FROM api_keys WHERE key_id = 'id-admin-key'",
+    ).first<{ scopes: string }>();
+    expect(row?.scopes).toBe("admin");
+  });
+
+  it("returns 409 when disabling the last admin via enabled PATCH", async () => {
+    const res = await SELF.fetch("https://x/v1/keys/id-admin-key", {
+      method: "PATCH",
+      headers: { "X-Api-Key": "admin-key", "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(res.status).toBe(409);
+
+    const row = await env.KEYS_DB.prepare(
+      "SELECT enabled FROM api_keys WHERE key_id = 'id-admin-key'",
+    ).first<{ enabled: number }>();
+    expect(row?.enabled).toBe(1);
+  });
+
+  it("allows deleting an admin when another enabled admin remains", async () => {
+    await seed("admin-key-2", "admin");
+
+    const res = await SELF.fetch("https://x/v1/keys/id-admin-key", {
+      method: "DELETE",
+      headers: { "X-Api-Key": "admin-key-2" },
+    });
+    expect(res.status).toBe(200);
+  });
 });

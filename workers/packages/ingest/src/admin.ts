@@ -16,6 +16,42 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+const LAST_ADMIN_ERROR =
+  "Cannot remove the last enabled admin key. Create another admin key first, or recover with wrangler d1 execute (see README bootstrap INSERT).";
+
+function isEnabledAdmin(record: APIKeyRecord): boolean {
+  return record.enabled && hasScope(record, "admin");
+}
+
+/**
+ * True when applying `next` (or deleting when `next` is null) would leave
+ * zero enabled admin-capable keys. Uses the same hasScope hierarchy as auth.
+ */
+async function wouldRemoveLastAdmin(
+  db: D1Database,
+  keyId: string,
+  next: { enabled?: boolean; scopes?: string } | null,
+): Promise<boolean> {
+  const keys = await listKeys(db);
+  const target = keys.find((k) => k.keyId === keyId);
+  if (!target || !isEnabledAdmin(target)) return false;
+
+  if (next !== null) {
+    const nextRecord: APIKeyRecord = {
+      ...target,
+      enabled: next.enabled !== undefined ? next.enabled : target.enabled,
+      scopes:
+        next.scopes !== undefined ? parseScopes(next.scopes) : target.scopes,
+    };
+    if (isEnabledAdmin(nextRecord)) return false;
+  }
+
+  const otherAdmins = keys.filter(
+    (k) => k.keyId !== keyId && isEnabledAdmin(k),
+  ).length;
+  return otherAdmins === 0;
+}
+
 /**
  * Admin API for the key registry. This is the only write path into `api_keys`
  * — the dashboard calls it rather than writing a store of its own, so the
@@ -93,6 +129,15 @@ export async function handleAdminKeys(
       return json({ error: "retentionDays must be an integer >= 0" }, 400);
     }
 
+    if (
+      await wouldRemoveLastAdmin(db, keyId, {
+        enabled: body.enabled,
+        scopes: body.scopes as string | undefined,
+      })
+    ) {
+      return json({ error: LAST_ADMIN_ERROR }, 409);
+    }
+
     const changed = await updateKey(db, keyId, {
       name: body.name,
       enabled: body.enabled,
@@ -104,6 +149,9 @@ export async function handleAdminKeys(
   }
 
   if (request.method === "DELETE") {
+    if (await wouldRemoveLastAdmin(db, keyId, null)) {
+      return json({ error: LAST_ADMIN_ERROR }, 409);
+    }
     const deleted = await deleteKey(db, keyId);
     if (!deleted) return json({ error: "Key not found" }, 404);
     return json({ success: true });
