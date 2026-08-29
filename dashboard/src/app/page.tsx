@@ -12,7 +12,7 @@ import {
   AlertWithStatus
 } from '@/lib/clickhouse'
 import { MetricCard } from '@/components/MetricCard'
-import { AlertStatusCard } from '@/components/AlertStatusCard'
+import { AlertStatusPanel } from '@/components/AlertStatusPanel'
 import { DashboardCard } from '@/components/DashboardCard'
 import {
   Activity,
@@ -22,8 +22,7 @@ import {
   Search,
   LayoutDashboard,
   ChevronRight,
-  AlertCircle,
-  Bell
+  AlertCircle
 } from 'lucide-react'
 
 function formatNumber(num: number): string {
@@ -178,35 +177,7 @@ export default async function HomePage() {
               />
             </div>
 
-            {/* Alert Status Cards */}
-            {alertsWithStatus.length > 0 && (
-              <div className="mb-8">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-text-primary flex items-center gap-2">
-                    <Bell className="w-5 h-5 text-cannon-fire" />
-                    Alert Status
-                  </h2>
-                  <Link
-                    href="/alerts"
-                    className="text-sm text-text-secondary hover:text-cannon-fire transition-colors flex items-center gap-1"
-                  >
-                    Manage alerts <ChevronRight className="w-4 h-4" />
-                  </Link>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {alertsWithStatus.map(alert => (
-                    <AlertStatusCard
-                      key={alert.id}
-                      id={alert.id}
-                      name={alert.name}
-                      description={alert.description}
-                      status={alert.status}
-                      minutesAgo={alert.minutes_ago}
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
+            <AlertStatusPanel alerts={alertsWithStatus} />
 
             {/* Two Column Layout */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
