@@ -62,10 +62,54 @@ func getPreset(name string) WebhookPreset {
 	return defaultPreset
 }
 
-// parseWebhookBody parses an NDJSON webhook body into LogEvents.
+// parseWebhookBody parses a webhook body into LogEvents.
+// Accepts a JSON array (compact or pretty-printed), NDJSON (one object per
+// line), or a single JSON object on one line. The ingest Worker already
+// enqueues bodies starting with `{` or `[`; without the array path a compact
+// `[{...}]` is one line that fails Unmarshal into a map and stores nothing.
 func parseWebhookBody(body []byte, source string, presetName string) ([]LogEvent, error) {
 	preset := getPreset(presetName)
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
 
+	if trimmed[0] == '[' {
+		return parseWebhookArray(trimmed, source, preset)
+	}
+	return parseWebhookNDJSON(trimmed, source, preset)
+}
+
+func parseWebhookArray(body []byte, source string, preset WebhookPreset) ([]LogEvent, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(body, &items); err != nil {
+		log.Printf("Webhook ingest: invalid JSON array: %v", err)
+		return nil, fmt.Errorf("invalid JSON array: %w", err)
+	}
+
+	var events []LogEvent
+	skipped := 0
+	for _, item := range items {
+		var raw map[string]interface{}
+		if err := json.Unmarshal(item, &raw); err != nil {
+			skipped++
+			continue
+		}
+		events = append(events, mapWebhookEvent(raw, preset, source))
+	}
+
+	if skipped > 0 {
+		log.Printf("Webhook ingest: %d non-object array elements skipped", skipped)
+	}
+	if len(events) == 0 && len(items) > 0 {
+		log.Printf("Webhook ingest: 0 events from %d-element array (%d skipped)", len(items), skipped)
+		return nil, fmt.Errorf("webhook array produced 0 events (%d elements, %d skipped)", len(items), skipped)
+	}
+
+	return events, nil
+}
+
+func parseWebhookNDJSON(body []byte, source string, preset WebhookPreset) ([]LogEvent, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
@@ -84,15 +128,22 @@ func parseWebhookBody(body []byte, source string, presetName string) ([]LogEvent
 			continue
 		}
 
-		event := mapWebhookEvent(raw, preset, source)
-		events = append(events, event)
+		events = append(events, mapWebhookEvent(raw, preset, source))
+	}
+
+	if err := scanner.Err(); err != nil {
+		return events, err
 	}
 
 	if errors > 0 {
 		log.Printf("Webhook ingest: %d malformed lines skipped", errors)
 	}
+	if len(events) == 0 && errors > 0 {
+		log.Printf("Webhook ingest: 0 events after skipping %d malformed lines", errors)
+		return nil, fmt.Errorf("webhook NDJSON produced 0 events (%d malformed lines)", errors)
+	}
 
-	return events, scanner.Err()
+	return events, nil
 }
 
 func levelFromHTTPStatus(status int) string {
