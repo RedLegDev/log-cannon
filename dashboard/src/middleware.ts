@@ -10,6 +10,9 @@ const PUBLIC_PREFIXES = [
   "/api/mcp",
 ];
 
+// /llms.txt and /llms.txt/* stay public for LLM discovery (static docs only).
+// Live inventory (sources, property samples, endpoint SQL) is gated inside
+// the overview route by session cookie — see app/llms.txt/route.ts.
 const PUBLIC_PATHS = new Set([
   "/login",
   "/api/auth/send-otp",
