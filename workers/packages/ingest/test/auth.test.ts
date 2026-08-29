@@ -62,6 +62,20 @@ describe("authenticate", () => {
     expect(res.status).toBe(201);
   });
 
+  it("accepts apiKey from the query string (sendBeacon clients)", async () => {
+    await insert({ apiKey: "k-query", name: "Beacon" });
+
+    const res = await SELF.fetch(
+      "https://logs.example.com/ingest/clef?apiKey=k-query",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: CLEF_BODY,
+      },
+    );
+    expect(res.status).toBe(201);
+  });
+
   it("returns 500 (not 403) when the key store itself is unavailable", async () => {
     await insert({ apiKey: "k-good", name: "Readerful" });
     // Ensure the cache doesn't mask the outage by serving a stale hit.

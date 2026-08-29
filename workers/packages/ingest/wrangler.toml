@@ -3,20 +3,27 @@ main = "src/index.ts"
 compatibility_date = "2024-12-30"
 
 # Replace yourdomain.com with the zone that fronts your ingest hostname.
+#
+# Trailing `*` on path routes is required: CF route matching includes the query
+# string, and patterns may not contain `?…`. Without the wildcard, `?apiKey=` /
+# `?preset=` requests miss the Worker and fall through to the dashboard (307).
+# See https://developers.cloudflare.com/workers/configuration/routing/routes/
+# ("Matching behavior"). The ingest hostname has no other services, so the
+# suffix wildcard cannot over-capture dashboard paths.
 routes = [
-  { pattern = "logs.yourdomain.com/v1/logs", zone_name = "yourdomain.com" },
-  { pattern = "logs.yourdomain.com/v1/traces", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/logs*", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/traces*", zone_name = "yourdomain.com" },
   { pattern = "logs.yourdomain.com/ingest/otlp/*", zone_name = "yourdomain.com" },
-  { pattern = "logs.yourdomain.com/ingest/webhook", zone_name = "yourdomain.com" },
-  { pattern = "logs.yourdomain.com/ingest/clef", zone_name = "yourdomain.com" },
-  { pattern = "logs.yourdomain.com/api/events/raw", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/ingest/webhook*", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/ingest/clef*", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/api/events/raw*", zone_name = "yourdomain.com" },
   # Uptime / probe path. Without this the handler deploys but /health falls
   # through to the dashboard and 307s to login (same class of bug as /v1/keys).
-  { pattern = "logs.yourdomain.com/health", zone_name = "yourdomain.com" },
-  # Key registry admin API. Without these the handler deploys but is unreachable —
+  { pattern = "logs.yourdomain.com/health*", zone_name = "yourdomain.com" },
+  # Key registry admin API. Trailing * covers /v1/keys, /v1/keys/{id}, and
+  # query strings. Without these the handler deploys but is unreachable —
   # the request falls through to the dashboard and 307s to its login page.
-  { pattern = "logs.yourdomain.com/v1/keys", zone_name = "yourdomain.com" },
-  { pattern = "logs.yourdomain.com/v1/keys/*", zone_name = "yourdomain.com" },
+  { pattern = "logs.yourdomain.com/v1/keys*", zone_name = "yourdomain.com" },
 ]
 
 [[queues.producers]]
@@ -40,19 +47,19 @@ migrations_dir = "migrations"
 [env.production]
 name = "log-cannon-ingest"
 routes = [
-  { pattern = "logs.redleg.dev/v1/logs", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/v1/traces", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/v1/logs*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/v1/traces*", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/ingest/otlp/*", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/ingest/webhook", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/ingest/clef", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/api/events/raw", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/webhook*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/ingest/clef*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/api/events/raw*", zone_name = "redleg.dev" },
   # Uptime / probe path. Without this the handler deploys but /health falls
   # through to the dashboard and 307s to login (same class of bug as /v1/keys).
-  { pattern = "logs.redleg.dev/health", zone_name = "redleg.dev" },
-  # Key registry admin API. Without these the handler deploys but is unreachable —
+  { pattern = "logs.redleg.dev/health*", zone_name = "redleg.dev" },
+  # Key registry admin API. Trailing * covers /v1/keys, /v1/keys/{id}, and
+  # query strings. Without these the handler deploys but is unreachable —
   # the request falls through to the dashboard and 307s to its login page.
-  { pattern = "logs.redleg.dev/v1/keys", zone_name = "redleg.dev" },
-  { pattern = "logs.redleg.dev/v1/keys/*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/v1/keys*", zone_name = "redleg.dev" },
 ]
 
 [[env.production.queues.producers]]
@@ -64,4 +71,3 @@ binding = "KEYS_DB"
 database_name = "log-cannon-keys"
 database_id = "5809a419-53ba-4f3e-9c8f-f830339c8f25"
 migrations_dir = "migrations"
-
