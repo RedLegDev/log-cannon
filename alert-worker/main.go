@@ -33,7 +33,8 @@ type Alert struct {
 }
 
 type AlertState struct {
-	LastRun time.Time
+	LastRun         time.Time
+	LastTriggeredAt time.Time // in-memory; covers CH async UPDATE lag past the next interval
 }
 
 type Destination struct {
@@ -165,17 +166,22 @@ func main() {
 				continue
 			}
 
-			// Check cooldown using last_triggered_at from database
-			if now.Sub(alert.LastTriggeredAt) < time.Duration(alert.CooldownSeconds)*time.Second {
-				log.Printf("[%s] Alert triggered but in cooldown (last triggered: %v)", alert.ID, alert.LastTriggeredAt)
+			// Cooldown: prefer in-memory LastTriggeredAt when newer than DB
+			// (ALTER TABLE UPDATE is async and can lag past the next interval).
+			lastTriggered := effectiveLastTriggered(alert.LastTriggeredAt, s.LastTriggeredAt)
+			if now.Sub(lastTriggered) < time.Duration(alert.CooldownSeconds)*time.Second {
+				log.Printf("[%s] Alert triggered but in cooldown (last triggered: %v)", alert.ID, lastTriggered)
 				continue
 			}
 
-			// Send alert
+			// Send alert — only start cooldown when at least one destination accepted
 			log.Printf("[%s] Sending alert: %s", alert.ID, alert.Name)
-			dispatchAlert(conn, alert, result, saasMailAPIKey, saasMailURL, fromEmail, dashboardURL)
+			if err := dispatchAlert(conn, alert, result, saasMailAPIKey, saasMailURL, fromEmail, dashboardURL); err != nil {
+				log.Printf("[%s] Dispatch failed (cooldown not started): %v", alert.ID, err)
+				continue
+			}
 
-			// Update last_triggered_at in database
+			s.LastTriggeredAt = now
 			if err := updateLastTriggered(conn, alert.ID); err != nil {
 				log.Printf("[%s] Failed to update last_triggered_at: %v", alert.ID, err)
 			}
@@ -275,6 +281,15 @@ func updateLastTriggered(conn driver.Conn, alertID string) error {
 	`, alertID)
 
 	return conn.Exec(context.Background(), query)
+}
+
+// effectiveLastTriggered picks the later of DB and in-memory timestamps so
+// cooldown still applies while ClickHouse's async ALTER lags.
+func effectiveLastTriggered(dbTime, memTime time.Time) time.Time {
+	if memTime.After(dbTime) {
+		return memTime
+	}
+	return dbTime
 }
 
 func executeQuery(conn driver.Conn, query string) (map[string]interface{}, error) {
@@ -641,7 +656,10 @@ func sendEmail(apiKey, apiURL, from, to, subject, textBody, htmlBody string) err
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	resp, err := http.DefaultClient.Do(req)
+	// Bounded client — matching sendWebhook. http.DefaultClient has no timeout
+	// and a hung SAASMAIL_API_URL blocks the single-threaded alert loop.
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -721,77 +739,99 @@ func sendWebhook(cfg WebhookConfig, payload WebhookPayload) error {
 }
 
 func dispatchAlert(conn driver.Conn, alert Alert, result map[string]interface{},
-	saasMailAPIKey, saasMailURL, fromEmail, dashboardURL string) {
+	saasMailAPIKey, saasMailURL, fromEmail, dashboardURL string) error {
 
 	textBody, htmlBody := formatAlertBody(alert, result, dashboardURL)
+	delivered := 0
 
-	// New destinations path
+	tryLegacyRecipients := func() {
+		for _, recipient := range alert.Recipients {
+			if saasMailAPIKey == "" {
+				log.Printf("[%s] Cannot send email to %s: SAASMAIL_API_KEY not set", alert.ID, recipient)
+				continue
+			}
+			if err := sendEmail(saasMailAPIKey, saasMailURL, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
+				log.Printf("[%s] Failed to send email to %s: %v", alert.ID, recipient, err)
+			} else {
+				log.Printf("[%s] Email sent to %s", alert.ID, recipient)
+				delivered++
+			}
+		}
+	}
+
 	if len(alert.DestinationIDs) > 0 {
 		destinations, err := fetchDestinationsByIDs(conn, alert.DestinationIDs)
 		if err != nil {
-			log.Printf("[%s] Failed to fetch destinations: %v", alert.ID, err)
-		}
-		for _, dest := range destinations {
-			switch dest.Type {
-			case "email":
-				var cfg EmailConfig
-				if err := json.Unmarshal([]byte(dest.Config), &cfg); err != nil {
-					log.Printf("[%s] Bad email config for dest %s: %v", alert.ID, dest.ID, err)
-					continue
+			log.Printf("[%s] Failed to fetch destinations: %v; falling back to Recipients", alert.ID, err)
+			tryLegacyRecipients()
+		} else if len(destinations) == 0 {
+			log.Printf("[%s] No enabled destinations matched; falling back to Recipients", alert.ID)
+			tryLegacyRecipients()
+		} else {
+			for _, dest := range destinations {
+				switch dest.Type {
+				case "email":
+					var cfg EmailConfig
+					if err := json.Unmarshal([]byte(dest.Config), &cfg); err != nil {
+						log.Printf("[%s] Bad email config for dest %s: %v", alert.ID, dest.ID, err)
+						continue
+					}
+					from := fromEmail
+					if cfg.From != "" {
+						from = cfg.From
+					}
+					if saasMailAPIKey == "" {
+						log.Printf("[%s] Cannot send email to %s: SAASMAIL_API_KEY not set", alert.ID, cfg.Email)
+						continue
+					}
+					if err := sendEmail(saasMailAPIKey, saasMailURL, from, cfg.Email, alert.Subject, textBody, htmlBody); err != nil {
+						log.Printf("[%s] Email to %s failed: %v", alert.ID, cfg.Email, err)
+					} else {
+						log.Printf("[%s] Email sent to %s via dest %s", alert.ID, cfg.Email, dest.Name)
+						delivered++
+					}
+				case "webhook":
+					var cfg WebhookConfig
+					if err := json.Unmarshal([]byte(dest.Config), &cfg); err != nil {
+						log.Printf("[%s] Bad webhook config for dest %s: %v", alert.ID, dest.ID, err)
+						continue
+					}
+					payload := WebhookPayload{
+						AlertID:     alert.ID,
+						AlertName:   alert.Name,
+						Service:     deriveService(alert.Name),
+						Description: alert.Description,
+						Query:       alert.Query,
+						Condition:   alert.Condition,
+						TriggeredAt: time.Now().UTC().Format(time.RFC3339),
+						QueryResult: result,
+					}
+					if err := sendWebhook(cfg, payload); err != nil {
+						log.Printf("[%s] Webhook to %s failed: %v", alert.ID, cfg.URL, err)
+					} else {
+						log.Printf("[%s] Webhook sent to %s via dest %s", alert.ID, cfg.URL, dest.Name)
+						delivered++
+					}
+				default:
+					log.Printf("[%s] Unknown destination type: %s", alert.ID, dest.Type)
 				}
-				from := fromEmail
-				if cfg.From != "" {
-					from = cfg.From
-				}
-				if saasMailAPIKey == "" {
-					log.Printf("[%s] Cannot send email to %s: SAASMAIL_API_KEY not set", alert.ID, cfg.Email)
-					continue
-				}
-				if err := sendEmail(saasMailAPIKey, saasMailURL, from, cfg.Email, alert.Subject, textBody, htmlBody); err != nil {
-					log.Printf("[%s] Email to %s failed: %v", alert.ID, cfg.Email, err)
-				} else {
-					log.Printf("[%s] Email sent to %s via dest %s", alert.ID, cfg.Email, dest.Name)
-				}
-			case "webhook":
-				var cfg WebhookConfig
-				if err := json.Unmarshal([]byte(dest.Config), &cfg); err != nil {
-					log.Printf("[%s] Bad webhook config for dest %s: %v", alert.ID, dest.ID, err)
-					continue
-				}
-				payload := WebhookPayload{
-					AlertID:     alert.ID,
-					AlertName:   alert.Name,
-					Service:     deriveService(alert.Name),
-					Description: alert.Description,
-					Query:       alert.Query,
-					Condition:   alert.Condition,
-					TriggeredAt: time.Now().UTC().Format(time.RFC3339),
-					QueryResult: result,
-				}
-				if err := sendWebhook(cfg, payload); err != nil {
-					log.Printf("[%s] Webhook to %s failed: %v", alert.ID, cfg.URL, err)
-				} else {
-					log.Printf("[%s] Webhook sent to %s via dest %s", alert.ID, cfg.URL, dest.Name)
-				}
-			default:
-				log.Printf("[%s] Unknown destination type: %s", alert.ID, dest.Type)
 			}
 		}
-		return
+
+		if delivered > 0 {
+			return nil
+		}
+		return fmt.Errorf("no destination accepted the alert")
 	}
 
-	// Legacy recipients fallback
-	for _, recipient := range alert.Recipients {
-		if saasMailAPIKey == "" {
-			log.Printf("[%s] Cannot send email to %s: SAASMAIL_API_KEY not set", alert.ID, recipient)
-			continue
-		}
-		if err := sendEmail(saasMailAPIKey, saasMailURL, fromEmail, recipient, alert.Subject, textBody, htmlBody); err != nil {
-			log.Printf("[%s] Failed to send email to %s: %v", alert.ID, recipient, err)
-		} else {
-			log.Printf("[%s] Email sent to %s", alert.ID, recipient)
-		}
+	tryLegacyRecipients()
+	if delivered > 0 {
+		return nil
 	}
+	if len(alert.Recipients) == 0 {
+		return fmt.Errorf("no destinations or recipients configured")
+	}
+	return fmt.Errorf("all recipient deliveries failed")
 }
 
 // deriveService extracts a short service slug from an alert name.
