@@ -15,6 +15,7 @@ export async function GET(req: Request) {
           'Content-Type': 'text/plain; charset=utf-8',
           // Live inventory must not land in shared caches.
           'Cache-Control': 'private, no-store',
+          Vary: 'Cookie',
         },
       });
     }
@@ -23,6 +24,8 @@ export async function GET(req: Request) {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'Cache-Control': 'public, max-age=60',
+        // Same URL, different body with/without session — don't mix variants.
+        Vary: 'Cookie',
       },
     });
   } catch (error) {
