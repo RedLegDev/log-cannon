@@ -122,29 +122,54 @@ const MAX_BODY_BYTES = 32 * 1024 * 1024; // 32 MB
 // safely under the cap: 90 KB * 4/3 + ~100 ≈ 123 KB encoded.
 const MAX_QUEUE_CHUNK_BYTES = 90 * 1024;
 
+class BodyTooLargeError extends Error {
+  constructor() {
+    super("Request body exceeds 32 MB limit");
+  }
+}
+
+// Client-fixable body problems (null body, bad gzip). Must surface as 4xx so
+// Seq/Serilog do not retry forever the way they do on 5xx.
+class BadBodyError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
 async function readBody(request: Request): Promise<Uint8Array> {
+  if (request.body === null) {
+    throw new BadBodyError("Request body is required");
+  }
+
   let stream: ReadableStream<Uint8Array>;
 
   if (request.headers.get("Content-Encoding") === "gzip") {
     const ds = new DecompressionStream("gzip");
-    stream = request.body!.pipeThrough(ds);
+    stream = request.body.pipeThrough(ds);
   } else {
-    stream = request.body!;
+    stream = request.body;
   }
 
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let totalSize = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    totalSize += value.byteLength;
-    if (totalSize > MAX_BODY_BYTES) {
-      reader.cancel();
-      throw new BodyTooLargeError();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalSize += value.byteLength;
+      if (totalSize > MAX_BODY_BYTES) {
+        reader.cancel();
+        throw new BodyTooLargeError();
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) throw e;
+    throw new BadBodyError(
+      e instanceof Error ? e.message : "Failed to read request body",
+    );
   }
 
   const result = new Uint8Array(totalSize);
@@ -154,12 +179,6 @@ async function readBody(request: Request): Promise<Uint8Array> {
     offset += chunk.byteLength;
   }
   return result;
-}
-
-class BodyTooLargeError extends Error {
-  constructor() {
-    super("Request body exceeds 32 MB limit");
-  }
 }
 
 function encodeBody(bytes: Uint8Array): string {
@@ -634,6 +653,9 @@ export default {
     } catch (e) {
       if (e instanceof BodyTooLargeError) {
         return errorResponse(413, e.message);
+      }
+      if (e instanceof BadBodyError) {
+        return errorResponse(400, e.message);
       }
       throw e;
     }
