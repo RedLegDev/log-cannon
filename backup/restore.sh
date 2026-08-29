@@ -106,6 +106,19 @@ list_backups() {
     echo ""
 }
 
+# Drop the live database so RESTORE replaces data instead of appending into it.
+# ClickHouse's allow_non_empty_tables inserts into existing tables (append-only);
+# using it against a live logs DB silently duplicates events.
+drop_logs_database() {
+    log "Dropping existing logs database (replace, not append)..."
+    if ch_query "DROP DATABASE IF EXISTS logs SYNC"; then
+        log "Dropped logs database"
+    else
+        log "ERROR: Failed to drop logs database"
+        exit 1
+    fi
+}
+
 # If no argument, list backups and exit
 if [ $# -eq 0 ]; then
     list_backups
@@ -130,34 +143,51 @@ log "Restoring $BACKUP_TYPE backup: $BACKUP_NAME"
 if [ "$BACKUP_TYPE" = "incremental" ] && [ "$BASE_BACKUP" != "none" ]; then
     log "Base backup required: $BASE_BACKUP"
 fi
-log "WARNING: This will replace existing data in the logs database."
+log "WARNING: This DROPS the logs database and replaces it with the backup."
+log "WARNING: Do not run this against a live volume unless you intend a full replace."
+log "NOTE: allow_non_empty_tables is append-only — used only for the incremental delta onto a freshly restored base."
 echo ""
 echo "Press Ctrl+C within 5 seconds to abort..."
 sleep 5
 
-# If incremental, restore the base first
+# Fetch every required backup before dropping anything — a failed R2 download
+# must not leave ClickHouse without a logs database.
 if [ "$BACKUP_TYPE" = "incremental" ] && [ "$BASE_BACKUP" != "none" ]; then
-    log "Step 1/2: Restoring base backup: $BASE_BACKUP"
     if ! ensure_local "$BASE_BACKUP"; then
         log "ERROR: Cannot restore incremental without base backup"
         exit 1
     fi
-    if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BASE_BACKUP') SETTINGS allow_non_empty_tables=true"; then
+fi
+
+drop_logs_database
+
+# If incremental, restore the base first (into the empty database), then the delta.
+# The incremental RESTORE needs allow_non_empty_tables because the base already
+# populated the tables; that setting appends the delta parts only — it must never
+# be used against a live DB that already held production data.
+if [ "$BACKUP_TYPE" = "incremental" ] && [ "$BASE_BACKUP" != "none" ]; then
+    log "Step 1/2: Restoring base backup: $BASE_BACKUP"
+    if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BASE_BACKUP')"; then
         log "Base backup restored successfully"
     else
         log "ERROR: Base backup restore failed"
         exit 1
     fi
-    log "Step 2/2: Restoring incremental: $BACKUP_NAME"
+    log "Step 2/2: Restoring incremental delta: $BACKUP_NAME"
+    if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BACKUP_NAME') SETTINGS allow_non_empty_tables=true"; then
+        log "Restore completed successfully from: $BACKUP_NAME"
+    else
+        log "ERROR: Restore failed"
+        exit 1
+    fi
 else
     log "Restoring: $BACKUP_NAME"
-fi
-
-if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BACKUP_NAME') SETTINGS allow_non_empty_tables=true"; then
-    log "Restore completed successfully from: $BACKUP_NAME"
-else
-    log "ERROR: Restore failed"
-    exit 1
+    if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BACKUP_NAME')"; then
+        log "Restore completed successfully from: $BACKUP_NAME"
+    else
+        log "ERROR: Restore failed"
+        exit 1
+    fi
 fi
 
 # Verify

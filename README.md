@@ -376,8 +376,10 @@ Then rebuild: `docker compose build backup && docker compose up -d backup`.
 ```bash
 docker compose exec backup /scripts/backup.sh                       # manual backup
 docker compose exec backup /scripts/restore.sh                      # list available backups
-docker compose exec backup /scripts/restore.sh logs-2026-03-15-030000   # restore (auto-downloads from R2 if not local)
+docker compose exec backup /scripts/restore.sh logs-full-2026-03-15-030000   # restore (auto-downloads from R2 if not local)
 ```
+
+**Restore replaces, it does not append.** `restore.sh` drops the `logs` database before restoring so a run against a live volume does not duplicate `events`. ClickHouse’s `allow_non_empty_tables` setting is append-only (it inserts into existing tables and can silently double history); the script uses it only when applying an incremental backup’s delta onto a freshly restored base. Do not run restore against production unless you intend a full replace.
 
 **Disaster recovery (fresh server):** set up Docker Compose, clone the repo, configure `.env` with your R2 credentials, `docker compose up -d`, wait for ClickHouse to go healthy, then run the restore command above. Backup status is also visible in the dashboard under **System → Backups**.
 
