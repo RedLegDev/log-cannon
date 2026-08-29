@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError } from '@/lib/api-auth';
 import { getAlerts, createAlert, updateAlert, deleteAlert } from '@/lib/clickhouse';
+import { isSqlInteger, optionalSqlInteger } from '@/lib/sql-integer';
 
 export async function GET(request: NextRequest) {
   const auth = await authenticateApiKey(request, 'read');
@@ -67,22 +68,28 @@ export async function POST(request: NextRequest) {
       errors.destination_ids = 'At least one destination or recipient is required';
     }
 
-    const intervalSecs = interval_seconds || 60;
-    if (intervalSecs < 30) {
-      errors.interval_seconds = 'Interval must be at least 30 seconds';
+    const intervalSecs = optionalSqlInteger(interval_seconds, 60);
+    if (intervalSecs === null || intervalSecs < 30) {
+      errors.interval_seconds = 'Must be an integer >= 30';
+    }
+
+    const cooldownSecs = optionalSqlInteger(cooldown_seconds, 300);
+    if (cooldownSecs === null || cooldownSecs < 0) {
+      errors.cooldown_seconds = 'Must be an integer >= 0';
     }
 
     if (Object.keys(errors).length > 0) {
       return apiError('validation_error', 'Invalid request', 400, { fields: errors });
     }
 
+    // Narrowed: errors return above if either value is null
     await createAlert({
       name,
       description: description || '',
       query,
       condition,
-      interval_seconds: intervalSecs,
-      cooldown_seconds: cooldown_seconds || 300,
+      interval_seconds: intervalSecs as number,
+      cooldown_seconds: cooldownSecs as number,
       recipients: recipients || [],
       destination_ids: destination_ids || [],
       subject,
@@ -112,9 +119,15 @@ export async function PATCH(request: NextRequest) {
       return apiError('validation_error', 'Only SELECT statements are allowed', 400);
     }
 
-    // Validate interval if provided
-    if (updates.interval_seconds !== undefined && updates.interval_seconds < 30) {
-      return apiError('validation_error', 'Interval must be at least 30 seconds', 400);
+    if (updates.interval_seconds !== undefined) {
+      if (!isSqlInteger(updates.interval_seconds) || updates.interval_seconds < 30) {
+        return apiError('validation_error', 'interval_seconds must be an integer >= 30', 400);
+      }
+    }
+    if (updates.cooldown_seconds !== undefined) {
+      if (!isSqlInteger(updates.cooldown_seconds) || updates.cooldown_seconds < 0) {
+        return apiError('validation_error', 'cooldown_seconds must be an integer >= 0', 400);
+      }
     }
 
     await updateAlert(id, updates);

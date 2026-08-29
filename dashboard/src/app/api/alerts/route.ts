@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAlerts, createAlert, updateAlert, deleteAlert } from '@/lib/clickhouse';
+import { isSqlInteger, optionalSqlInteger } from '@/lib/sql-integer';
 
 export async function GET() {
   try {
@@ -46,10 +47,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Only SELECT statements are allowed' }, { status: 400 });
     }
 
-    // Validate interval is at least 30 seconds
-    const intervalSecs = interval_seconds || 60;
-    if (intervalSecs < 30) {
-      return NextResponse.json({ error: 'Interval must be at least 30 seconds' }, { status: 400 });
+    const intervalSecs = optionalSqlInteger(interval_seconds, 60);
+    if (intervalSecs === null || intervalSecs < 30) {
+      return NextResponse.json(
+        { error: 'interval_seconds must be an integer >= 30' },
+        { status: 400 }
+      );
+    }
+
+    const cooldownSecs = optionalSqlInteger(cooldown_seconds, 300);
+    if (cooldownSecs === null || cooldownSecs < 0) {
+      return NextResponse.json(
+        { error: 'cooldown_seconds must be an integer >= 0' },
+        { status: 400 }
+      );
     }
 
     await createAlert({
@@ -58,7 +69,7 @@ export async function POST(request: NextRequest) {
       query,
       condition,
       interval_seconds: intervalSecs,
-      cooldown_seconds: cooldown_seconds || 300,
+      cooldown_seconds: cooldownSecs,
       recipients: recipients || [],
       destination_ids: destination_ids || [],
       subject
@@ -87,9 +98,21 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Only SELECT statements are allowed' }, { status: 400 });
     }
 
-    // Validate interval if provided
-    if (updates.interval_seconds !== undefined && updates.interval_seconds < 30) {
-      return NextResponse.json({ error: 'Interval must be at least 30 seconds' }, { status: 400 });
+    if (updates.interval_seconds !== undefined) {
+      if (!isSqlInteger(updates.interval_seconds) || updates.interval_seconds < 30) {
+        return NextResponse.json(
+          { error: 'interval_seconds must be an integer >= 30' },
+          { status: 400 }
+        );
+      }
+    }
+    if (updates.cooldown_seconds !== undefined) {
+      if (!isSqlInteger(updates.cooldown_seconds) || updates.cooldown_seconds < 0) {
+        return NextResponse.json(
+          { error: 'cooldown_seconds must be an integer >= 0' },
+          { status: 400 }
+        );
+      }
     }
 
     await updateAlert(id, updates);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getEndpoints, createEndpoint, updateEndpoint, deleteEndpoint } from '@/lib/clickhouse';
+import { isSqlInteger, optionalSqlInteger } from '@/lib/sql-integer';
 
 export async function GET() {
   try {
@@ -36,7 +37,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Only SELECT statements are allowed' }, { status: 400 });
     }
 
-    await createEndpoint({ name, description, sql_query, cache_ttl_seconds });
+    const cacheTtl = optionalSqlInteger(cache_ttl_seconds, 0);
+    if (cacheTtl === null || cacheTtl < 0) {
+      return NextResponse.json(
+        { error: 'cache_ttl_seconds must be an integer >= 0' },
+        { status: 400 }
+      );
+    }
+
+    await createEndpoint({ name, description, sql_query, cache_ttl_seconds: cacheTtl });
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json(
@@ -58,6 +67,15 @@ export async function PATCH(request: NextRequest) {
     // Validate SQL if provided
     if (updates.sql_query && !updates.sql_query.trim().toLowerCase().startsWith('select')) {
       return NextResponse.json({ error: 'Only SELECT statements are allowed' }, { status: 400 });
+    }
+
+    if (updates.cache_ttl_seconds !== undefined) {
+      if (!isSqlInteger(updates.cache_ttl_seconds) || updates.cache_ttl_seconds < 0) {
+        return NextResponse.json(
+          { error: 'cache_ttl_seconds must be an integer >= 0' },
+          { status: 400 }
+        );
+      }
     }
 
     await updateEndpoint(id, updates);
