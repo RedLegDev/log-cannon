@@ -572,7 +572,16 @@ WHERE JSONExtractString(properties, 'Environment') = 'Production'  -- property f
 formatDateTime(timestamp, '%Y-%m-%d %H:%i:%S') as time   -- time formatting
 \`\`\`
 
+## Live inventory
+
+Active sources, property key samples, and endpoint SQL are not included in the public document.
+Sign in to the dashboard, or call MCP \`get_docs\` with \`section=overview\` using a read API key.
 `;
+
+/** Public overview — no ClickHouse / tenant data. */
+export function getStaticOverviewDocs(): string {
+  return STATIC_OVERVIEW;
+}
 
 async function getActiveSources(): Promise<string[]> {
   const sql = `
