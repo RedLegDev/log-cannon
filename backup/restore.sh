@@ -150,6 +150,15 @@ echo ""
 echo "Press Ctrl+C within 5 seconds to abort..."
 sleep 5
 
+# Fetch every required backup before dropping anything — a failed R2 download
+# must not leave ClickHouse without a logs database.
+if [ "$BACKUP_TYPE" = "incremental" ] && [ "$BASE_BACKUP" != "none" ]; then
+    if ! ensure_local "$BASE_BACKUP"; then
+        log "ERROR: Cannot restore incremental without base backup"
+        exit 1
+    fi
+fi
+
 drop_logs_database
 
 # If incremental, restore the base first (into the empty database), then the delta.
@@ -158,10 +167,6 @@ drop_logs_database
 # be used against a live DB that already held production data.
 if [ "$BACKUP_TYPE" = "incremental" ] && [ "$BASE_BACKUP" != "none" ]; then
     log "Step 1/2: Restoring base backup: $BASE_BACKUP"
-    if ! ensure_local "$BASE_BACKUP"; then
-        log "ERROR: Cannot restore incremental without base backup"
-        exit 1
-    fi
     if ch_query "RESTORE DATABASE logs FROM Disk('local_backups', '$BASE_BACKUP')"; then
         log "Base backup restored successfully"
     else
