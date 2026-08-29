@@ -1,3 +1,5 @@
+import { requireSqlInteger } from '@/lib/sql-integer';
+
 const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL || 'http://localhost:8123';
 
 export interface LogEvent {
@@ -411,13 +413,18 @@ export interface EndpointInput {
 }
 
 export async function createEndpoint(endpoint: EndpointInput): Promise<void> {
+  const cacheTtl =
+    endpoint.cache_ttl_seconds === undefined || endpoint.cache_ttl_seconds === null
+      ? 0
+      : requireSqlInteger(endpoint.cache_ttl_seconds, 'cache_ttl_seconds');
+
   const sql = `
     INSERT INTO logs.endpoints (name, description, sql_query, cache_ttl_seconds)
     VALUES (
       '${escapeString(endpoint.name)}',
       '${escapeString(endpoint.description || '')}',
       '${escapeString(endpoint.sql_query)}',
-      ${endpoint.cache_ttl_seconds || 0}
+      ${cacheTtl}
     )
   `;
 
@@ -442,7 +449,9 @@ export async function updateEndpoint(id: string, updates: Partial<EndpointInput>
     setClauses.push(`sql_query = '${escapeString(updates.sql_query)}'`);
   }
   if (updates.cache_ttl_seconds !== undefined) {
-    setClauses.push(`cache_ttl_seconds = ${updates.cache_ttl_seconds}`);
+    setClauses.push(
+      `cache_ttl_seconds = ${requireSqlInteger(updates.cache_ttl_seconds, 'cache_ttl_seconds')}`
+    );
   }
   if (updates.enabled !== undefined) {
     setClauses.push(`enabled = ${updates.enabled ? 1 : 0}`);
@@ -795,6 +804,15 @@ export async function getAlertById(id: string): Promise<Alert | null> {
 export async function createAlert(alert: AlertInput): Promise<void> {
   const recipientsJson = JSON.stringify(alert.recipients || []);
   const destinationIdsJson = JSON.stringify(alert.destination_ids || []);
+  const intervalSeconds =
+    alert.interval_seconds === undefined || alert.interval_seconds === null
+      ? 60
+      : requireSqlInteger(alert.interval_seconds, 'interval_seconds');
+  const cooldownSeconds =
+    alert.cooldown_seconds === undefined || alert.cooldown_seconds === null
+      ? 300
+      : requireSqlInteger(alert.cooldown_seconds, 'cooldown_seconds');
+
   const sql = `
     INSERT INTO logs.alerts (name, description, query, condition, interval_seconds, cooldown_seconds, recipients, destination_ids, subject)
     VALUES (
@@ -802,8 +820,8 @@ export async function createAlert(alert: AlertInput): Promise<void> {
       '${escapeString(alert.description || '')}',
       '${escapeString(alert.query)}',
       '${escapeString(alert.condition)}',
-      ${alert.interval_seconds || 60},
-      ${alert.cooldown_seconds || 300},
+      ${intervalSeconds},
+      ${cooldownSeconds},
       '${escapeString(recipientsJson)}',
       '${escapeString(destinationIdsJson)}',
       '${escapeString(alert.subject)}'
@@ -829,10 +847,14 @@ export async function updateAlert(id: string, updates: Partial<AlertInput> & { e
     setClauses.push(`condition = '${escapeString(updates.condition)}'`);
   }
   if (updates.interval_seconds !== undefined) {
-    setClauses.push(`interval_seconds = ${updates.interval_seconds}`);
+    setClauses.push(
+      `interval_seconds = ${requireSqlInteger(updates.interval_seconds, 'interval_seconds')}`
+    );
   }
   if (updates.cooldown_seconds !== undefined) {
-    setClauses.push(`cooldown_seconds = ${updates.cooldown_seconds}`);
+    setClauses.push(
+      `cooldown_seconds = ${requireSqlInteger(updates.cooldown_seconds, 'cooldown_seconds')}`
+    );
   }
   if (updates.recipients !== undefined) {
     const recipientsJson = JSON.stringify(updates.recipients);

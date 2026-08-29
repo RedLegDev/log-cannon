@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError } from '@/lib/api-auth';
 import { getEndpoints, createEndpoint } from '@/lib/clickhouse';
+import { optionalSqlInteger } from '@/lib/sql-integer';
 
 function validateEndpointInput(body: unknown): { valid: true; data: { name: string; description?: string; sql_query: string; cache_ttl_seconds?: number } } | { valid: false; errors: Record<string, string> } {
   const errors: Record<string, string> = {};
@@ -30,8 +31,9 @@ function validateEndpointInput(body: unknown): { valid: true; data: { name: stri
     }
   }
 
-  if (cache_ttl_seconds !== undefined && (typeof cache_ttl_seconds !== 'number' || cache_ttl_seconds < 0)) {
-    errors.cache_ttl_seconds = 'Must be a non-negative number';
+  const cacheTtl = optionalSqlInteger(cache_ttl_seconds, 0);
+  if (cacheTtl === null || cacheTtl < 0) {
+    errors.cache_ttl_seconds = 'Must be an integer >= 0';
   }
 
   if (Object.keys(errors).length > 0) {
@@ -44,7 +46,7 @@ function validateEndpointInput(body: unknown): { valid: true; data: { name: stri
       name: name as string,
       description: description as string | undefined,
       sql_query: sql_query as string,
-      cache_ttl_seconds: cache_ttl_seconds as number | undefined,
+      cache_ttl_seconds: cacheTtl as number,
     },
   };
 }

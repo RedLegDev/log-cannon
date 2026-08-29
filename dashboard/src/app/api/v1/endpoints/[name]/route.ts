@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateApiKey, apiError } from '@/lib/api-auth';
 import { getEndpointByName, updateEndpoint, deleteEndpoint, executeEndpointQuery } from '@/lib/clickhouse';
+import { isSqlInteger } from '@/lib/sql-integer';
 
 export async function GET(
   request: NextRequest,
@@ -70,7 +71,12 @@ export async function PATCH(
       }
       updates.sql_query = body.sql_query;
     }
-    if (body.cache_ttl_seconds !== undefined) updates.cache_ttl_seconds = body.cache_ttl_seconds;
+    if (body.cache_ttl_seconds !== undefined) {
+      if (!isSqlInteger(body.cache_ttl_seconds) || body.cache_ttl_seconds < 0) {
+        return apiError('validation_error', 'cache_ttl_seconds must be an integer >= 0', 400);
+      }
+      updates.cache_ttl_seconds = body.cache_ttl_seconds;
+    }
     if (body.enabled !== undefined) updates.enabled = body.enabled;
 
     if (Object.keys(updates).length === 0) {
