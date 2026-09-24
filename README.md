@@ -418,6 +418,47 @@ To alert on degradation while it is happening, add an alert over these events:
 Because the events are throttled per isolate, treat `cnt` as "how many isolates
 saw this", not as a count of slow requests. For the latter, read Workers Logs.
 
+### Go service logs
+
+`queue-consumer`, `alert-worker`, and `retention-worker` still write to stdout
+(`docker compose logs`), and can also ship CLEF into Log Cannon the same way
+any other client does: `POST {LOG_CANNON_INGEST_URL}/ingest/clef` with
+`X-Api-Key`. Shipping is best-effort and never blocks the service's real work;
+if the URL or key is unset, the service starts normally with shipping off.
+
+Mint **one ingest-scoped key per service**. The key's registry name becomes
+`logs.events.source` — use these names so operators know what to query and
+what to attach retention to:
+
+| Service | Env var for the key | Key name / `source` |
+|---------|---------------------|---------------------|
+| queue-consumer | `LOG_CANNON_QUEUE_CONSUMER_API_KEY` | `log-cannon-queue-consumer` |
+| alert-worker | `LOG_CANNON_ALERT_WORKER_API_KEY` | `log-cannon-alert-worker` |
+| retention-worker | `LOG_CANNON_RETENTION_WORKER_API_KEY` | `log-cannon-retention-worker` |
+
+All three share `LOG_CANNON_INGEST_URL` (same as the dashboard). Compose maps
+each `*_API_KEY` into the container as `LOG_CANNON_API_KEY`.
+
+**Feedback loop.** The consumer is the process that inserts whatever it ships.
+Logging every poll cycle about inserting N events would enqueue more events to
+insert. So the consumer does **not** tee stdout: it only ships a CLEF event when
+a poll is slow or failed — `Warning` when total time crosses `POLL_SLOW_MS`
+(default `1000`), `Error` on pull/flush failure (with the same phase breakdown)
+— and at most once per `POLL_TELEMETRY_MIN_INTERVAL_MS` (default `10000`).
+Stdout still prints every pull/insert with durations. Alert and retention tee
+every `log.Printf` — their volume is low.
+
+A source with no matching key in `logs.key_policies` is kept forever; register
+keys with the names above (and set `retentionDays`) if you want these trimmed.
+
+| Consumer var | Default | Description |
+|--------------|---------|-------------|
+| `POLL_SLOW_MS` | `1000` | Ship a timing event when any phase or the total is at least this many milliseconds. `0` disables CLEF timings (stdout unchanged). |
+| `POLL_TELEMETRY_MIN_INTERVAL_MS` | `10000` | Minimum gap between two queue-borne slow-poll events. |
+
+Slow-poll properties: `Messages`, `Events`, `PullMs`, `ParseMs`, `InsertMs`,
+`AckMs`, `TotalMs`.
+
 ## Backup & Restore
 
 Automated ClickHouse backups run twice daily with offsite sync to Cloudflare R2.
@@ -475,6 +516,7 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 | `RETENTION_INTERVAL_HOURS` | No | How often retention trims expired logs (default `24`) |
 | `CF_ACCOUNT_ID` / `CF_QUEUE_ID` / `CF_API_TOKEN` | Yes | Queue consumer → Cloudflare Queue access |
 | `LOG_CANNON_INGEST_URL` / `LOG_CANNON_ADMIN_KEY` | Yes | Ingest Worker URL and admin-scoped key so the dashboard can manage the D1 key registry |
+| `LOG_CANNON_QUEUE_CONSUMER_API_KEY` / `LOG_CANNON_ALERT_WORKER_API_KEY` / `LOG_CANNON_RETENTION_WORKER_API_KEY` | No | Per-service ingest keys so the Go workers ship CLEF (see [Go service logs](#go-service-logs)); key names should be `log-cannon-queue-consumer`, `log-cannon-alert-worker`, `log-cannon-retention-worker` |
 | `R2_*` | No | Offsite backup credentials (see Backup & Restore) |
 | `COMPOSE_PROFILES` | No | `dev` locally to start the Inbucket mailbox |
 
@@ -484,6 +526,7 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 log-cannon/
 ├── workers/            # Cloudflare Workers (TypeScript) — edge ingestion
 │   └── packages/ingest/    # Unified ingest worker (CLEF, webhook, OTel)
+├── go/ship/            # Shared Go CLEF shipper (replace-path dep of the three services)
 ├── queue-consumer/     # Go service: pulls CF Queue → parses → ClickHouse
 ├── dashboard/          # Next.js web UI, REST API, MCP server (reads ClickHouse)
 ├── alert-worker/       # Go service: threshold alerting

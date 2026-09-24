@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/logaggregator/ship"
 )
 
 // QueuePayload mirrors the TypeScript QueuePayload from the Workers.
@@ -71,6 +73,21 @@ func main() {
 	pollInterval := 1 * time.Second
 	batchSize := 100 // max messages per pull
 
+	// Optional CLEF shipping to Log Cannon. Absent URL/key → disabled; never
+	// required to start. The consumer does *not* tee every log.Printf (that
+	// would amplify a drain stall into more queue traffic); it only ships
+	// thresholded per-poll phase timings below.
+	shipper := ship.FromEnv()
+	if shipper != nil {
+		log.Println("CLEF shipping enabled (LOG_CANNON_INGEST_URL + LOG_CANNON_API_KEY)")
+	} else {
+		log.Println("CLEF shipping disabled (set LOG_CANNON_INGEST_URL and LOG_CANNON_API_KEY to enable)")
+	}
+	defer shipper.Close()
+
+	slowMs := envDurationMs("POLL_SLOW_MS", 1000)
+	telemetryMin := envDurationMs("POLL_TELEMETRY_MIN_INTERVAL_MS", 10_000)
+
 	// Connect to ClickHouse
 	var conn driver.Conn
 	var err error
@@ -104,12 +121,15 @@ func main() {
 	log.Println("Connected to ClickHouse")
 
 	consumer := &Consumer{
-		conn:       conn,
-		accountID:  cfAccountID,
-		queueID:    cfQueueID,
-		apiToken:   cfAPIToken,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		batchSize:  batchSize,
+		conn:         conn,
+		accountID:    cfAccountID,
+		queueID:      cfQueueID,
+		apiToken:     cfAPIToken,
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		batchSize:    batchSize,
+		shipper:      shipper,
+		slowMs:       slowMs,
+		pollThrottle: ship.NewThrottle(telemetryMin),
 	}
 
 	// Graceful shutdown
@@ -124,17 +144,20 @@ func main() {
 		cancel()
 	}()
 
-	log.Printf("Starting queue consumer (poll every %s, batch size %d)", pollInterval, batchSize)
+	log.Printf("Starting queue consumer (poll every %s, batch size %d, slow≥%s)", pollInterval, batchSize, slowMs)
 	consumer.run(ctx, pollInterval)
 }
 
 type Consumer struct {
-	conn       driver.Conn
-	accountID  string
-	queueID    string
-	apiToken   string
-	httpClient *http.Client
-	batchSize  int
+	conn         driver.Conn
+	accountID    string
+	queueID      string
+	apiToken     string
+	httpClient   *http.Client
+	batchSize    int
+	shipper      *ship.Client
+	slowMs       time.Duration
+	pollThrottle *ship.Throttle
 }
 
 func (c *Consumer) run(ctx context.Context, interval time.Duration) {
@@ -154,20 +177,25 @@ func (c *Consumer) run(ctx context.Context, interval time.Duration) {
 }
 
 func (c *Consumer) poll(ctx context.Context) error {
+	pullStart := time.Now()
 	messages, err := c.pullMessages(ctx)
+	pullMs := time.Since(pullStart)
 	if err != nil {
-		return fmt.Errorf("pull: %w", err)
+		pullErr := fmt.Errorf("pull: %w", err)
+		c.maybeShipPollTiming(0, 0, pullMs, 0, 0, 0, pullErr)
+		return pullErr
 	}
 	if len(messages) == 0 {
 		return nil
 	}
 
-	log.Printf("Pulled %d messages from queue", len(messages))
+	log.Printf("Pulled %d messages from queue in %s", len(messages), pullMs.Round(time.Millisecond))
 
 	var allEvents []LogEvent
 	var deadLetterAcks []QueueAck // Corrupt/unparseable — ack unconditionally
 	var goodAcks []QueueAck       // Successfully processed — ack only after flush
 
+	parseStart := time.Now()
 	for _, msg := range messages {
 		// The HTTP pull API may double-encode the body as a JSON string.
 		// Unwrap it if needed before deserializing into QueuePayload.
@@ -204,34 +232,91 @@ func (c *Consumer) poll(ctx context.Context) error {
 		allEvents = append(allEvents, events...)
 		goodAcks = append(goodAcks, QueueAck{LeaseID: msg.LeaseID})
 	}
+	parseMs := time.Since(parseStart)
 
 	// Always ack dead-letter messages so they don't block the queue
+	var deadAckMs time.Duration
 	if len(deadLetterAcks) > 0 {
 		log.Printf("Acking %d dead-letter messages (corrupt/unparseable)", len(deadLetterAcks))
+		ackStart := time.Now()
 		if err := c.ackMessages(ctx, deadLetterAcks); err != nil {
 			log.Printf("Warning: failed to ack %d dead-letter messages: %v", len(deadLetterAcks), err)
 		}
+		deadAckMs = time.Since(ackStart)
 	}
 
 	// Batch insert into ClickHouse with a timeout safely under the visibility window
+	var insertMs time.Duration
 	if len(allEvents) > 0 {
 		flushCtx, flushCancel := context.WithTimeout(ctx, 60*time.Second)
 		defer flushCancel()
+		insertStart := time.Now()
 		if err := c.flushBatch(flushCtx, allEvents); err != nil {
-			// Don't ack good messages if insert failed — they will be redelivered
-			return fmt.Errorf("flush %d events: %w", len(allEvents), err)
+			insertMs = time.Since(insertStart)
+			flushErr := fmt.Errorf("flush %d events: %w", len(allEvents), err)
+			// Don't ack good messages if insert failed — they will be redelivered.
+			// Still ship phase timings so a stalled insert is visible for #111.
+			c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, deadAckMs, flushErr)
+			return flushErr
 		}
-		log.Printf("Inserted %d events into ClickHouse", len(allEvents))
+		insertMs = time.Since(insertStart)
+		log.Printf("Inserted %d events into ClickHouse in %s", len(allEvents), insertMs.Round(time.Millisecond))
 	}
 
 	// Acknowledge successfully processed messages only after flush succeeds
+	var ackMs time.Duration
 	if len(goodAcks) > 0 {
+		ackStart := time.Now()
 		if err := c.ackMessages(ctx, goodAcks); err != nil {
 			log.Printf("Warning: failed to ack %d messages after successful flush: %v", len(goodAcks), err)
 		}
+		ackMs = time.Since(ackStart)
 	}
+	ackMs += deadAckMs
 
+	c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, ackMs, nil)
 	return nil
+}
+
+// maybeShipPollTiming ships a CLEF event when a poll is slow or failed.
+// Throttled so a sustained stall/failure does not answer itself with more
+// queue traffic. Stdout timings above are always emitted.
+//
+// POLL_SLOW_MS <= 0 disables CLEF shipping from the consumer entirely.
+// Failures ship even when under the threshold (still throttled); successes
+// only when total >= POLL_SLOW_MS.
+func (c *Consumer) maybeShipPollTiming(messages, events int, pull, parse, insert, ack time.Duration, pollErr error) {
+	if c.shipper == nil || c.slowMs <= 0 {
+		return
+	}
+	total := pull + parse + insert + ack
+	if pollErr == nil && total < c.slowMs {
+		return
+	}
+	if c.pollThrottle != nil && !c.pollThrottle.Allow() {
+		return
+	}
+	props := map[string]any{
+		"Messages": messages,
+		"Events":   events,
+		"PullMs":   pull.Milliseconds(),
+		"ParseMs":  parse.Milliseconds(),
+		"InsertMs": insert.Milliseconds(),
+		"AckMs":    ack.Milliseconds(),
+		"TotalMs":  total.Milliseconds(),
+	}
+	if pollErr != nil {
+		props["Error"] = pollErr.Error()
+		c.shipper.Error(
+			"Queue poll failed after {TotalMs} ms: {Error} — pull {PullMs} ms, parse {ParseMs} ms, insert {InsertMs} ms, ack {AckMs} ms ({Messages} messages, {Events} events)",
+			props,
+		)
+		return
+	}
+	c.shipper.Warn(
+		"Slow queue poll: {Messages} messages, {Events} events — pull {PullMs} ms, parse {ParseMs} ms, insert {InsertMs} ms, ack {AckMs} ms (total {TotalMs} ms)",
+		props,
+	)
 }
 
 func (c *Consumer) processPayload(payload QueuePayload, rawBody []byte) ([]LogEvent, error) {
@@ -374,6 +459,19 @@ func getEnv(key, defaultVal string) string {
 		return val
 	}
 	return defaultVal
+}
+
+func envDurationMs(key string, defaultMs int) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return time.Duration(defaultMs) * time.Millisecond
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		log.Printf("Invalid %s=%q, defaulting to %d", key, raw, defaultMs)
+		return time.Duration(defaultMs) * time.Millisecond
+	}
+	return time.Duration(n) * time.Millisecond
 }
 
 // Blank import guard to ensure types are used.

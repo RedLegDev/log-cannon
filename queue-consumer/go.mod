@@ -4,10 +4,13 @@ go 1.25.0
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
+	github.com/logaggregator/ship v0.0.0
 	github.com/twmb/murmur3 v1.1.8
 	go.opentelemetry.io/proto/otlp v1.11.0
 	google.golang.org/protobuf v1.36.11
 )
+
+replace github.com/logaggregator/ship => ../go/ship
 
 require (
 	github.com/ClickHouse/ch-go v0.74.0 // indirect

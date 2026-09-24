@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [queue-consumer, alert-worker, retention-worker]
+        module: [go/ship, queue-consumer, alert-worker, retention-worker]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -30,7 +30,8 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: ${{ matrix.module }}/go.mod
-          cache-dependency-path: ${{ matrix.module }}/go.sum
+          # go/ship has no external deps and no go.sum; key the cache on go.mod.
+          cache-dependency-path: ${{ matrix.module }}/go.mod
 
       # gofmt exits 0 even when it reports files, so assert on empty output.
       - name: gofmt
@@ -132,8 +133,10 @@ jobs:
         include:
           - image: dashboard
             context: dashboard
+            file: dashboard/Dockerfile
           - image: queue-consumer
-            context: queue-consumer
+            context: .
+            file: queue-consumer/Dockerfile
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
@@ -142,6 +145,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: false
           load: true
           tags: log-cannon-${{ matrix.image }}:ci

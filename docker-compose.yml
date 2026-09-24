@@ -71,7 +71,9 @@ services:
     restart: unless-stopped
 
   alert-worker:
-    build: ./alert-worker
+    build:
+      context: .
+      dockerfile: alert-worker/Dockerfile
     environment:
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=9000
@@ -82,13 +84,17 @@ services:
       - SAASMAIL_API_URL=${SAASMAIL_API_URL:-}
       - ALERT_FROM_EMAIL=${ALERT_FROM_EMAIL:-alerts@example.com}
       - DASHBOARD_URL=${DASHBOARD_URL:-}
+      - LOG_CANNON_INGEST_URL=${LOG_CANNON_INGEST_URL:-}
+      - LOG_CANNON_API_KEY=${LOG_CANNON_ALERT_WORKER_API_KEY:-}
     depends_on:
       clickhouse:
         condition: service_healthy
     restart: unless-stopped
 
   retention-worker:
-    build: ./retention-worker
+    build:
+      context: .
+      dockerfile: retention-worker/Dockerfile
     environment:
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=9000
@@ -96,6 +102,8 @@ services:
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
       - RETENTION_INTERVAL_HOURS=${RETENTION_INTERVAL_HOURS:-24}
+      - LOG_CANNON_INGEST_URL=${LOG_CANNON_INGEST_URL:-}
+      - LOG_CANNON_API_KEY=${LOG_CANNON_RETENTION_WORKER_API_KEY:-}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -121,7 +129,9 @@ services:
     restart: unless-stopped
 
   queue-consumer:
-    build: ./queue-consumer
+    build:
+      context: .
+      dockerfile: queue-consumer/Dockerfile
     environment:
       - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
       - CF_QUEUE_ID=${CF_QUEUE_ID}
@@ -131,6 +141,10 @@ services:
       - CLICKHOUSE_DATABASE=logs
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
+      - LOG_CANNON_INGEST_URL=${LOG_CANNON_INGEST_URL:-}
+      - LOG_CANNON_API_KEY=${LOG_CANNON_QUEUE_CONSUMER_API_KEY:-}
+      - POLL_SLOW_MS=${POLL_SLOW_MS:-1000}
+      - POLL_TELEMETRY_MIN_INTERVAL_MS=${POLL_TELEMETRY_MIN_INTERVAL_MS:-10000}
     depends_on:
       clickhouse:
         condition: service_healthy

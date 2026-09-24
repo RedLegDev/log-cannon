@@ -13,6 +13,7 @@ This is a monorepo of independent services, each built and deployed on its own.
 | Path | Language | Role |
 |------|----------|------|
 | `workers/packages/ingest/` | TypeScript (Cloudflare Workers) | Thin edge ingest: validate API key against D1, push raw body + metadata to the CF Queue. No parsing here. |
+| `go/ship/` | Go | Shared CLEF HTTPS client used by the three Go services. Replace-path dep; not a runnable service. |
 | `queue-consumer/` | Go | Pulls the CF Queue, parses CLEF/webhook/OTel, batch-inserts into ClickHouse. The only writer of `logs.events`. |
 | `dashboard/` | Next.js / TypeScript | Web UI, REST API (`/api/v1/*`), and MCP server (`/api/mcp`). Reads ClickHouse; does **not** ingest logs. Owns OTP auth. |
 | `alert-worker/` | Go | Runs `alerts.json` queries on intervals, emails on threshold breach. |
@@ -44,7 +45,7 @@ The Worker is intentionally dumb — it never parses payloads. All format handli
 
 | Job | Gates |
 |-----|-------|
-| `go` (×3: queue-consumer, alert-worker, retention-worker) | `gofmt -l` must be empty, then vet, build, test |
+| `go` (×4: go/ship, queue-consumer, alert-worker, retention-worker) | `gofmt -l` must be empty, then vet, build, test |
 | `workers` | `tsc --noEmit`, vitest, and `wrangler deploy --env production --dry-run` |
 | `dashboard` | `tsc --noEmit`, `eslint . --quiet`, `next build` |
 | `docker` (×2: dashboard, queue-consumer) | image builds; the dashboard image must also load better-sqlite3 in the runner stage |
@@ -72,4 +73,5 @@ Test coverage is uneven — `queue-consumer` and the ingest Worker have suites, 
 - **Build stamp.** The dashboard image bakes a build time into `dashboard/src/generated/version.json` (read by `src/lib/build-info.ts`); the runtime `BUILD_TIME` env var overrides it. Don't expect git commit/branch metadata — that stamping was removed.
 - **Config via env only.** No secrets in the repo. Defaults in `docker-compose.yml` and `.env.example` use placeholder/example values; real values come from `.env`.
 - **CLEF is the contract.** Seq/Serilog compatibility is a core feature — preserve the `/ingest/clef` and `/api/events/raw` endpoint shapes and CLEF field semantics.
+- **Go services ship CLEF via `go/ship`, never a second ClickHouse write path.** `LOG_CANNON_INGEST_URL` + `LOG_CANNON_API_KEY` enable best-effort POSTs to `/ingest/clef`; absent config leaves shipping off. The consumer must not tee every `log.Printf` into the queue (feedback loop) — it ships only thresholded/throttled slow-or-failed poll timings. See README "Go service logs".
 - **The ingest Worker instruments itself, and must not forward its own logs.** `[observability]` is on (invocation logs, `head_sampling_rate = 1`), `src/timing.ts` owns what a slow request is and how it renders, and the router's `reportIfSlow` sends it two ways: a `console.warn` retained by Workers Logs, and a CLEF `Warning` enqueued on `SLOW_REQUEST_SOURCE` in `waitUntil`. Do **not** add `observability.logs.destinations` here — that shape is correct for every other Worker, but on this one the destination delivers to `/ingest/webhook` on the Worker whose invocations it is reporting, and each delivery generates more. The queue-borne event is throttled per isolate on purpose: the failure mode worth protecting is a slow `enqueue` span, and the wrong answer to a struggling queue is more messages. Timing spans measure I/O only (Cloudflare freezes `Date.now()` between I/O) and start at invocation, so cold start and connection setup are outside them.

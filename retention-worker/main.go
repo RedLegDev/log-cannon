@@ -11,6 +11,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/logaggregator/ship"
 )
 
 // RetentionPolicy is a per-service retention rule, sourced from logs.api_keys.
@@ -23,6 +24,11 @@ type RetentionPolicy struct {
 }
 
 func main() {
+	// Optional CLEF shipping. Tees every log.Printf to the ingest Worker when
+	// LOG_CANNON_INGEST_URL + LOG_CANNON_API_KEY are set; absent → no-op.
+	shipper := ship.InstallStdLog()
+	defer shipper.Close()
+
 	host := getEnv("CLICKHOUSE_HOST", "clickhouse")
 	port := getEnv("CLICKHOUSE_PORT", "9000")
 	database := getEnv("CLICKHOUSE_DATABASE", "logs")
