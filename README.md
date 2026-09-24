@@ -343,6 +343,75 @@ A single Worker handles every ingestion format via path-based routing:
 | `/v1/traces` | OTel traces | Standard OTel SDK path |
 | `/health` | — | Returns `{"status":"ok"}` |
 
+### Ingest Latency
+
+Senders bound their outbound request — Serilog's Seq sink and most hand-rolled
+clients both do — so a stalled ingest call is aborted client-side. Nothing is
+written and the response is never read, which leaves the sender's timeout as
+the only evidence the request happened. Two things make it visible from the
+ingest side instead.
+
+**Workers Logs.** `[observability]` in `wrangler.toml` is on, with
+`invocation_logs`, so every request records wall time, CPU time and outcome.
+That is where ingest p50/p95/p99 comes from, and it retains the warning below.
+Note it does *not* set `logs.destinations`: pointing a Logpush destination at a
+Log Cannon ingest route is right for other Workers, but on this one it loops —
+the destination delivers to `/ingest/webhook` on the very Worker whose
+invocations it is reporting.
+
+**Slow-request events.** Any ingest request that spends `SLOW_REQUEST_MS` or
+more in the Worker is written as a `Warning` to `SLOW_REQUEST_SOURCE`, through
+the same queue as every other event, so it lands in `logs.events` alongside
+everything else. The emission happens after the response, and is throttled per
+isolate so a degraded queue is not answered with more traffic.
+
+| Worker var | Default | Description |
+|------------|---------|-------------|
+| `SLOW_REQUEST_MS` | `1000` | Report at or above this many milliseconds. `0` disables. |
+| `SLOW_REQUEST_SOURCE` | `log-cannon-ingest` | Source the events are written to. Empty leaves Workers Logs as the only channel. |
+
+Each event carries the breakdown, which is the point — a 5-second request is a
+different incident depending on where the time went:
+
+| Property | Meaning |
+|----------|---------|
+| `TotalMs` | Time inside the Worker |
+| `AuthMs` | D1 key lookup |
+| `ReadMs` | Reading (and gzip-decoding) the request body |
+| `EnqueueMs` | `INGEST_QUEUE` send |
+| `KeyCacheHit` | Whether the key was already in this isolate's cache |
+| `Route` / `Format` / `Status` | Which endpoint, which parser, what was returned |
+| `IngestSource` | The `source` the request was writing to |
+| `BodyBytes` / `QueueMessages` | Payload size and how many queue messages it became |
+| `Colo` / `RayId` | Cloudflare edge location and Ray ID, for correlating with Workers Logs |
+
+A cold isolate pays for a D1 round trip on every request, so `KeyCacheHit:
+false` with a large `AuthMs` is the expected shape for a source that sends a
+handful of events a day — worth ruling in before looking further.
+
+`TotalMs` starts when the Worker is invoked, so connection setup, TLS and
+isolate cold start sit outside it. **A sender that saw 5 s against a small
+`TotalMs` is a result, not a broken measurement**: it places the stall before
+the Worker rather than inside it. Cloudflare freezes `Date.now()` between I/O
+operations, so these spans measure I/O; a CPU-bound stall shows up in Workers
+Logs' `cpuTime` instead.
+
+To alert on degradation while it is happening, add an alert over these events:
+
+```json
+{
+  "id": "ingest-latency",
+  "name": "Ingest Latency",
+  "query": "SELECT count() as cnt FROM logs.events WHERE source = 'log-cannon-ingest' AND timestamp > now() - INTERVAL 5 MINUTE",
+  "condition": "cnt > 0",
+  "interval_seconds": 60,
+  "cooldown_seconds": 900
+}
+```
+
+Because the events are throttled per isolate, treat `cnt` as "how many isolates
+saw this", not as a count of slow requests. For the latter, read Workers Logs.
+
 ## Backup & Restore
 
 Automated ClickHouse backups run twice daily with offsite sync to Cloudflare R2.

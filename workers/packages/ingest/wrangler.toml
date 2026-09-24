@@ -26,6 +26,37 @@ routes = [
   { pattern = "logs.yourdomain.com/v1/keys*", zone_name = "yourdomain.com" },
 ]
 
+# Latency visibility for the ingest path. Without this the Worker emits nothing
+# a slow request can be found in: a sender that aborts its own fetch never reads
+# the response, so its `TimeoutError` is the only trace the request ever existed.
+# `invocation_logs` carries per-request wall time, CPU time and outcome — that is
+# where ingest p95/p99 lives — and retains the `slow-ingest-request` warning the
+# Worker writes above SLOW_REQUEST_MS.
+#
+# Deliberately no `logs.destinations` here. Forwarding a Worker's logs onward to
+# a Log Cannon ingest route is the right shape for every *other* Worker, but on
+# this one it is a feedback loop: the destination delivers to `/ingest/webhook`
+# on the very Worker whose invocations it is reporting, and each delivery
+# generates fresh invocation logs to deliver. Read these in Workers Logs; the
+# slow-request events reach ClickHouse by the queue instead (SLOW_REQUEST_SOURCE).
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[vars]
+# Report any ingest request that spends this long in the Worker. "0" disables
+# reporting. See workers/packages/ingest/src/timing.ts for what is measured —
+# notably not cold start or connection setup, both of which happen before the
+# Worker is invoked.
+SLOW_REQUEST_MS = "1000"
+# logs.events source that slow-request events are written to, through the same
+# queue as every other event. Empty leaves Workers Logs as the only channel.
+SLOW_REQUEST_SOURCE = "log-cannon-ingest"
+
 [[queues.producers]]
 queue = "log-cannon-ingest"
 binding = "INGEST_QUEUE"
@@ -61,6 +92,18 @@ routes = [
   # the request falls through to the dashboard and 307s to its login page.
   { pattern = "logs.redleg.dev/v1/keys*", zone_name = "redleg.dev" },
 ]
+
+[env.production.observability]
+enabled = true
+head_sampling_rate = 1
+
+[env.production.observability.logs]
+enabled = true
+invocation_logs = true
+
+[env.production.vars]
+SLOW_REQUEST_MS = "1000"
+SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"

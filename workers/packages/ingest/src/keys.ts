@@ -51,6 +51,20 @@ export function __resetKeyCache(): void {
   KEY_CACHE.clear();
 }
 
+/**
+ * Whether this isolate can resolve `apiKey` without touching D1. A peek only —
+ * it never populates or expires an entry.
+ *
+ * Ingest timing uses it to tell two very different slow-auth stories apart: a
+ * cold isolate paying for a D1 round trip (expected, and the common case on a
+ * source that sends a handful of events a day) versus a cache hit that was
+ * somehow still slow.
+ */
+export function isKeyCached(apiKey: string, now: number = Date.now()): boolean {
+  const cached = KEY_CACHE.get(apiKey);
+  return cached !== undefined && cached.expiresAt > now;
+}
+
 function toRecord(row: Row): APIKeyRecord {
   return {
     apiKey: row.api_key,

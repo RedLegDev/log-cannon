@@ -1,11 +1,29 @@
 // --- Types ---
 
-import { validateKey, type APIKeyRecord } from "./keys";
+import { validateKey, isKeyCached, type APIKeyRecord } from "./keys";
 import { handleAdminKeys } from "./admin";
+import {
+  RequestTrace,
+  buildSlowRequest,
+  resolveSlowRequestMs,
+  shouldEmitTelemetry,
+  slowRequestCLEF,
+} from "./timing";
 
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
   KEYS_DB: D1Database;
+  /**
+   * Report any ingest request whose in-Worker time reaches this many
+   * milliseconds. `0` disables reporting. Unset falls back to
+   * DEFAULT_SLOW_REQUEST_MS rather than off.
+   */
+  SLOW_REQUEST_MS?: string | number;
+  /**
+   * `logs.events.source` that slow-request events are written to. Empty leaves
+   * the console warning as the only channel.
+   */
+  SLOW_REQUEST_SOURCE?: string;
 }
 
 interface QueuePayload {
@@ -34,6 +52,7 @@ interface CfGeoContext {
   country?: string;
   region?: string;
   city?: string;
+  colo?: string;
   botManagement?: { verifiedBot?: boolean };
 }
 
@@ -435,12 +454,22 @@ class AuthError extends Error {
   }
 }
 
+interface AuthResult {
+  record: APIKeyRecord;
+  /** Whether the key was resolved from this isolate's cache, skipping D1. */
+  cacheHit: boolean;
+}
+
 async function authenticate(
   request: Request,
   env: Env,
-): Promise<APIKeyRecord> {
+): Promise<AuthResult> {
   const apiKey = extractAPIKey(request);
   if (!apiKey) throw new AuthError(401, "API key required");
+
+  // Peek before resolving: validateKey populates the cache, so asking
+  // afterwards would always say "hit".
+  const cacheHit = isKeyCached(apiKey);
 
   // Distinguish a known auth rejection (bad/disabled key — genuinely the
   // client's fault, safe as a non-retryable 4xx) from everything else (D1
@@ -449,7 +478,7 @@ async function authenticate(
   // 5xx, so collapsing both cases into 403 turns a transient D1 blip into
   // silent, permanent log loss across every client at once.
   try {
-    return await validateKey(apiKey, env.KEYS_DB);
+    return { record: await validateKey(apiKey, env.KEYS_DB), cacheHit };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
     if (msg === "Invalid API key" || msg === "API key is disabled") {
@@ -465,8 +494,11 @@ async function handleCLEF(
   request: Request,
   env: Env,
   source: string,
+  trace: RequestTrace,
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
+  trace.mark("read");
+  trace.bodyBytes = bodyBytes.byteLength;
   const contentType =
     request.headers.get("Content-Type") ?? "application/json";
   const enrich = buildEnrichment(request);
@@ -480,6 +512,8 @@ async function handleCLEF(
       contentType,
       enrich,
     });
+    trace.mark("enqueue");
+    trace.queueMessages = 1;
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
@@ -501,6 +535,8 @@ async function handleCLEF(
     contentType,
     enrich,
   });
+  trace.mark("enqueue");
+  trace.queueMessages = chunks.length;
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -509,8 +545,11 @@ async function handleWebhook(
   request: Request,
   env: Env,
   source: string,
+  trace: RequestTrace,
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
+  trace.mark("read");
+  trace.bodyBytes = bodyBytes.byteLength;
 
   // Cloudflare Logpush validation handshake: non-JSON body → 200 OK
   if (
@@ -533,6 +572,8 @@ async function handleWebhook(
     contentType: request.headers.get("Content-Type") ?? "application/json",
     preset: preset || undefined,
   });
+  trace.mark("enqueue");
+  trace.queueMessages = 1;
 
   return jsonResponse({ accepted: true });
 }
@@ -542,8 +583,11 @@ async function handleOTLP(
   env: Env,
   source: string,
   format: "otlp-logs" | "otlp-traces",
+  trace: RequestTrace,
 ): Promise<Response> {
   const bodyBytes = await readBody(request);
+  trace.mark("read");
+  trace.bodyBytes = bodyBytes.byteLength;
   const contentType =
     request.headers.get("Content-Type") ?? "application/x-protobuf";
   const key = format === "otlp-logs" ? "rejectedLogRecords" : "rejectedSpans";
@@ -556,6 +600,8 @@ async function handleOTLP(
       body: encodeBody(bodyBytes),
       contentType,
     });
+    trace.mark("enqueue");
+    trace.queueMessages = 1;
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
@@ -585,14 +631,92 @@ async function handleOTLP(
     source,
     contentType,
   });
+  trace.mark("enqueue");
+  trace.queueMessages = chunks.length;
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
+}
+
+// --- Slow-request reporting ---
+
+/**
+ * Report an ingest request that took at least `SLOW_REQUEST_MS` in the Worker.
+ *
+ * Two channels, deliberately independent:
+ *
+ * - `console.warn`, retained by Workers Logs (`[observability]` in
+ *   `wrangler.toml`). Costs nothing and survives the case that matters most —
+ *   a queue that is itself the slow thing.
+ * - A CLEF event on `SLOW_REQUEST_SOURCE`, enqueued in `waitUntil` so it never
+ *   adds latency to the caller's request, and throttled per isolate. This is
+ *   the channel the dashboard, MCP and `alert-worker` can already read, so
+ *   alerting on ingest degradation needs no new machinery.
+ *
+ * Never throws: an instrumentation failure must not turn a served request into
+ * a 500 that a Seq sink then retries.
+ *
+ * Exported so the reporting path can be tested against a fake clock rather
+ * than by trying to make a real request slow.
+ */
+export function reportIfSlow(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  trace: RequestTrace,
+  fields: { route: string; format: string; status: number; ingestSource: string },
+): void {
+  try {
+    const threshold = resolveSlowRequestMs(env.SLOW_REQUEST_MS);
+    if (threshold <= 0) return;
+    if (trace.totalMs() < threshold) return;
+
+    const cf = request.cf as CfGeoContext | undefined;
+    const report = buildSlowRequest(trace, {
+      ...fields,
+      colo: cf?.colo,
+      rayId: request.headers.get("cf-ray") ?? undefined,
+    });
+
+    console.warn(JSON.stringify({ event: "slow-ingest-request", ...report }));
+
+    const telemetrySource = env.SLOW_REQUEST_SOURCE?.trim() ?? "";
+    if (!telemetrySource) return;
+    if (!shouldEmitTelemetry()) return;
+
+    const line = slowRequestCLEF(report, new Date().toISOString());
+    ctx.waitUntil(
+      env.INGEST_QUEUE.send({
+        format: "clef",
+        source: telemetrySource,
+        body: encodeBody(new TextEncoder().encode(line)),
+        contentType: "application/vnd.serilog.clef",
+      }).catch((e: unknown) => {
+        console.warn(
+          JSON.stringify({
+            event: "slow-ingest-report-failed",
+            error: e instanceof Error ? e.message : String(e),
+          }),
+        );
+      }),
+    );
+  } catch (e) {
+    console.warn(
+      JSON.stringify({
+        event: "slow-ingest-report-failed",
+        error: e instanceof Error ? e.message : String(e),
+      }),
+    );
+  }
 }
 
 // --- Router ---
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
@@ -614,7 +738,7 @@ export default {
     if (path === "/v1/keys" || path.startsWith("/v1/keys/")) {
       let adminKey: APIKeyRecord;
       try {
-        adminKey = await authenticate(request, env);
+        adminKey = (await authenticate(request, env)).record;
       } catch (e) {
         if (e instanceof AuthError) return errorResponse(e.status, e.message);
         return errorResponse(500, "Internal error");
@@ -626,40 +750,79 @@ export default {
       return errorResponse(405, "Method not allowed");
     }
 
+    // Timing starts here: everything above is either a cheap string check or
+    // a path that never touches D1 or the queue. The auth span below is the
+    // first I/O the request does.
+    const trace = new RequestTrace();
+
     // Authenticate
     let key: APIKeyRecord;
     try {
-      key = await authenticate(request, env);
+      const auth = await authenticate(request, env);
+      key = auth.record;
+      trace.keyCacheHit = auth.cacheHit;
     } catch (e) {
-      if (e instanceof AuthError) return errorResponse(e.status, e.message);
-      return errorResponse(500, "Internal error");
+      trace.mark("auth");
+      // A slow *failing* auth is the most diagnostic case there is: a stalled
+      // D1 surfaces here as a 500 "Key store unavailable", and without this
+      // the one request that proves the key store is the bottleneck would be
+      // the one request that goes unreported.
+      const status = e instanceof AuthError ? e.status : 500;
+      reportIfSlow(request, env, ctx, trace, {
+        route: path,
+        format: "unknown",
+        status,
+        ingestSource: "",
+      });
+      return errorResponse(
+        status,
+        e instanceof AuthError ? e.message : "Internal error",
+      );
     }
+    trace.mark("auth");
     const source = key.name;
 
     // Route
+    let response: Response;
+    // Set before each handler runs, so a throw still reports which parser the
+    // request was headed for.
+    let format = "unknown";
     try {
       if (path === "/ingest/clef" || path === "/api/events/raw") {
-        return await handleCLEF(request, env, source);
-      }
-      if (path === "/ingest/webhook") {
-        return await handleWebhook(request, env, source);
-      }
-      if (path === "/ingest/otlp/logs" || path === "/v1/logs") {
-        return await handleOTLP(request, env, source, "otlp-logs");
-      }
-      if (path === "/ingest/otlp/traces" || path === "/v1/traces") {
-        return await handleOTLP(request, env, source, "otlp-traces");
+        format = "clef";
+        response = await handleCLEF(request, env, source, trace);
+      } else if (path === "/ingest/webhook") {
+        format = "webhook";
+        response = await handleWebhook(request, env, source, trace);
+      } else if (path === "/ingest/otlp/logs" || path === "/v1/logs") {
+        format = "otlp-logs";
+        response = await handleOTLP(request, env, source, "otlp-logs", trace);
+      } else if (path === "/ingest/otlp/traces" || path === "/v1/traces") {
+        format = "otlp-traces";
+        response = await handleOTLP(request, env, source, "otlp-traces", trace);
+      } else {
+        return errorResponse(404, "Not found");
       }
     } catch (e) {
+      // A body the client can fix still spent real time in `read`, so it is
+      // worth reporting when it was slow. An unrecognised throw is left to
+      // become a 500, which Workers Logs records as an exception outcome.
       if (e instanceof BodyTooLargeError) {
-        return errorResponse(413, e.message);
+        response = errorResponse(413, e.message);
+      } else if (e instanceof BadBodyError) {
+        response = errorResponse(400, e.message);
+      } else {
+        throw e;
       }
-      if (e instanceof BadBodyError) {
-        return errorResponse(400, e.message);
-      }
-      throw e;
     }
 
-    return errorResponse(404, "Not found");
+    reportIfSlow(request, env, ctx, trace, {
+      route: path,
+      format,
+      status: response.status,
+      ingestSource: source,
+    });
+
+    return response;
   },
 };
