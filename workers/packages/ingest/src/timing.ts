@@ -56,6 +56,13 @@ export class RequestTrace {
   bodyBytes = 0;
   /** Queue messages produced — 1 on the fast path, N when the body is chunked. */
   queueMessages = 0;
+  /**
+   * Whether the caller stopped waiting for the queue ack and the send was
+   * handed to `waitUntil` (see `src/enqueue.ts`). Only true when
+   * `QUEUE_ACK_DEADLINE_MS` is on, so every event predating that switch reads
+   * the same as before.
+   */
+  enqueueHandedOff = false;
 
   constructor(private readonly now: () => number = Date.now) {
     this.startedAt = now();
@@ -69,10 +76,18 @@ export class RequestTrace {
     this.cursor = t;
   }
 
-  /** Close the `enqueue` span and record how many messages it produced. */
-  enqueued(messages: number): void {
+  /**
+   * Close the `enqueue` span and record what it produced.
+   *
+   * The span closes when the Worker stopped waiting, which is the number that
+   * answers "how long did the client wait": the full send when it acked in
+   * time, the deadline when it did not. `handedOff` is what tells the two
+   * apart afterwards.
+   */
+  enqueued(messages: number, handedOff = false): void {
     this.mark("enqueue");
     this.queueMessages = messages;
+    this.enqueueHandedOff = handedOff;
   }
 
   span(phase: Phase): number {
@@ -112,6 +127,13 @@ export interface SlowRequest {
   keyCacheHit: boolean;
   bodyBytes: number;
   queueMessages: number;
+  /**
+   * Present, and always `true`, only when the caller's wait for the queue ack
+   * hit `QUEUE_ACK_DEADLINE_MS` and the send was handed to `waitUntil`. Absent
+   * otherwise, so an event from the default (deadline off) configuration is
+   * byte-identical to one from before the deadline existed.
+   */
+  enqueueHandedOff?: true;
   colo?: string;
   rayId?: string;
 }
@@ -136,6 +158,7 @@ export function buildSlowRequest(
     keyCacheHit: trace.keyCacheHit,
     bodyBytes: trace.bodyBytes,
     queueMessages: trace.queueMessages,
+    ...(trace.enqueueHandedOff ? { enqueueHandedOff: true as const } : {}),
   };
 }
 
@@ -165,28 +188,97 @@ export function slowRequestCLEF(r: SlowRequest, at: string): string {
     BodyBytes: r.bodyBytes,
     QueueMessages: r.queueMessages,
   };
+  if (r.enqueueHandedOff) event.EnqueueHandedOff = true;
   if (r.colo) event.Colo = r.colo;
   if (r.rayId) event.RayId = r.rayId;
   return `${JSON.stringify(event)}\n`;
 }
+
+/**
+ * A queue send that failed *after* its response had already gone out — only
+ * reachable once `QUEUE_ACK_DEADLINE_MS` is on and a send was handed off.
+ *
+ * This is the one loss the handoff can cause, and the client cannot see it: it
+ * was told 201. Reporting it is the whole reason the handoff is allowed to
+ * exist, so it renders as an `Error`, not a `Warning`, with its own `@mt` so
+ * the consumer's derived `event_type` separates it from `slow-ingest-request`
+ * and it can be alerted on by itself.
+ */
+export interface EnqueueFailure {
+  route: string;
+  format: string;
+  /** The API key's name — the `logs.events.source` whose events were lost. */
+  ingestSource: string;
+  /** Messages the failed send would have produced. */
+  queueMessages: number;
+  bodyBytes: number;
+  /** How long the caller waited before the handoff, in milliseconds. */
+  waitedMs: number;
+  error: string;
+  colo?: string;
+  rayId?: string;
+}
+
+export function enqueueFailureCLEF(f: EnqueueFailure, at: string): string {
+  const event: Record<string, unknown> = {
+    "@t": at,
+    "@l": "Error",
+    "@mt":
+      "Ingest enqueue failed after the response was sent: {Route} lost {QueueMessages} message(s) for {IngestSource}",
+    Route: f.route,
+    Format: f.format,
+    IngestSource: f.ingestSource,
+    QueueMessages: f.queueMessages,
+    BodyBytes: f.bodyBytes,
+    WaitedMs: f.waitedMs,
+    Error: f.error,
+  };
+  if (f.colo) event.Colo = f.colo;
+  if (f.rayId) event.RayId = f.rayId;
+  return `${JSON.stringify(event)}\n`;
+}
+
+/**
+ * Queue-borne telemetry kinds, each with its own throttle budget.
+ *
+ * They are separate because they compete for the same scarce thing — messages
+ * on a queue that is already struggling — but are not equally replaceable. A
+ * degradation produces `slow-request` events continuously, while
+ * `enqueue-failure` is rare and marks events that are actually gone. Sharing
+ * one budget would let the common event crowd out the irreplaceable one at
+ * exactly the moment both fire.
+ */
+export type TelemetryChannel = "slow-request" | "enqueue-failure";
 
 // Isolate-scoped, like the key cache in `keys.ts`: shared by every request this
 // isolate serves, and reset when it is evicted. Throttling per isolate rather
 // than globally is deliberate — a fleet-wide degradation is visible across many
 // isolates at once, which is the signal, while a single hot isolate cannot
 // flood the queue on its own.
-let lastTelemetryAt = 0;
+const lastTelemetryAt: Record<TelemetryChannel, number> = {
+  "slow-request": 0,
+  "enqueue-failure": 0,
+};
 
-/** True at most once per `TELEMETRY_MIN_INTERVAL_MS`. Records the emission. */
-export function shouldEmitTelemetry(now: number = Date.now()): boolean {
-  if (lastTelemetryAt !== 0 && now - lastTelemetryAt < TELEMETRY_MIN_INTERVAL_MS) {
+/**
+ * True at most once per `TELEMETRY_MIN_INTERVAL_MS` per channel. Records the
+ * emission.
+ */
+export function shouldEmitTelemetry(
+  now: number = Date.now(),
+  channel: TelemetryChannel = "slow-request",
+): boolean {
+  const last = lastTelemetryAt[channel];
+  if (last !== 0 && now - last < TELEMETRY_MIN_INTERVAL_MS) {
     return false;
   }
-  lastTelemetryAt = now;
+  lastTelemetryAt[channel] = now;
   return true;
 }
 
-/** Test-only. Clears the module-level throttle between cases. */
+/** Test-only. Clears every module-level throttle between cases. */
 export function __resetTelemetryThrottle(): void {
-  lastTelemetryAt = 0;
+  for (const channel of Object.keys(lastTelemetryAt) as TelemetryChannel[]) {
+    lastTelemetryAt[channel] = 0;
+  }
 }

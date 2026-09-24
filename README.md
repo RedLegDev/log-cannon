@@ -369,6 +369,7 @@ isolate so a degraded queue is not answered with more traffic.
 |------------|---------|-------------|
 | `SLOW_REQUEST_MS` | `1000` | Report at or above this many milliseconds. `0` disables. |
 | `SLOW_REQUEST_SOURCE` | `log-cannon-ingest` | Source the events are written to. Empty leaves Workers Logs as the only channel. |
+| `QUEUE_ACK_DEADLINE_MS` | `0` | Stop waiting for the queue ack after this long and finish the send in the background. `0` waits in full. |
 
 The Worker stamps this `source` itself and needs no key for it, but retention is
 projected from the key registry by name (see [Per-Service Retention](#per-service-retention)),
@@ -384,7 +385,8 @@ different incident depending on where the time went:
 | `TotalMs` | Time inside the Worker |
 | `AuthMs` | D1 key lookup |
 | `ReadMs` | Reading (and gzip-decoding) the request body |
-| `EnqueueMs` | `INGEST_QUEUE` send |
+| `EnqueueMs` | Wait on the `INGEST_QUEUE` send — the full send, or the deadline if one was hit |
+| `EnqueueHandedOff` | Present, and `true`, only when the send outlived `QUEUE_ACK_DEADLINE_MS` and finished in the background |
 | `KeyCacheHit` | Whether the key was already in this isolate's cache |
 | `Route` / `Format` / `Status` | Which endpoint, which parser, what was returned |
 | `IngestSource` | The `source` the request was writing to |
@@ -417,6 +419,40 @@ To alert on degradation while it is happening, add an alert over these events:
 
 Because the events are throttled per isolate, treat `cnt` as "how many isolates
 saw this", not as a count of slow requests. For the latter, read Workers Logs.
+
+#### Bounding the queue wait
+
+The `INGEST_QUEUE` send is a durable-acknowledgement round trip, so whatever
+Cloudflare Queues takes to acknowledge is time the sender spends waiting for its
+response. On a healthy, idle queue that tail has been measured in seconds, with
+a worst case over a minute — and because senders bound their own request
+(Serilog's Seq sink and most hand-rolled clients at around 5 s), they abort and
+lose the batch while the platform itself is fine.
+
+`QUEUE_ACK_DEADLINE_MS` bounds the *caller's* wait, not the send. Set it, and a
+send that has not acked by the deadline is moved to the background: the response
+goes out immediately and the send runs to completion behind it. Chunked bodies
+are safe — the deadline covers the whole enqueue, so the batches that had not
+gone out yet still go out.
+
+It ships at `0`, meaning off, and should be switched on deliberately. A handoff
+means the Worker has answered `201` before the queue has durably accepted the
+payload, so a send that then fails is a loss the client already believes
+succeeded. That case is reported, never silent: an `ingest-enqueue-failed-after-response`
+line in Workers Logs and a matching CLEF `Error` on `SLOW_REQUEST_SOURCE`,
+carrying the route, the source, and how many messages were lost. Alert on it
+separately from the latency alert above:
+
+```json
+{
+  "id": "ingest-enqueue-loss",
+  "name": "Ingest Enqueue Loss",
+  "query": "SELECT count() as cnt FROM logs.events WHERE source = 'log-cannon-ingest' AND level = 'Error' AND timestamp > now() - INTERVAL 5 MINUTE",
+  "condition": "cnt > 0",
+  "interval_seconds": 60,
+  "cooldown_seconds": 900
+}
+```
 
 ### Go service logs
 

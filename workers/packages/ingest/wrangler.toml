@@ -56,6 +56,17 @@ SLOW_REQUEST_MS = "1000"
 # logs.events source that slow-request events are written to, through the same
 # queue as every other event. Empty leaves Workers Logs as the only channel.
 SLOW_REQUEST_SOURCE = "log-cannon-ingest"
+# Stop holding the caller after this long waiting for the queue to acknowledge a
+# send, and finish the send in waitUntil instead. "0" is off: await the ack in
+# full, which is the behaviour that predates this var.
+#
+# Off by default on purpose. Switching it on means the Worker can answer 201
+# before the queue has durably accepted the payload, so a send that fails after
+# that point is a loss the client already believes succeeded (reported as
+# ingest-enqueue-failed-after-response, never silent). Turn it on only when the
+# queue's ack tail is the thing hurting senders — see workers/packages/ingest/
+# src/enqueue.ts.
+QUEUE_ACK_DEADLINE_MS = "0"
 
 [[queues.producers]]
 queue = "log-cannon-ingest"
@@ -104,6 +115,7 @@ invocation_logs = true
 [env.production.vars]
 SLOW_REQUEST_MS = "1000"
 SLOW_REQUEST_SOURCE = "log-cannon-ingest"
+QUEUE_ACK_DEADLINE_MS = "0"
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"

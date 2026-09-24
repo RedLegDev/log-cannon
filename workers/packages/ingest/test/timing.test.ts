@@ -5,11 +5,12 @@ import {
   TELEMETRY_MIN_INTERVAL_MS,
   __resetTelemetryThrottle,
   buildSlowRequest,
+  enqueueFailureCLEF,
   resolveSlowRequestMs,
   shouldEmitTelemetry,
   slowRequestCLEF,
 } from "../src/timing";
-import { reportIfSlow } from "../src/index";
+import { reportEnqueueFailure, reportIfSlow, type IngestRequest } from "../src/index";
 
 /** A clock the test drives by hand, standing in for Workers' I/O-stepped one. */
 function fakeClock(start = 1_000) {
@@ -136,6 +137,77 @@ describe("slowRequestCLEF", () => {
     expect("Colo" in e).toBe(false);
     expect("RayId" in e).toBe(false);
   });
+
+  it("omits EnqueueHandedOff unless the caller stopped waiting for the ack", () => {
+    // Default (QUEUE_ACK_DEADLINE_MS = 0) events stay byte-identical to the
+    // ones emitted before the deadline existed.
+    const off = JSON.parse(slowRequestCLEF(report, "2026-09-24T00:00:00.000Z"));
+    expect("EnqueueHandedOff" in off).toBe(false);
+
+    const on = JSON.parse(
+      slowRequestCLEF(
+        { ...report, enqueueHandedOff: true },
+        "2026-09-24T00:00:00.000Z",
+      ),
+    );
+    expect(on.EnqueueHandedOff).toBe(true);
+  });
+});
+
+describe("enqueueFailureCLEF", () => {
+  const failure = {
+    route: "/ingest/clef",
+    format: "clef",
+    ingestSource: "example-app",
+    queueMessages: 3,
+    bodyBytes: 140_000,
+    waitedMs: 250,
+    error: "queue unavailable",
+    colo: "IAD",
+    rayId: "ray-1",
+  };
+
+  it("renders one newline-terminated CLEF line at Error level", () => {
+    const line = enqueueFailureCLEF(failure, "2026-09-24T00:00:00.000Z");
+    expect(line.endsWith("\n")).toBe(true);
+    expect(line.trimEnd().includes("\n")).toBe(false);
+    expect(JSON.parse(line)["@l"]).toBe("Error");
+  });
+
+  it("names what was lost, for whom, and why", () => {
+    const e = JSON.parse(enqueueFailureCLEF(failure, "2026-09-24T00:00:00.000Z"));
+    expect(e.Route).toBe("/ingest/clef");
+    expect(e.IngestSource).toBe("example-app");
+    expect(e.QueueMessages).toBe(3);
+    expect(e.BodyBytes).toBe(140_000);
+    expect(e.WaitedMs).toBe(250);
+    expect(e.Error).toBe("queue unavailable");
+  });
+
+  it("uses a different @mt from slowRequestCLEF, so event_type separates them", () => {
+    const loss = JSON.parse(
+      enqueueFailureCLEF(failure, "2026-09-24T00:00:00.000Z"),
+    );
+    const slow = JSON.parse(
+      slowRequestCLEF(
+        {
+          route: "/ingest/clef",
+          format: "clef",
+          status: 201,
+          ingestSource: "example-app",
+          totalMs: 1,
+          authMs: 0,
+          readMs: 0,
+          enqueueMs: 1,
+          keyCacheHit: true,
+          bodyBytes: 1,
+          queueMessages: 1,
+        },
+        "2026-09-24T00:00:00.000Z",
+      ),
+    );
+    expect(loss["@mt"]).not.toBe(slow["@mt"]);
+  });
 });
 
 describe("shouldEmitTelemetry", () => {
@@ -152,6 +224,14 @@ describe("shouldEmitTelemetry", () => {
   it("allows another once the interval has passed", () => {
     expect(shouldEmitTelemetry(10_000)).toBe(true);
     expect(shouldEmitTelemetry(10_000 + TELEMETRY_MIN_INTERVAL_MS)).toBe(true);
+  });
+
+  it("budgets each channel separately, so a slow-request burst cannot hide a loss", () => {
+    expect(shouldEmitTelemetry(10_000, "slow-request")).toBe(true);
+    expect(shouldEmitTelemetry(10_001, "slow-request")).toBe(false);
+    // The rarer event still gets through — it marks events that are gone.
+    expect(shouldEmitTelemetry(10_001, "enqueue-failure")).toBe(true);
+    expect(shouldEmitTelemetry(10_002, "enqueue-failure")).toBe(false);
   });
 });
 
@@ -324,6 +404,32 @@ describe("reportIfSlow", () => {
 });
 
 describe("buildSlowRequest", () => {
+  function tracedEnqueue(handedOff: boolean) {
+    const clock = fakeClock();
+    const trace = new RequestTrace(clock.now);
+    clock.advance(300);
+    trace.enqueued(4, handedOff);
+    return buildSlowRequest(trace, {
+      route: "/ingest/clef",
+      format: "clef",
+      status: 201,
+      ingestSource: "example-app",
+    });
+  }
+
+  it("carries the queue-ack handoff through only when one happened", () => {
+    expect("enqueueHandedOff" in tracedEnqueue(false)).toBe(false);
+    expect(tracedEnqueue(true).enqueueHandedOff).toBe(true);
+  });
+
+  it("keeps EnqueueMs as the time the caller actually waited", () => {
+    // 300 ms either way: the full send when it acked in time, the deadline
+    // when it did not. `enqueueHandedOff` is what tells the two apart.
+    expect(tracedEnqueue(false).enqueueMs).toBe(300);
+    expect(tracedEnqueue(true).enqueueMs).toBe(300);
+    expect(tracedEnqueue(true).queueMessages).toBe(4);
+  });
+
   it("flattens the trace and the caller's fields into one record", () => {
     const r = buildSlowRequest(slowTrace(1500), {
       route: "/v1/logs",
@@ -344,5 +450,139 @@ describe("buildSlowRequest", () => {
       queueMessages: 1,
       colo: "LHR",
     });
+  });
+});
+
+// --- reportEnqueueFailure ---------------------------------------------------
+
+/**
+ * The loss report only exists once `QUEUE_ACK_DEADLINE_MS` is on, and it is the
+ * only record that events the client was told were accepted are gone. Driven
+ * directly here for the same reason `reportIfSlow` is: making a real send fail
+ * after a real deadline is not something a test can do reliably.
+ */
+function failureHarness(vars: Record<string, string> = {}) {
+  const sent: unknown[] = [];
+  const env = {
+    INGEST_QUEUE: {
+      send: async (m: unknown) => {
+        sent.push(m);
+      },
+    },
+    KEYS_DB: undefined,
+    SLOW_REQUEST_MS: "1000",
+    SLOW_REQUEST_SOURCE: "log-cannon-ingest",
+    ...vars,
+  };
+  const clock = fakeClock();
+  const trace = new RequestTrace(clock.now);
+  trace.bodyBytes = 141_000;
+  clock.advance(250);
+  trace.enqueued(3, true);
+
+  const ingest = {
+    request: new Request("https://logs.example.com/ingest/clef", {
+      method: "POST",
+      headers: { "cf-ray": "ray-abc" },
+    }),
+    env,
+    ctx: {
+      waitUntil: () => {},
+      passThroughOnException: () => {},
+    },
+    trace,
+    route: "/ingest/clef",
+    source: "example-app",
+  } as unknown as IngestRequest;
+
+  return {
+    sent,
+    report: (error: unknown = new Error("queue unavailable")) =>
+      reportEnqueueFailure(ingest, "clef", 3, error),
+  };
+}
+
+describe("reportEnqueueFailure", () => {
+  beforeEach(() => __resetTelemetryThrottle());
+
+  it("logs and enqueues one event naming what was lost", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = failureHarness();
+    await h.report();
+
+    expect(error).toHaveBeenCalledTimes(1);
+    const logged = JSON.parse(error.mock.calls[0][0] as string);
+    expect(logged.event).toBe("ingest-enqueue-failed-after-response");
+    expect(logged.route).toBe("/ingest/clef");
+    expect(logged.ingestSource).toBe("example-app");
+    expect(logged.queueMessages).toBe(3);
+    expect(logged.waitedMs).toBe(250);
+    expect(logged.bodyBytes).toBe(141_000);
+    expect(logged.error).toBe("queue unavailable");
+    expect(logged.rayId).toBe("ray-abc");
+    error.mockRestore();
+
+    expect(h.sent).toHaveLength(1);
+    const msg = h.sent[0] as { format: string; source: string; body: string };
+    expect(msg.source).toBe("log-cannon-ingest");
+    const event = JSON.parse(atob(msg.body));
+    expect(event["@l"]).toBe("Error");
+    expect(event.QueueMessages).toBe(3);
+    expect(event.IngestSource).toBe("example-app");
+  });
+
+  it("reports whatever the latency threshold is set to — a loss is not a latency event", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = failureHarness({ SLOW_REQUEST_MS: "0" });
+    await h.report();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(h.sent).toHaveLength(1);
+    error.mockRestore();
+  });
+
+  it("still logs when SLOW_REQUEST_SOURCE is empty, but enqueues nothing", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const h = failureHarness({ SLOW_REQUEST_SOURCE: "" });
+    await h.report();
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(h.sent).toHaveLength(0);
+    error.mockRestore();
+  });
+
+  it("never throws when the report's own send fails — the queue is what broke", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ingest = {
+      request: new Request("https://logs.example.com/ingest/clef", {
+        method: "POST",
+      }),
+      env: {
+        INGEST_QUEUE: {
+          send: async () => {
+            throw new Error("queue unavailable");
+          },
+        },
+        SLOW_REQUEST_SOURCE: "log-cannon-ingest",
+      },
+      ctx: { waitUntil: () => {}, passThroughOnException: () => {} },
+      trace: new RequestTrace(fakeClock().now),
+      route: "/ingest/clef",
+      source: "example-app",
+    } as unknown as IngestRequest;
+
+    await expect(
+      reportEnqueueFailure(ingest, "clef", 1, new Error("original")),
+    ).resolves.toBeUndefined();
+
+    // The console line is the channel that survives a broken queue, and it
+    // already carried the original loss before the report send was attempted.
+    expect(
+      JSON.parse(error.mock.calls[0][0] as string).error,
+    ).toBe("original");
+    expect(
+      warn.mock.calls.map((c) => JSON.parse(c[0] as string).event),
+    ).toContain("slow-ingest-report-failed");
+    error.mockRestore();
+    warn.mockRestore();
   });
 });

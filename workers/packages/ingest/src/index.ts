@@ -5,10 +5,13 @@ import { handleAdminKeys } from "./admin";
 import {
   RequestTrace,
   buildSlowRequest,
+  enqueueFailureCLEF,
   resolveSlowRequestMs,
   shouldEmitTelemetry,
   slowRequestCLEF,
+  type EnqueueFailure,
 } from "./timing";
+import { resolveQueueAckDeadlineMs, sendWithDeadline } from "./enqueue";
 
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
@@ -24,6 +27,13 @@ interface Env {
    * the console warning as the only channel.
    */
   SLOW_REQUEST_SOURCE?: string;
+  /**
+   * Stop waiting for the queue ack after this many milliseconds and finish the
+   * send in `waitUntil` instead. `0` — the default, and what anything unset or
+   * unparseable falls back to — awaits the send fully, exactly as before this
+   * existed. See `src/enqueue.ts` for why it ships off.
+   */
+  QUEUE_ACK_DEADLINE_MS?: string | number;
 }
 
 interface QueuePayload {
@@ -514,14 +524,116 @@ async function authenticate(
   }
 }
 
+// --- Enqueue ---
+
+/**
+ * Everything a route handler and its enqueue need from the request that is the
+ * same for all of them. Bundled rather than threaded as five more parameters
+ * because the enqueue path now needs the request and the execution context too,
+ * and a post-handoff failure report needs all of it after the response is gone.
+ */
+export interface IngestRequest {
+  request: Request;
+  env: Env;
+  ctx: ExecutionContext;
+  trace: RequestTrace;
+  /** Request pathname, as the slow-request and failure events record it. */
+  route: string;
+  /** The API key's name — the `logs.events.source` being written to. */
+  source: string;
+}
+
+/**
+ * Push to the queue with the caller's wait bounded by `QUEUE_ACK_DEADLINE_MS`,
+ * and close the `enqueue` span.
+ *
+ * Every queue write on the request path goes through here so the deadline, the
+ * span and the loss report cannot drift apart per route. `send` is a thunk over
+ * the whole enqueue — one `send`, or the full `sendChunksBatched` sequence — so
+ * a handoff mid-sequence hands off the remaining batches with it.
+ */
+async function enqueue(
+  ingest: IngestRequest,
+  format: QueuePayload["format"],
+  messages: number,
+  send: () => Promise<unknown>,
+): Promise<void> {
+  const { handedOff } = await sendWithDeadline(
+    send,
+    resolveQueueAckDeadlineMs(ingest.env.QUEUE_ACK_DEADLINE_MS),
+    ingest.ctx,
+    (error) => reportEnqueueFailure(ingest, format, messages, error),
+  );
+  ingest.trace.enqueued(messages, handedOff);
+}
+
+/**
+ * Report a send that failed after its response had already gone out.
+ *
+ * Only reachable with `QUEUE_ACK_DEADLINE_MS` on. The client was told the
+ * events were accepted and has no way to learn otherwise, so this is the only
+ * record that they are gone — which is why it goes to both of #107's channels
+ * and carries its own event name for alerting. Unlike `reportIfSlow` it does
+ * not consult `SLOW_REQUEST_MS`: a loss is worth reporting whatever the
+ * latency threshold is set to.
+ *
+ * Never throws. It runs inside `waitUntil`, where a throw would be recorded as
+ * an exception against a request that was served successfully.
+ *
+ * Exported for the same reason as `reportIfSlow`: the alternative is making a
+ * real queue send fail after a real deadline, which no test can do reliably.
+ */
+export async function reportEnqueueFailure(
+  ingest: IngestRequest,
+  format: QueuePayload["format"],
+  messages: number,
+  error: unknown,
+): Promise<void> {
+  try {
+    const { request, env, trace } = ingest;
+    const cf = request.cf as CfGeoContext | undefined;
+    const failure: EnqueueFailure = {
+      route: ingest.route,
+      format,
+      ingestSource: ingest.source,
+      queueMessages: messages,
+      bodyBytes: trace.bodyBytes,
+      waitedMs: trace.span("enqueue"),
+      error: error instanceof Error ? error.message : String(error),
+      colo: cf?.colo,
+      rayId: request.headers.get("cf-ray") ?? undefined,
+    };
+
+    console.error(
+      JSON.stringify({
+        event: "ingest-enqueue-failed-after-response",
+        ...failure,
+      }),
+    );
+
+    const telemetrySource = env.SLOW_REQUEST_SOURCE?.trim() ?? "";
+    if (!telemetrySource) return;
+    if (!shouldEmitTelemetry(Date.now(), "enqueue-failure")) return;
+
+    const line = enqueueFailureCLEF(failure, new Date().toISOString());
+    await env.INGEST_QUEUE.send({
+      format: "clef",
+      source: telemetrySource,
+      body: encodeBody(new TextEncoder().encode(line)),
+      contentType: "application/vnd.serilog.clef",
+    });
+  } catch (e) {
+    // The queue is the thing that just failed, so its report failing too is
+    // the expected case, not a surprise. The console line above has already
+    // gone out by then.
+    warnReportFailed(e);
+  }
+}
+
 // --- Route handlers ---
 
-async function handleCLEF(
-  request: Request,
-  env: Env,
-  source: string,
-  trace: RequestTrace,
-): Promise<Response> {
+async function handleCLEF(ingest: IngestRequest): Promise<Response> {
+  const { request, env, source, trace } = ingest;
   const bodyBytes = await readTracedBody(request, trace);
   const contentType =
     request.headers.get("Content-Type") ?? "application/json";
@@ -529,14 +641,15 @@ async function handleCLEF(
 
   // Fast path: small bodies go in a single queue message.
   if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
-    await env.INGEST_QUEUE.send({
-      format: "clef",
-      source,
-      body: encodeBody(bodyBytes),
-      contentType,
-      enrich,
-    });
-    trace.enqueued(1);
+    await enqueue(ingest, "clef", 1, () =>
+      env.INGEST_QUEUE.send({
+        format: "clef",
+        source,
+        body: encodeBody(bodyBytes),
+        contentType,
+        enrich,
+      }),
+    );
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
@@ -552,23 +665,20 @@ async function handleCLEF(
     );
   }
 
-  await sendChunksBatched(env.INGEST_QUEUE, chunks, {
-    format: "clef",
-    source,
-    contentType,
-    enrich,
-  });
-  trace.enqueued(chunks.length);
+  await enqueue(ingest, "clef", chunks.length, () =>
+    sendChunksBatched(env.INGEST_QUEUE, chunks, {
+      format: "clef",
+      source,
+      contentType,
+      enrich,
+    }),
+  );
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
 
-async function handleWebhook(
-  request: Request,
-  env: Env,
-  source: string,
-  trace: RequestTrace,
-): Promise<Response> {
+async function handleWebhook(ingest: IngestRequest): Promise<Response> {
+  const { request, env, source, trace } = ingest;
   const bodyBytes = await readTracedBody(request, trace);
 
   // Cloudflare Logpush validation handshake: non-JSON body → 200 OK
@@ -585,25 +695,24 @@ async function handleWebhook(
   // follow-up if a webhook producer ever exceeds the cap.
   const preset = new URL(request.url).searchParams.get("preset") ?? "";
 
-  await env.INGEST_QUEUE.send({
-    format: "webhook",
-    source,
-    body: encodeBody(bodyBytes),
-    contentType: request.headers.get("Content-Type") ?? "application/json",
-    preset: preset || undefined,
-  });
-  trace.enqueued(1);
+  await enqueue(ingest, "webhook", 1, () =>
+    env.INGEST_QUEUE.send({
+      format: "webhook",
+      source,
+      body: encodeBody(bodyBytes),
+      contentType: request.headers.get("Content-Type") ?? "application/json",
+      preset: preset || undefined,
+    }),
+  );
 
   return jsonResponse({ accepted: true });
 }
 
 async function handleOTLP(
-  request: Request,
-  env: Env,
-  source: string,
+  ingest: IngestRequest,
   format: "otlp-logs" | "otlp-traces",
-  trace: RequestTrace,
 ): Promise<Response> {
+  const { request, env, source, trace } = ingest;
   const bodyBytes = await readTracedBody(request, trace);
   const contentType =
     request.headers.get("Content-Type") ?? "application/x-protobuf";
@@ -611,13 +720,14 @@ async function handleOTLP(
 
   // Fast path: small bodies go in a single queue message.
   if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
-    await env.INGEST_QUEUE.send({
-      format,
-      source,
-      body: encodeBody(bodyBytes),
-      contentType,
-    });
-    trace.enqueued(1);
+    await enqueue(ingest, format, 1, () =>
+      env.INGEST_QUEUE.send({
+        format,
+        source,
+        body: encodeBody(bodyBytes),
+        contentType,
+      }),
+    );
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
@@ -642,12 +752,13 @@ async function handleOTLP(
     );
   }
 
-  await sendChunksBatched(env.INGEST_QUEUE, chunks, {
-    format,
-    source,
-    contentType,
-  });
-  trace.enqueued(chunks.length);
+  await enqueue(ingest, format, chunks.length, () =>
+    sendChunksBatched(env.INGEST_QUEUE, chunks, {
+      format,
+      source,
+      contentType,
+    }),
+  );
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
@@ -806,18 +917,20 @@ export default {
       | undefined;
     if (!format) return errorResponse(404, "Not found");
 
+    const ingest: IngestRequest = { request, env, ctx, trace, route: path, source };
+
     let response: Response;
     try {
       switch (format) {
         case "clef":
-          response = await handleCLEF(request, env, source, trace);
+          response = await handleCLEF(ingest);
           break;
         case "webhook":
-          response = await handleWebhook(request, env, source, trace);
+          response = await handleWebhook(ingest);
           break;
         case "otlp-logs":
         case "otlp-traces":
-          response = await handleOTLP(request, env, source, format, trace);
+          response = await handleOTLP(ingest, format);
           break;
       }
     } catch (e) {
