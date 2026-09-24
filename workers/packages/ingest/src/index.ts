@@ -44,6 +44,21 @@ interface QueuePayload {
   enrich?: Record<string, string>;
 }
 
+/**
+ * Ingest routes and the parser each dispatches to. The route list and the
+ * format union already had to agree; keeping the mapping in one place stops
+ * the router becoming a third copy that has to agree with both.
+ */
+const ROUTE_FORMATS = {
+  "/ingest/clef": "clef",
+  "/api/events/raw": "clef",
+  "/ingest/webhook": "webhook",
+  "/ingest/otlp/logs": "otlp-logs",
+  "/v1/logs": "otlp-logs",
+  "/ingest/otlp/traces": "otlp-traces",
+  "/v1/traces": "otlp-traces",
+} satisfies Record<string, QueuePayload["format"]>;
+
 /** Narrowed view of the `request.cf` fields we read (workers-types exposes
  * these under a broad generic). Every field is optional — Cloudflare omits
  * them outside a real edge request, and botManagement requires Bot Management. */
@@ -198,6 +213,17 @@ async function readBody(request: Request): Promise<Uint8Array> {
     offset += chunk.byteLength;
   }
   return result;
+}
+
+/** `readBody`, with the `read` span closed and the body size recorded. */
+async function readTracedBody(
+  request: Request,
+  trace: RequestTrace,
+): Promise<Uint8Array> {
+  const bodyBytes = await readBody(request);
+  trace.mark("read");
+  trace.bodyBytes = bodyBytes.byteLength;
+  return bodyBytes;
 }
 
 function encodeBody(bytes: Uint8Array): string {
@@ -496,9 +522,7 @@ async function handleCLEF(
   source: string,
   trace: RequestTrace,
 ): Promise<Response> {
-  const bodyBytes = await readBody(request);
-  trace.mark("read");
-  trace.bodyBytes = bodyBytes.byteLength;
+  const bodyBytes = await readTracedBody(request, trace);
   const contentType =
     request.headers.get("Content-Type") ?? "application/json";
   const enrich = buildEnrichment(request);
@@ -512,8 +536,7 @@ async function handleCLEF(
       contentType,
       enrich,
     });
-    trace.mark("enqueue");
-    trace.queueMessages = 1;
+    trace.enqueued(1);
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
@@ -535,8 +558,7 @@ async function handleCLEF(
     contentType,
     enrich,
   });
-  trace.mark("enqueue");
-  trace.queueMessages = chunks.length;
+  trace.enqueued(chunks.length);
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -547,9 +569,7 @@ async function handleWebhook(
   source: string,
   trace: RequestTrace,
 ): Promise<Response> {
-  const bodyBytes = await readBody(request);
-  trace.mark("read");
-  trace.bodyBytes = bodyBytes.byteLength;
+  const bodyBytes = await readTracedBody(request, trace);
 
   // Cloudflare Logpush validation handshake: non-JSON body → 200 OK
   if (
@@ -572,8 +592,7 @@ async function handleWebhook(
     contentType: request.headers.get("Content-Type") ?? "application/json",
     preset: preset || undefined,
   });
-  trace.mark("enqueue");
-  trace.queueMessages = 1;
+  trace.enqueued(1);
 
   return jsonResponse({ accepted: true });
 }
@@ -585,9 +604,7 @@ async function handleOTLP(
   format: "otlp-logs" | "otlp-traces",
   trace: RequestTrace,
 ): Promise<Response> {
-  const bodyBytes = await readBody(request);
-  trace.mark("read");
-  trace.bodyBytes = bodyBytes.byteLength;
+  const bodyBytes = await readTracedBody(request, trace);
   const contentType =
     request.headers.get("Content-Type") ?? "application/x-protobuf";
   const key = format === "otlp-logs" ? "rejectedLogRecords" : "rejectedSpans";
@@ -600,8 +617,7 @@ async function handleOTLP(
       body: encodeBody(bodyBytes),
       contentType,
     });
-    trace.mark("enqueue");
-    trace.queueMessages = 1;
+    trace.enqueued(1);
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
@@ -631,13 +647,22 @@ async function handleOTLP(
     source,
     contentType,
   });
-  trace.mark("enqueue");
-  trace.queueMessages = chunks.length;
+  trace.enqueued(chunks.length);
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
 
 // --- Slow-request reporting ---
+
+/** One message for both failure channels, so they cannot drift. */
+function warnReportFailed(e: unknown): void {
+  console.warn(
+    JSON.stringify({
+      event: "slow-ingest-report-failed",
+      error: e instanceof Error ? e.message : String(e),
+    }),
+  );
+}
 
 /**
  * Report an ingest request that took at least `SLOW_REQUEST_MS` in the Worker.
@@ -690,22 +715,14 @@ export function reportIfSlow(
         source: telemetrySource,
         body: encodeBody(new TextEncoder().encode(line)),
         contentType: "application/vnd.serilog.clef",
-      }).catch((e: unknown) => {
-        console.warn(
-          JSON.stringify({
-            event: "slow-ingest-report-failed",
-            error: e instanceof Error ? e.message : String(e),
-          }),
-        );
-      }),
+      }).catch(warnReportFailed),
     );
   } catch (e) {
-    console.warn(
-      JSON.stringify({
-        event: "slow-ingest-report-failed",
-        error: e instanceof Error ? e.message : String(e),
-      }),
-    );
+    // The outer catch covers the synchronous path, including a `send` that
+    // throws before it returns a promise; the inner `.catch` covers the
+    // rejection of a send that is never awaited. Different failures, one
+    // message.
+    warnReportFailed(e);
   }
 }
 
@@ -782,31 +799,38 @@ export default {
     trace.mark("auth");
     const source = key.name;
 
-    // Route
+    // Route. The lookup stays after auth: an unauthenticated request to an
+    // unknown path must still get 401, not 404.
+    const format = ROUTE_FORMATS[path as keyof typeof ROUTE_FORMATS] as
+      | QueuePayload["format"]
+      | undefined;
+    if (!format) return errorResponse(404, "Not found");
+
     let response: Response;
-    // Set before each handler runs, so a throw still reports which parser the
-    // request was headed for.
-    let format = "unknown";
     try {
-      if (path === "/ingest/clef" || path === "/api/events/raw") {
-        format = "clef";
-        response = await handleCLEF(request, env, source, trace);
-      } else if (path === "/ingest/webhook") {
-        format = "webhook";
-        response = await handleWebhook(request, env, source, trace);
-      } else if (path === "/ingest/otlp/logs" || path === "/v1/logs") {
-        format = "otlp-logs";
-        response = await handleOTLP(request, env, source, "otlp-logs", trace);
-      } else if (path === "/ingest/otlp/traces" || path === "/v1/traces") {
-        format = "otlp-traces";
-        response = await handleOTLP(request, env, source, "otlp-traces", trace);
-      } else {
-        return errorResponse(404, "Not found");
+      switch (format) {
+        case "clef":
+          response = await handleCLEF(request, env, source, trace);
+          break;
+        case "webhook":
+          response = await handleWebhook(request, env, source, trace);
+          break;
+        case "otlp-logs":
+        case "otlp-traces":
+          response = await handleOTLP(request, env, source, format, trace);
+          break;
       }
     } catch (e) {
       // A body the client can fix still spent real time in `read`, so it is
       // worth reporting when it was slow. An unrecognised throw is left to
       // become a 500, which Workers Logs records as an exception outcome.
+      //
+      // Both errors caught here originate in `readBody`, which throws *after*
+      // stream I/O — so the clock has moved and the handler never reached its
+      // own `trace.mark("read")`. Close the span here or a slow oversized body
+      // reports a large TotalMs against an all-zero breakdown, which is the
+      // one thing this instrumentation exists to prevent.
+      trace.mark("read");
       if (e instanceof BodyTooLargeError) {
         response = errorResponse(413, e.message);
       } else if (e instanceof BadBodyError) {

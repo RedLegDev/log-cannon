@@ -61,8 +61,16 @@ export function __resetKeyCache(): void {
  * somehow still slow.
  */
 export function isKeyCached(apiKey: string, now: number = Date.now()): boolean {
+  return cachedRecord(apiKey, now) !== undefined;
+}
+
+/** The single definition of "this isolate still holds a usable entry". */
+function cachedRecord(
+  apiKey: string,
+  now: number,
+): APIKeyRecord | undefined {
   const cached = KEY_CACHE.get(apiKey);
-  return cached !== undefined && cached.expiresAt > now;
+  return cached && cached.expiresAt > now ? cached.record : undefined;
 }
 
 function toRecord(row: Row): APIKeyRecord {
@@ -100,10 +108,10 @@ export async function validateKey(
   db: D1Database,
   now: number = Date.now(),
 ): Promise<APIKeyRecord> {
-  const cached = KEY_CACHE.get(apiKey);
-  if (cached && cached.expiresAt > now) {
-    if (!cached.record.enabled) throw new Error("API key is disabled");
-    return cached.record;
+  const cached = cachedRecord(apiKey, now);
+  if (cached) {
+    if (!cached.enabled) throw new Error("API key is disabled");
+    return cached;
   }
 
   const row = await db

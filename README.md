@@ -370,6 +370,12 @@ isolate so a degraded queue is not answered with more traffic.
 | `SLOW_REQUEST_MS` | `1000` | Report at or above this many milliseconds. `0` disables. |
 | `SLOW_REQUEST_SOURCE` | `log-cannon-ingest` | Source the events are written to. Empty leaves Workers Logs as the only channel. |
 
+The Worker stamps this `source` itself and needs no key for it, but retention is
+projected from the key registry by name (see [Per-Service Retention](#per-service-retention)),
+so a source with no key of the same name is kept forever. Volume is low — only
+requests over the threshold, throttled per isolate — but if you want these
+trimmed, register a key named `SLOW_REQUEST_SOURCE` and set its `retentionDays`.
+
 Each event carries the breakdown, which is the point — a 5-second request is a
 different incident depending on where the time went:
 

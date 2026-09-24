@@ -69,6 +69,12 @@ export class RequestTrace {
     this.cursor = t;
   }
 
+  /** Close the `enqueue` span and record how many messages it produced. */
+  enqueued(messages: number): void {
+    this.mark("enqueue");
+    this.queueMessages = messages;
+  }
+
   span(phase: Phase): number {
     return this.spans[phase];
   }
