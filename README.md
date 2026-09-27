@@ -454,6 +454,16 @@ separately from the latency alert above:
 }
 ```
 
+**Choosing a value.** Size it from your own measured `EnqueueMs`, not from a
+round number. Two bounds fix it: it must sit far enough below your senders'
+own fetch timeout that the response still reaches them, and far enough above
+your queue's ordinary ack that sends which would have completed in time are
+untouched. Query the slow-request events for the distribution — `SELECT
+quantile(0.9)(JSONExtractFloat(properties, 'EnqueueMs')) FROM logs.events WHERE
+source = 'log-cannon-ingest'` — and pick a deadline above the bulk of it. A
+deadline below your p90 hands off routinely and converts an ordinary slow send
+into an un-acked one, which is the trade running backwards.
+
 ### Go service logs
 
 `queue-consumer`, `alert-worker`, and `retention-worker` still write to stdout
