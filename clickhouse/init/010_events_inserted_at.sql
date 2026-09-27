@@ -1,0 +1,66 @@
+-- Ingest lag: when the consumer actually wrote a row, versus the client-stamped
+-- `timestamp` (CLEF `@t`). Without this, a consumer that stalls and then drains
+-- writes rows indistinguishable from rows written on time, so ingest lag is not
+-- recoverable after the fact (refs #110).
+--
+-- Query it as the difference, and always bound on a known insert time:
+--
+--   SELECT source, quantile(0.95)(dateDiff('millisecond', timestamp, inserted_at))
+--   FROM logs.events
+--   WHERE inserted_at > toDateTime64(0, 3)
+--   GROUP BY source
+--
+-- WHY THE DEFAULT IS THE EPOCH AND NOT now()
+--
+-- `ADD COLUMN` is metadata-only: parts written before it have no data for the
+-- column, so a read evaluates the DEFAULT expression instead. With
+-- `DEFAULT now()` that means every pre-existing row reports its insert time as
+-- *query time*, so its apparent ingest lag equals its age — a three-day-old row
+-- shows three days of lag, and the number grows every second the query is
+-- re-run. Verified against ClickHouse directly, and `MATERIALIZED now()`
+-- behaves the same way.
+--
+-- That failure is dangerous because it is plausible: a fabricated multi-day lag
+-- looks like a real incident. The epoch sentinel fails obviously instead —
+-- pre-cutover rows read `1970-01-01`, and the `inserted_at > 0` bound above
+-- excludes them rather than averaging them in.
+--
+-- Backfilling the true value is impossible (the information was never stored),
+-- and `MATERIALIZE COLUMN` would only stamp old rows with the materialization
+-- time — a different fiction, bought with a full rewrite of every part.
+-- So: old rows are honestly unknown, and every source has 21- or 30-day
+-- retention, so they age out on their own.
+--
+-- EVERY WRITER MUST SUPPLY THIS COLUMN
+--
+-- The sentinel is only correct because no live insert omits the column. There
+-- are two writers, and both stamp it:
+--
+--   * `queue-consumer/main.go` (flushBatch) — the queue drain.
+--   * `dashboard/src/lib/clickhouse.ts` (insertLogEvent) — MCP `create_log`.
+--
+-- A writer that forgets produces rows that are silently excluded from lag
+-- queries rather than wrong, which is the failure mode we want — but it is
+-- still a bug. Add new writers to that list.
+--
+-- APPLYING THIS TO A RUNNING INSTANCE — ORDER MATTERS
+--
+-- Numbered init SQL runs only against a fresh data dir, so production needs the
+-- ALTER by hand — Portainer → ClickHouse container → Console:
+--
+--   clickhouse-client -q "ALTER TABLE logs.events ADD COLUMN IF NOT EXISTS inserted_at DateTime64(3) DEFAULT toDateTime64(0, 3)"
+--
+-- Idempotent, so the manual run and this file cannot conflict.
+--
+-- Run it BEFORE the code that names the column is deployed. Pushing to `main`
+-- rebuilds queue-consumer via Portainer GitOps, and a consumer that names a
+-- column the table does not have fails every insert with
+-- NO_SUCH_COLUMN_IN_TABLE. Because a failed flush acks nothing, the batch is
+-- redelivered — so the symptom is not "inserts failing", it is a queue backlog
+-- climbing while ingest is wholly stopped.
+--
+-- The ALTER on its own is backward compatible: the old consumer does not name
+-- the column, so it keeps inserting and those rows take the sentinel. Rows
+-- written in the gap between the ALTER and the deploy therefore read as
+-- unknown, which is true — nothing recorded their insert time.
+ALTER TABLE logs.events ADD COLUMN IF NOT EXISTS inserted_at DateTime64(3) DEFAULT toDateTime64(0, 3);

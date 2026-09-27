@@ -336,7 +336,7 @@ func (c *Consumer) processPayload(payload QueuePayload, rawBody []byte) ([]LogEv
 
 func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
 	batch, err := c.conn.PrepareBatch(ctx,
-		"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties)")
+		"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties, inserted_at)")
 	if err != nil {
 		return err
 	}
@@ -357,6 +357,10 @@ func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
 			e.EventType,
 			e.Source,
 			e.Properties,
+			// Ingest lag is measured against this, not against timestamp, which
+			// the client stamps. Supplied explicitly because the column's default
+			// is the epoch sentinel — see clickhouse/init/010_events_inserted_at.sql.
+			now,
 		); err != nil {
 			log.Printf("Skipping event %d/%d (source=%s): batch append error: %v", i+1, len(events), e.Source, err)
 			continue

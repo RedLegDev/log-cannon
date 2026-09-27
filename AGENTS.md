@@ -14,7 +14,7 @@ This is a monorepo of independent services, each built and deployed on its own.
 |------|----------|------|
 | `workers/packages/ingest/` | TypeScript (Cloudflare Workers) | Thin edge ingest: validate API key against D1, push raw body + metadata to the CF Queue. No parsing here. |
 | `go/ship/` | Go | Shared CLEF HTTPS client used by the three Go services. Replace-path dep; not a runnable service. |
-| `queue-consumer/` | Go | Pulls the CF Queue, parses CLEF/webhook/OTel, batch-inserts into ClickHouse. The only writer of `logs.events`. |
+| `queue-consumer/` | Go | Pulls the CF Queue, parses CLEF/webhook/OTel, batch-inserts into ClickHouse. The main writer of `logs.events` — the dashboard's `insertLogEvent` (MCP `create_log`) is the only other one, and both must stamp `inserted_at`. |
 | `dashboard/` | Next.js / TypeScript | Web UI, REST API (`/api/v1/*`), and MCP server (`/api/mcp`). Reads ClickHouse; does **not** ingest logs. Owns OTP auth. |
 | `alert-worker/` | Go | Runs `alerts.json` queries on intervals, emails on threshold breach. |
 | `retention-worker/` | Go | Trims `logs.events` per source based on each key's `retention_days`. |
