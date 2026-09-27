@@ -137,6 +137,16 @@ jobs:
           - image: queue-consumer
             context: .
             file: queue-consumer/Dockerfile
+          # context: . for these three, not their own directory — each Dockerfile
+          # does `COPY go/ship`, so the build needs the repo root. A revert to a
+          # directory-local context builds nothing and would otherwise only
+          # surface as a service failing to start after a GitOps pull.
+          - image: alert-worker
+            context: .
+            file: alert-worker/Dockerfile
+          - image: retention-worker
+            context: .
+            file: retention-worker/Dockerfile
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
