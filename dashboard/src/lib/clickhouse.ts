@@ -1552,6 +1552,11 @@ export async function insertLogEvent(params: {
     event_type: params.event_type || '',
     source: params.source,
     properties: params.properties ? JSON.stringify(params.properties) : '{}',
+    // Every writer of logs.events must supply this; the column's default is an
+    // epoch sentinel, so omitting it silently marks the row's ingest lag
+    // unknown. Same instant as `timestamp` here: this path writes immediately,
+    // so its lag genuinely is zero. See clickhouse/init/010_events_inserted_at.sql.
+    inserted_at: ts,
   };
 
   const response = await fetch(

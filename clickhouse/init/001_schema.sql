@@ -18,7 +18,14 @@ CREATE TABLE IF NOT EXISTS logs.events (
     exception String DEFAULT '',
     event_type String DEFAULT '',
     source String,
-    properties String
+    properties String,
+    -- When the consumer wrote the row, as opposed to `timestamp`, which is the
+    -- client-stamped CLEF `@t`. The difference is ingest lag.
+    --
+    -- The default is the epoch sentinel, NOT now(), and that is deliberate: see
+    -- 010_events_inserted_at.sql. The consumer always supplies this column, so
+    -- the default only ever applies to rows written before it existed.
+    inserted_at DateTime64(3) DEFAULT toDateTime64(0, 3)
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMMDD(timestamp)
 ORDER BY (source, toStartOfHour(timestamp), level);
