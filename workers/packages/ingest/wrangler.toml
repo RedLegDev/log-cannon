@@ -115,7 +115,19 @@ invocation_logs = true
 [env.production.vars]
 SLOW_REQUEST_MS = "1000"
 SLOW_REQUEST_SOURCE = "log-cannon-ingest"
-QUEUE_ACK_DEADLINE_MS = "0"
+# On, at 4 s, for this deployment only. Its senders bound their own fetch at
+# around 5 s, so a response that leaves at 4 s still reaches them: a request
+# that would have aborted gets a 201 instead, which is the whole of #107.
+#
+# Sized from measured `EnqueueMs` on this queue rather than picked round — p50
+# 1.4 s, p90 2.4 s, p99 3.7 s, worst 79 s. At 4 s only ~0.6% of already-slow
+# sends hand off, so the deadline takes the pathological tail and leaves every
+# send that would have acked in time exactly as it was. Lower it only if
+# `ingest-enqueue-failed-after-response` stays silent and senders still abort.
+#
+# The generic [vars] default above stays "0" on purpose. Self-hosters have
+# their own senders and their own queue tail, and this number is neither.
+QUEUE_ACK_DEADLINE_MS = "4000"
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"
