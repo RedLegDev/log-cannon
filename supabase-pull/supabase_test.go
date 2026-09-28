@@ -107,3 +107,22 @@ func TestClientErrorsAreNotRetried(t *testing.T) {
 		srv.Close()
 	}
 }
+
+func TestBackendErrorIn200IsRetried(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"result":[],"error":"Backend error! Retry your query. Please contact support if this continues."}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":[],"error":null}`))
+	}))
+	defer srv.Close()
+	api := newSupabaseAPI(srv.URL, "tok")
+	api.sleep = func(context.Context, time.Duration) error { return nil }
+
+	if _, err := api.Query(context.Background(), "ref", "auth_logs", Cursor{Timestamp: t0}, t0, t0.Add(time.Minute), 500); err != nil || calls != 2 {
+		t.Fatalf("err=%v calls=%d, want success on the retry", err, calls)
+	}
+}

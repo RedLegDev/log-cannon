@@ -58,6 +58,11 @@ const (
 	transientWait       = 5 * time.Second
 )
 
+// errBackend is the endpoint's own "Backend error! Retry your query", which
+// arrives as HTTP 200 with an error body and clears on retry (seen in prod
+// 2026-09-28). It is retried like a 5xx.
+var errBackend = errors.New("supabase logs backend error")
+
 // ErrRateLimited is a 429 that outlasted the retries.
 var ErrRateLimited = errors.New("supabase logs API rate limit")
 
@@ -112,7 +117,12 @@ func (a *supabaseAPI) Query(ctx context.Context, ref, table string, cur Cursor, 
 			transient++
 			wait = transientWait
 		default:
-			return checkResponse(status, body)
+			rows, err := checkResponse(status, body)
+			if !errors.Is(err, errBackend) || transient == transientRetries {
+				return rows, err
+			}
+			transient++
+			wait = transientWait
 		}
 		if err := a.sleep(ctx, wait); err != nil {
 			return nil, err
@@ -198,6 +208,9 @@ func parseResponse(body []byte) ([]Row, error) {
 	}
 	if resp.Error != nil {
 		b, _ := json.Marshal(resp.Error)
+		if strings.Contains(string(b), "Retry your query") {
+			return nil, fmt.Errorf("%w: %s", errBackend, snippet(b))
+		}
 		return nil, fmt.Errorf("supabase logs API error: %s", snippet(b))
 	}
 
