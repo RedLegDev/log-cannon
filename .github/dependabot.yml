@@ -179,6 +179,7 @@ updates:
       - "/dashboard"
       - "/queue-consumer"
       - "/retention-worker"
+      - "/supabase-pull"
     schedule:
       interval: "weekly"
       day: "monday"

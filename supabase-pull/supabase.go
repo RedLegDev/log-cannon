@@ -101,7 +101,7 @@ func buildSQL(table string, cur Cursor, limit int) string {
 		where = fmt.Sprintf("(timestamp > %s OR (timestamp = %s AND id > '%s'))", ts, ts, sqlEscape(cur.ID))
 	}
 	return fmt.Sprintf(
-		"SELECT id, timestamp, event_message, severity_text, source, log_attributes FROM logs "+
+		"SELECT id, timestamp, event_message, severity_text, log_attributes FROM logs "+
 			"WHERE source = '%s' AND %s ORDER BY timestamp ASC, id ASC LIMIT %d",
 		sqlEscape(table), where, limit,
 	)

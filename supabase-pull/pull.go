@@ -23,10 +23,17 @@ type Puller struct {
 	// and maintained in memory after that. No state file: a restart
 	// re-derives it.
 	watermarks map[string]map[string]time.Time
+	// readTo is how far this process has read each table with nothing left
+	// behind, including stretches that held no rows, which a watermark taken
+	// from stored rows cannot remember. Without it a quiet table re-walks, and
+	// re-scans logs.events for, its whole lookback every run, and a lookback
+	// longer than the page cap covers never reaches the present.
+	readTo map[string]map[string]time.Time
 }
 
 func NewPuller(api LogAPI, store Store, cfg Config) *Puller {
-	return &Puller{api: api, store: store, cfg: cfg, now: time.Now, watermarks: map[string]map[string]time.Time{}}
+	return &Puller{api: api, store: store, cfg: cfg, now: time.Now,
+		watermarks: map[string]map[string]time.Time{}, readTo: map[string]map[string]time.Time{}}
 }
 
 type TableResult struct {
@@ -117,12 +124,27 @@ func (p *Puller) pullTable(ctx context.Context, proj Project, table string, wms 
 		return res
 	}
 
-	// No row inside MaxLookback (a new project, or an outage longer than the
-	// floor) starts at the floor: everything Supabase still retains that the
-	// floor allows.
-	start := floor
-	if wm, ok := wms[table]; ok && wm.Add(-p.cfg.Overlap).After(floor) {
-		start = wm.Add(-p.cfg.Overlap)
+	if p.readTo[proj.Source] == nil {
+		p.readTo[proj.Source] = map[string]time.Time{}
+	}
+	readTo := p.readTo[proj.Source]
+	markRead := func(t time.Time) {
+		if t.After(readTo[table]) {
+			readTo[table] = t
+		}
+	}
+
+	// Resume from the later of the newest stored row and how far this process
+	// has read. With neither inside MaxLookback (a new project, or an outage
+	// longer than the floor) start at the floor: everything Supabase still
+	// retains that the floor allows.
+	pos := wms[table]
+	if readTo[table].After(pos) {
+		pos = readTo[table]
+	}
+	start := pos.Add(-p.cfg.Overlap)
+	if start.Before(floor) {
+		start = floor
 	}
 
 	seen, err := p.store.Seen(ctx, proj.Source, table, start)
@@ -172,6 +194,7 @@ func (p *Puller) pullTable(ctx context.Context, proj Project, table string, wms 
 			if wm, ok := wms[table]; !ok || last.Timestamp.After(wm) {
 				wms[table] = last.Timestamp
 			}
+			markRead(last.Timestamp)
 		}
 
 		switch {
@@ -179,7 +202,9 @@ func (p *Puller) pullTable(ctx context.Context, proj Project, table string, wms 
 			// A full page: there may be more in this window.
 		case to.Before(now):
 			windowStart = to
+			markRead(to)
 		default:
+			markRead(now)
 			return res
 		}
 	}

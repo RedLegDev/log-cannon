@@ -332,3 +332,50 @@ func TestAuthFailureIsReportedAndStoresNothing(t *testing.T) {
 		t.Fatalf("stored %d rows on an auth failure", len(store.rows))
 	}
 }
+
+func TestQuietTableDoesNotRewalkItsLookbackEveryRun(t *testing.T) {
+	// A table that never logs (no edge functions): the first run walks the
+	// whole 72h lookback; after that only the overlap is re-read.
+	api := &fakeAPI{}
+	store := &fakeStore{}
+	p := newTestPuller(api, store, testConfig(), t0)
+
+	p.Run(context.Background())
+	firstCalls := api.calls
+
+	p.now = func() time.Time { return t0.Add(time.Minute) }
+	api.windows = nil
+	p.Run(context.Background())
+
+	if firstCalls < 4 {
+		t.Fatalf("first run made %d calls, want the 72h lookback walked in 23h windows", firstCalls)
+	}
+	if got := api.calls - firstCalls; got != 1 {
+		t.Fatalf("second run made %d API calls, want 1", got)
+	}
+	if w := api.windows[0]; w > 10*time.Minute {
+		t.Fatalf("second run queried a %s window, want about overlap + interval", w)
+	}
+}
+
+func TestLookbackLongerThanThePageCapStillReachesThePresent(t *testing.T) {
+	// 60 days of empty windows is more than one run's page cap can walk; each
+	// run must pick up where the last one stopped rather than at the floor.
+	cfg := testConfig()
+	cfg.MaxLookback = 60 * 24 * time.Hour
+	cfg.MaxPagesPerTable = 20
+	api := &fakeAPI{}
+	api.add("auth_logs", Row{ID: "recent", Timestamp: t0.Add(-time.Hour), Message: "x"})
+	store := &fakeStore{}
+	p := newTestPuller(api, store, cfg, t0)
+
+	for run := 1; run <= 5; run++ {
+		if res := p.Run(context.Background()); !res[0].Behind {
+			if res[0].Inserted != 1 {
+				t.Fatalf("run %d caught up with %d rows inserted, want 1", run, res[0].Inserted)
+			}
+			return
+		}
+	}
+	t.Fatal("still behind after 5 runs; each run is restarting from the floor")
+}
