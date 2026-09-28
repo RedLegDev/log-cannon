@@ -514,6 +514,85 @@ keys with the names above (and set `retentionDays`) if you want these trimmed.
 Slow-poll properties: `Messages`, `Events`, `PullMs`, `ParseMs`, `InsertMs`,
 `AckMs`, `TotalMs`.
 
+## The ingest dead-letter queue
+
+A message the consumer cannot insert is retried, and if it still fails it is
+parked on **`log-cannon-ingest-dlq`** rather than deleted. Without that queue,
+Cloudflare discards a message once it exhausts `max_retries` — and for a log
+platform the discarded payload is exactly the evidence you would want.
+
+Current settings on the `log-cannon-ingest` pull consumer:
+
+| Setting | Value | Why |
+|---|---|---|
+| `max_retries` | `5` | ~10 minutes at the 120s lease — enough to ride out a ClickHouse restart or a Portainer redeploy without anyone touching the DLQ. |
+| `visibility_timeout_ms` | `120000` | The lease. `flushTimeout` (60s) + the ack retry budget (15s) must fit inside it. |
+| `batch_size` | `100` | Matches what each pull requests. |
+| `dead_letter_queue` | `log-cannon-ingest-dlq` | Where a message goes after `max_retries`. |
+
+The DLQ keeps messages for **14 days** (not the 4-day default), so something
+parked on a Friday is still there on Monday.
+
+### When a message lands there
+
+Two shapes, and they want different responses:
+
+- **One message, repeatedly.** Almost certainly a payload the consumer cannot
+  insert — a bad timestamp, an oversized row. Since an append failure is
+  isolated to its own message, it parks alone and nothing else is affected.
+  Inspect it, fix the cause, and decide whether to replay it.
+- **Many messages at once.** Not a payload problem — the write path was down
+  for longer than the retry budget. Check ClickHouse first, then replay.
+
+### Inspecting it
+
+The DLQ has an `http_pull` consumer attached purely so it can be read; nothing
+polls it. Pull without acking to look without consuming — the messages return
+after the visibility timeout:
+
+```bash
+ACCT=<account id>; DLQ=<dlq queue id>
+curl -s -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCT/queues/$DLQ/messages/pull" \
+  -H "Authorization: Bearer $CF_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"visibility_timeout_ms": 30000, "batch_size": 10}' | jq '.result.messages[].body'
+```
+
+Each message body is the envelope the ingest Worker enqueues — `source`,
+`format`, `contentType`, and the raw request `body` base64-encoded — so the
+original payload is recoverable.
+
+One wrinkle: the pull API sometimes returns that envelope **double-encoded**, as
+a JSON string rather than an object (`queue-consumer/main.go` unwraps this on
+every message). Handle both:
+
+```bash
+... | jq -r '.result.messages[0].body | if type == "string" then fromjson else . end | .body' | base64 -d
+```
+
+That prints the exact bytes the client POSTed — for CLEF, one JSON event per
+line.
+
+### Draining it
+
+There is no automatic replay, deliberately — a message is in the DLQ because
+inserting it failed, and replaying blindly just fails again. Once the cause is
+fixed, replay by POSTing the decoded payload back to the normal ingest endpoint
+(`/ingest/clef` with an ingest key), then ack the DLQ copy so it does not linger.
+
+Ack with the `lease_id` from the pull:
+
+```bash
+curl -s -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCT/queues/$DLQ/messages/ack" \
+  -H "Authorization: Bearer $CF_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"acks": [{"lease_id": "<lease_id>"}]}'
+```
+
+If the messages are not worth replaying, acking them is how you discard them.
+
 ## Backup & Restore
 
 Automated ClickHouse backups run twice daily with offsite sync to Cloudflare R2.
