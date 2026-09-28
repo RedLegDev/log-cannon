@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [go/ship, queue-consumer, alert-worker, retention-worker]
+        module: [go/ship, queue-consumer, alert-worker, retention-worker, supabase-pull]
     defaults:
       run:
         working-directory: ${{ matrix.module }}
@@ -137,7 +137,7 @@ jobs:
           - image: queue-consumer
             context: .
             file: queue-consumer/Dockerfile
-          # context: . for these three, not their own directory — each Dockerfile
+          # context: . for these four, not their own directory — each Dockerfile
           # does `COPY go/ship`, so the build needs the repo root. A revert to a
           # directory-local context builds nothing and would otherwise only
           # surface as a service failing to start after a GitOps pull.
@@ -147,6 +147,9 @@ jobs:
           - image: retention-worker
             context: .
             file: retention-worker/Dockerfile
+          - image: supabase-pull
+            context: .
+            file: supabase-pull/Dockerfile
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3

@@ -28,6 +28,7 @@ Serilog / OTel / Webhooks
 │  Dashboard (Next.js) ──► reads ClickHouse  │   batch-inserts
 │  Alert Worker (Go) ────► email             │
 │  Retention Worker (Go) ─► trims ClickHouse │
+│  Supabase Pull (Go) ───► ClickHouse        │   optional: Supabase
 │  Backup ───────────────► Cloudflare R2     │
 │                                            │
 │  Access via Cloudflare Tunnel (TLS/DDoS)   │
@@ -490,8 +491,9 @@ what to attach retention to:
 | queue-consumer | `LOG_CANNON_QUEUE_CONSUMER_API_KEY` | `log-cannon-queue-consumer` |
 | alert-worker | `LOG_CANNON_ALERT_WORKER_API_KEY` | `log-cannon-alert-worker` |
 | retention-worker | `LOG_CANNON_RETENTION_WORKER_API_KEY` | `log-cannon-retention-worker` |
+| supabase-pull | `LOG_CANNON_SUPABASE_PULL_API_KEY` | `supabase-pull` |
 
-All three share `LOG_CANNON_INGEST_URL` (same as the dashboard). Compose maps
+All four share `LOG_CANNON_INGEST_URL` (same as the dashboard). Compose maps
 each `*_API_KEY` into the container as `LOG_CANNON_API_KEY`.
 
 **Feedback loop.** The consumer is the process that inserts whatever it ships.
@@ -642,6 +644,77 @@ curl -s -X POST \
 
 If the messages are not worth replaying, acking them is how you discard them.
 
+## Supabase platform logs
+
+`supabase-pull` pulls a Supabase project's platform logs (Postgres, Auth, Edge
+Function console output and Edge Function requests) from the Management API's
+unified logs endpoint and writes them straight into `logs.events`. It runs in
+Compose next to the other workers and does nothing until a project is enabled.
+
+```bash
+SUPABASE_PULL_PROJECTS=abcdefghijklmnopqrst=myapp-supabase,<ref>=<source>
+SUPABASE_ACCESS_TOKEN=sbp_...   # personal access token with analytics_logs_read
+```
+
+Each row lands with `source = <source>` and these properties, which is what
+alerts and queries should filter on:
+
+| Property | Value |
+|----------|-------|
+| `Source` | the configured source name (`myapp-supabase`) |
+| `LogTable` | `postgres_logs`, `auth_logs`, `function_logs` or `function_edge_logs` |
+| `ProjectRef` | the Supabase project ref |
+| `sb_id` | the Supabase row id — the dedupe key |
+| `sb_<attribute>` | every non-empty `log_attributes` key, dots and other non-word characters flattened to `_` (`request.path` → `sb_request_path`) |
+
+`level` maps from `severity_text` (`ERROR` → `Error`, `LOG`/`NOTICE`/`INFO` →
+`Information`, `PANIC`/`FATAL` → `Fatal`, and so on); `message` is the
+`event_message`.
+
+**How it keeps its place.** There is no state file. On start it takes
+`max(timestamp)` per `LogTable` from `logs.events` for rows whose `Source`
+*property* matches, which lets it resume from rows another shipper wrote under a
+different `source` column. Each run then re-reads from `watermark −
+SUPABASE_PULL_OVERLAP` so late-arriving rows are still collected, and skips any
+row whose `sb_id` is already stored (rows without one, from an earlier shipper,
+are matched on timestamp and message). Stopping it for a while and starting it
+again fills the gap without duplicating rows, back as far as
+`SUPABASE_PULL_MAX_LOOKBACK`. Keep that within the log retention of your
+Supabase plan.
+
+**Catch-up.** A run pages (500 rows, keyset on timestamp and id) until it is
+caught up, walking 23-hour windows because the endpoint rejects a longer one,
+and stops at `SUPABASE_PULL_MAX_PAGES` per table (default 50) so one huge
+backlog cannot hold a run indefinitely. Where it stopped is where the next run
+starts.
+
+**Self-report.** One CLEF event per run under the `supabase-pull` key:
+`Inserted`, `Pages`, `MaxWatermarkAgeSeconds`, `Behind`, and a `Tables` array
+with per-table rows, pages and watermark age. Any failed table (API error,
+refused token, ClickHouse error) raises the event to `Error`, so
+`source = 'supabase-pull' AND level = 'Error'` is the alert condition for the
+puller itself. Stdout carries one line per table per run.
+
+**Retention.** Register an ingest key named after each `<source>` (and one named
+`supabase-pull`) and set `retentionDays`. The puller doesn't use those keys to
+write; retention is looked up by source name, and a source with no key is kept
+forever.
+
+**Do not run two shippers for one project.** Anything else that ships the same
+project's logs (Log Drains, a cron poller) must be stopped before the project is
+added here, or every event arrives twice. Deploy with the project list empty,
+stop the other shipper, then enable the project.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SUPABASE_PULL_PROJECTS` | *(empty)* | `ref=source` pairs, comma-separated. Empty = idle. |
+| `SUPABASE_ACCESS_TOKEN` | — | Supabase PAT; required once a project is enabled |
+| `SUPABASE_PULL_TABLES` | all four | Comma-separated subset of the tables above |
+| `SUPABASE_PULL_INTERVAL` | `1m` | Pause between runs |
+| `SUPABASE_PULL_OVERLAP` | `5m` | How far behind the watermark each run re-reads |
+| `SUPABASE_PULL_MAX_LOOKBACK` | `72h` | Oldest a run will reach, including after an outage |
+| `SUPABASE_PULL_MAX_PAGES` | `50` | Pages per table per run |
+
 ## Backup & Restore
 
 Automated ClickHouse backups run twice daily with offsite sync to Cloudflare R2.
@@ -700,6 +773,7 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 | `CF_ACCOUNT_ID` / `CF_QUEUE_ID` / `CF_API_TOKEN` | Yes | Queue consumer → Cloudflare Queue access |
 | `LOG_CANNON_INGEST_URL` / `LOG_CANNON_ADMIN_KEY` | Yes | Ingest Worker URL and admin-scoped key so the dashboard can manage the D1 key registry |
 | `LOG_CANNON_QUEUE_CONSUMER_API_KEY` / `LOG_CANNON_ALERT_WORKER_API_KEY` / `LOG_CANNON_RETENTION_WORKER_API_KEY` | No | Per-service ingest keys so the Go workers ship CLEF (see [Go service logs](#go-service-logs)); key names should be `log-cannon-queue-consumer`, `log-cannon-alert-worker`, `log-cannon-retention-worker` |
+| `SUPABASE_PULL_PROJECTS` / `SUPABASE_ACCESS_TOKEN` | No | Supabase projects to pull platform logs from, and a PAT with `analytics_logs_read` (see [Supabase platform logs](#supabase-platform-logs)) |
 | `R2_*` | No | Offsite backup credentials (see Backup & Restore) |
 | `COMPOSE_PROFILES` | No | `dev` locally to start the Inbucket mailbox |
 
@@ -709,11 +783,12 @@ See [`.env.example`](.env.example) for the full annotated list. The essentials:
 log-cannon/
 ├── workers/            # Cloudflare Workers (TypeScript) — edge ingestion
 │   └── packages/ingest/    # Unified ingest worker (CLEF, webhook, OTel)
-├── go/ship/            # Shared Go CLEF shipper (replace-path dep of the three services)
+├── go/ship/            # Shared Go CLEF shipper (replace-path dep of the Go services)
 ├── queue-consumer/     # Go service: pulls CF Queue → parses → ClickHouse
 ├── dashboard/          # Next.js web UI, REST API, MCP server (reads ClickHouse)
 ├── alert-worker/       # Go service: threshold alerting
 ├── retention-worker/   # Go service: per-source retention trimming
+├── supabase-pull/      # Go service: Supabase platform logs → ClickHouse (optional)
 ├── clickhouse/         # Database image + numbered schema init (clickhouse/init)
 ├── backup/             # Backup/restore scripts with R2 offsite sync
 └── docker-compose.yml

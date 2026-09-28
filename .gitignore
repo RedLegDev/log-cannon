@@ -34,6 +34,7 @@ coverage/
 alert-worker/alert-worker
 queue-consumer/queue-consumer
 retention-worker/retention-worker
+supabase-pull/supabase-pull
 
 # Docker volumes
 clickhouse-data/

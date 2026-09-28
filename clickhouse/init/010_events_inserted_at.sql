@@ -34,10 +34,11 @@
 -- EVERY WRITER MUST SUPPLY THIS COLUMN
 --
 -- The sentinel is only correct because no live insert omits the column. There
--- are two writers, and both stamp it:
+-- are three writers, and all of them stamp it:
 --
 --   * `queue-consumer/main.go` (flushBatch) — the queue drain.
 --   * `dashboard/src/lib/clickhouse.ts` (insertLogEvent) — MCP `create_log`.
+--   * `supabase-pull/store.go` (Insert) — Supabase platform logs.
 --
 -- A writer that forgets produces rows that are silently excluded from lag
 -- queries rather than wrong, which is the failure mode we want — but it is

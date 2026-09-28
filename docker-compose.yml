@@ -109,6 +109,31 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  supabase-pull:
+    build:
+      context: .
+      dockerfile: supabase-pull/Dockerfile
+    environment:
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DATABASE=logs
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      # Empty = no projects enabled; the worker idles. See README "Supabase
+      # platform logs" before enabling a project another poller still feeds.
+      - SUPABASE_PULL_PROJECTS=${SUPABASE_PULL_PROJECTS:-}
+      - SUPABASE_ACCESS_TOKEN=${SUPABASE_ACCESS_TOKEN:-}
+      - SUPABASE_PULL_TABLES=${SUPABASE_PULL_TABLES:-}
+      - SUPABASE_PULL_INTERVAL=${SUPABASE_PULL_INTERVAL:-1m}
+      - SUPABASE_PULL_OVERLAP=${SUPABASE_PULL_OVERLAP:-5m}
+      - SUPABASE_PULL_MAX_LOOKBACK=${SUPABASE_PULL_MAX_LOOKBACK:-72h}
+      - LOG_CANNON_INGEST_URL=${LOG_CANNON_INGEST_URL:-}
+      - LOG_CANNON_API_KEY=${LOG_CANNON_SUPABASE_PULL_API_KEY:-}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    restart: unless-stopped
+
   backup:
     build: ./backup
     environment:
