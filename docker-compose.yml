@@ -132,6 +132,12 @@ services:
     build:
       context: .
       dockerfile: queue-consumer/Dockerfile
+    # Docker's default stop grace is 10s, which is shorter than the consumer's
+    # own ack drain (~50s with ASYNC_ACK_DEPTH on). Without this, SIGKILL lands
+    # mid-drain and acks for events already written to ClickHouse are abandoned
+    # — those messages are then redelivered and inserted a second time. Must
+    # stay >= ackDrainGrace() in queue-consumer/main.go.
+    stop_grace_period: 60s
     environment:
       - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
       - CF_QUEUE_ID=${CF_QUEUE_ID}

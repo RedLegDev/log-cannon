@@ -86,9 +86,16 @@ type queueTransport struct {
 	ackLeases atomic.Int32
 	ackStatus int
 	messages  int
+	ackDelay  time.Duration
 }
 
 func (q *queueTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	// A real transport fails a request whose context is already dead. Without
+	// this the stub cannot tell a live context from a cancelled one, and a
+	// shutdown bug that abandons acks would pass its own test.
+	if err := r.Context().Err(); err != nil {
+		return nil, err
+	}
 	body := func(s string) *http.Response {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(s)), Header: make(http.Header)}
 	}
@@ -111,6 +118,9 @@ func (q *queueTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		out, _ := json.Marshal(map[string]any{"result": map[string]any{"messages": msgs}})
 		return body(string(out)), nil
 	case strings.HasSuffix(r.URL.Path, "/ack"):
+		if q.ackDelay > 0 {
+			time.Sleep(q.ackDelay)
+		}
 		q.ackCalls.Add(1)
 		var req QueueAckRequest
 		raw, _ := io.ReadAll(r.Body)

@@ -510,6 +510,55 @@ keys with the names above (and set `retentionDays`) if you want these trimmed.
 |--------------|---------|-------------|
 | `POLL_SLOW_MS` | `1000` | Ship a timing event when any phase or the total is at least this many milliseconds. `0` disables CLEF timings (stdout unchanged). |
 | `POLL_TELEMETRY_MIN_INTERVAL_MS` | `10000` | Minimum gap between two queue-borne slow-poll events. |
+| `ASYNC_ACK_DEPTH` | `0` | Hand the ack to a background worker instead of waiting for it. `0` keeps acking inline. See below. |
+
+### Taking the ack off the critical path
+
+A poll is `pull → parse → insert → ack`, in series, and the next pull cannot
+start until the ack lands. The ack is about half of it — ~1.2s of a ~2.5s cycle
+at rest, and ~2.4s of ~5s while Cloudflare Queues is degraded — against an
+insert that costs ~12ms. So consumer throughput tracks Queues latency rather
+than the work being done, and *falls* exactly when the queue is filling faster.
+
+`ASYNC_ACK_DEPTH > 0` starts a background ack worker with a queue that deep.
+The poll hands off and returns; the ack completes behind it. That is safe
+against early redelivery because a message stays leased for
+`visibility_timeout_ms` (120s) whether or not its ack has arrived — the lease
+bounds it, not the ack.
+
+**It ships at `0`, and that default is the point.** With it on, `poll()` reports
+a clean cycle *before* the queue has acknowledged, so a failing ack surfaces
+asynchronously — a log line and a CLEF `Error` on the consumer's source —
+rather than as the poll's own error. The failure is still loud and still
+alertable; it just arrives after the poll said it was fine. That is a real
+change to how a duplicate-producing failure is noticed, so turn it on
+deliberately.
+
+Two behaviours worth knowing:
+
+- **A full queue acks inline.** If the worker falls behind, the poll acks
+  synchronously rather than dropping the job or letting the backlog grow. A
+  dropped ack is a guaranteed duplicate, and an unbounded backlog would push the
+  ack past the lease and duplicate anyway.
+- **The depth is bounded by arithmetic, not taste.** A handed-off job can wait
+  behind the whole queue plus one in flight, so it completes at worst
+  `(depth+1) x 15s` after a flush that may already have used 60s of the 120s
+  lease. Anything deeper starts acking after the lease has expired — by which
+  point the message has been redelivered and the batch is inserted twice. The
+  consumer clamps `ASYNC_ACK_DEPTH` to what fits (currently **2**) and logs when
+  it does.
+- **Shutdown drains.** Pending acks finish on their own context, not the
+  cancelled one, because the events are already in ClickHouse — an abandoned ack
+  is not a lost write but a duplicated one on the next start. The grace is
+  derived from the same arithmetic (~50s). **`docker-compose.yml` sets
+  `stop_grace_period: 60s` for this service**; on Docker's 10s default, SIGKILL
+  would land mid-drain and the code's patience would be fiction.
+
+`AckMs` measures the handoff rather than the round trip once this is on, so
+`TotalMs` stops including the ack — that is the improvement, but it does change
+what the numbers mean. Events carry `AckAsync: true` so the two regimes are
+distinguishable in `logs.events`; an event from the default path is
+byte-identical to one from before this existed.
 
 Slow-poll properties: `Messages`, `Events`, `PullMs`, `ParseMs`, `InsertMs`,
 `AckMs`, `TotalMs`.

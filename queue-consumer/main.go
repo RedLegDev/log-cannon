@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -50,6 +51,44 @@ const (
 	// flushTimeout + ackTotalBudget must stay under the lease; a test asserts it.
 	ackTotalBudget = 15 * time.Second
 )
+
+// maxSafeAckDepth bounds how many acks may be waiting.
+//
+// A queued job waits behind everything ahead of it and then needs its own turn.
+// Channel capacity D means up to D buffered jobs *plus* one already in flight,
+// so a job that hands off successfully completes at worst (D+1)*ackTotalBudget
+// later. Add the flush that already consumed part of the lease, and too deep a
+// queue starts acking a message *after* its lease has expired — by which point
+// Cloudflare has redelivered it, the ack is worthless, and the batch is
+// inserted twice. That is precisely the failure moving the ack off the critical
+// path is meant to be worth avoiding.
+//
+// So the depth is arithmetic, not taste:
+//
+//	flushTimeout + (depth+1)*ackTotalBudget < lease
+//
+// At the current constants (120s lease, 60s flush, 15s ack budget) that is 2,
+// leaving 15s of margin.
+func maxSafeAckDepth() int {
+	remaining := visibilityTimeoutMs*time.Millisecond - flushTimeout
+	d := int(remaining/ackTotalBudget) - 2
+	if d < 1 {
+		return 1
+	}
+	return d
+}
+
+// ackDrainGrace is how long a shutdown waits for already-handed-off acks.
+// Derived, not chosen: the worker can hold maxSafeAckDepth() buffered jobs plus
+// one in flight, each up to ackTotalBudget. A grace shorter than that abandons
+// acks whose events are already in ClickHouse, which duplicates them on the
+// next start rather than losing them.
+//
+// docker-compose.yml must give the service a stop_grace_period at least this
+// long, or Docker SIGKILLs mid-drain and the code's own patience is fiction.
+func ackDrainGrace() time.Duration {
+	return time.Duration(maxSafeAckDepth()+1)*ackTotalBudget + 5*time.Second
+}
 
 // Overridden in tests so they do not sleep the real backoff.
 var ackRetryBaseDelay = time.Second
@@ -117,6 +156,17 @@ func main() {
 	}
 	defer shipper.Close()
 
+	// Depth of the async ack queue. 0 — the default — keeps acking synchronous,
+	// which is byte-for-byte the behaviour that predates #111. Above 0 the ack
+	// moves off the poll's critical path and the poll returns before it lands.
+	//
+	// Off by default on purpose: with it on, poll() reports a clean cycle before
+	// the queue has acknowledged, so a failing ack surfaces asynchronously (a
+	// log line plus a CLEF Error) rather than as the poll's own error. That is a
+	// real change to how a duplicate-producing failure is noticed. Turn it on
+	// deliberately — pushing to main redeploys the consumer.
+	asyncAckDepth := envInt("ASYNC_ACK_DEPTH", 0)
+
 	slowMs := envDurationMs("POLL_SLOW_MS", 1000)
 	telemetryMin := envDurationMs("POLL_TELEMETRY_MIN_INTERVAL_MS", 10_000)
 
@@ -176,8 +226,17 @@ func main() {
 		cancel()
 	}()
 
+	if asyncAckDepth > 0 {
+		consumer.startAckWorker(asyncAckDepth)
+		log.Printf("Async ack enabled (depth %d): polls return before the ack lands", asyncAckDepth)
+	}
+
 	log.Printf("Starting queue consumer (poll every %s, batch size %d, slow≥%s)", pollInterval, batchSize, slowMs)
 	consumer.run(ctx, pollInterval)
+
+	// After run returns the context is already cancelled, so this must not use
+	// it — the events are durable and an abandoned ack duplicates them.
+	consumer.drainAcks()
 }
 
 type Consumer struct {
@@ -190,6 +249,10 @@ type Consumer struct {
 	shipper      *ship.Client
 	slowMs       time.Duration
 	pollThrottle *ship.Throttle
+
+	// nil when acking is synchronous (the default). See startAckWorker.
+	ackCh chan ackJob
+	ackWG sync.WaitGroup
 }
 
 func (c *Consumer) run(ctx context.Context, interval time.Duration) {
@@ -335,24 +398,47 @@ func (c *Consumer) poll(ctx context.Context) error {
 	// inside the lease window, and if it still fails, report the poll as failed
 	// rather than returning a clean cycle that is about to duplicate.
 	var ackMs time.Duration
+	var ackAsync bool
 	if len(goodAcks) > 0 {
 		ackStart := time.Now()
-		ackCtx, ackCancel := context.WithTimeout(ctx, ackTotalBudget)
-		err := c.ackWithRetry(ackCtx, goodAcks)
-		ackCancel()
-		ackMs = time.Since(ackStart)
-		if err != nil {
-			ackErr := fmt.Errorf(
-				"ack %d messages after successful flush: %w — events are durable, so redelivery will duplicate them",
-				len(goodAcks), err,
-			)
-			c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, ackMs+deadAckMs, ackErr)
-			return ackErr
+		job := ackJob{acks: goodAcks, messages: len(messages), events: len(allEvents),
+			pull: pullMs, parse: parseMs, ins: insertMs}
+
+		if c.ackCh != nil {
+			select {
+			case c.ackCh <- job:
+				// Off the critical path. AckMs now measures the handoff, not the
+				// round trip, so TotalMs stops including it — that is the point
+				// of #111, and AckAsync is what makes the two regimes
+				// distinguishable in logs.events.
+				ackAsync = true
+			default:
+				// The worker is behind. Ack synchronously rather than drop the
+				// job or let the queue grow without bound: a dropped ack is a
+				// guaranteed duplicate, and an unbounded backlog would push the
+				// ack past the lease and duplicate anyway.
+				log.Printf("Ack queue full (%d pending); acking synchronously", cap(c.ackCh))
+				c.runAck(job)
+			}
+			ackMs = time.Since(ackStart)
+		} else {
+			ackCtx, ackCancel := context.WithTimeout(ctx, ackTotalBudget)
+			err := c.ackWithRetry(ackCtx, goodAcks)
+			ackCancel()
+			ackMs = time.Since(ackStart)
+			if err != nil {
+				ackErr := fmt.Errorf(
+					"ack %d messages after successful flush: %w — events are durable, so redelivery will duplicate them",
+					len(goodAcks), err,
+				)
+				c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, ackMs+deadAckMs, ackErr)
+				return ackErr
+			}
 		}
 	}
 	ackMs += deadAckMs
 
-	c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, ackMs, nil)
+	c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, ackMs, nil, ackAsync)
 	return nil
 }
 
@@ -363,7 +449,7 @@ func (c *Consumer) poll(ctx context.Context) error {
 // POLL_SLOW_MS <= 0 disables CLEF shipping from the consumer entirely.
 // Failures ship even when under the threshold (still throttled); successes
 // only when total >= POLL_SLOW_MS.
-func (c *Consumer) maybeShipPollTiming(messages, events int, pull, parse, insert, ack time.Duration, pollErr error) {
+func (c *Consumer) maybeShipPollTiming(messages, events int, pull, parse, insert, ack time.Duration, pollErr error, async ...bool) {
 	if c.shipper == nil || c.slowMs <= 0 {
 		return
 	}
@@ -382,6 +468,11 @@ func (c *Consumer) maybeShipPollTiming(messages, events int, pull, parse, insert
 		"InsertMs": insert.Milliseconds(),
 		"AckMs":    ack.Milliseconds(),
 		"TotalMs":  total.Milliseconds(),
+	}
+	// Present, and true, only when the ack was handed off — so an event from
+	// the default synchronous path is byte-identical to one from before #111.
+	if len(async) > 0 && async[0] {
+		props["AckAsync"] = true
 	}
 	if pollErr != nil {
 		props["Error"] = pollErr.Error()
@@ -409,6 +500,72 @@ func (c *Consumer) processPayload(payload QueuePayload, rawBody []byte) ([]LogEv
 		return parseOTLPTraces(rawBody, payload.Source, payload.ContentType)
 	default:
 		return nil, fmt.Errorf("unknown format: %s", payload.Format)
+	}
+}
+
+// ackJob is a flush that has already succeeded, waiting only for its ack. The
+// phase timings ride along so a failure can still be reported with the context
+// of the poll it came from, long after poll() has returned.
+type ackJob struct {
+	acks             []QueueAck
+	messages, events int
+	pull, parse, ins time.Duration
+}
+
+// startAckWorker moves acking off the poll's critical path (refs #111). The ack
+// is ~half of a poll cycle — 1.2s of 2.5s at rest, 2.4s of 5s while Cloudflare
+// Queues is degraded — and the poll cannot start the next pull until it lands,
+// so throughput tracks Queues latency instead of the work being done.
+//
+// Safe against early redelivery: a message stays leased for
+// visibilityTimeoutMs whether or not its ack has arrived, so the next pull
+// cannot return it. The lease is what bounds this, not the ack.
+func (c *Consumer) startAckWorker(depth int) {
+	if max := maxSafeAckDepth(); depth > max {
+		log.Printf("ASYNC_ACK_DEPTH %d exceeds the %d that fits inside the message lease; using %d", depth, max, max)
+		depth = max
+	}
+	c.ackCh = make(chan ackJob, depth)
+	c.ackWG.Add(1)
+	go func() {
+		defer c.ackWG.Done()
+		for job := range c.ackCh {
+			c.runAck(job)
+		}
+	}()
+}
+
+// drainAcks stops accepting acks and waits for the queued ones. Deliberately
+// not tied to the shutdown context — see ackDrainGrace.
+func (c *Consumer) drainAcks() {
+	if c.ackCh == nil {
+		return
+	}
+	close(c.ackCh)
+	done := make(chan struct{})
+	go func() { c.ackWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(ackDrainGrace()):
+		log.Printf("Shutdown: gave up waiting for pending acks after %s; those messages will be redelivered and duplicated", ackDrainGrace())
+	}
+}
+
+// runAck performs the ack and reports a failure. On the async path poll() has
+// already returned success, so this log/CLEF pair is the only signal that a
+// batch is about to be duplicated — it is why the ack may be moved off the
+// critical path but never made fire-and-forget.
+func (c *Consumer) runAck(job ackJob) {
+	ctx, cancel := context.WithTimeout(context.Background(), ackTotalBudget)
+	defer cancel()
+	start := time.Now()
+	if err := c.ackWithRetry(ctx, job.acks); err != nil {
+		ackErr := fmt.Errorf(
+			"ack %d messages after successful flush: %w — events are durable, so redelivery will duplicate them",
+			len(job.acks), err,
+		)
+		log.Printf("%v", ackErr)
+		c.maybeShipPollTiming(job.messages, job.events, job.pull, job.parse, job.ins, time.Since(start), ackErr)
 	}
 }
 
@@ -631,6 +788,16 @@ func requireEnv(key string) string {
 func getEnv(key, defaultVal string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
+	}
+	return defaultVal
+}
+
+func envInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			return n
+		}
+		log.Printf("Invalid %s=%q; using %d", key, v, defaultVal)
 	}
 	return defaultVal
 }
