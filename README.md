@@ -688,6 +688,14 @@ and stops at `SUPABASE_PULL_MAX_PAGES` per table (default 50) so one huge
 backlog cannot hold a run indefinitely. Where it stopped is where the next run
 starts.
 
+**Rate limit.** The logs endpoint allows 10 requests per window per project
+and answers `429` with `Retry-After` beyond that. Steady state is one request
+per table per run (4 a minute per project at the defaults), which fits. A
+catch-up that needs more pages waits out `Retry-After` and retries (up to 5
+times) instead of failing the table, so a long backlog drains at the API's
+pace. Anything else calling the same project's logs endpoint shares that
+budget.
+
 **Self-report.** One CLEF event per run under the `supabase-pull` key:
 `Inserted`, `Pages`, `MaxWatermarkAgeSeconds`, `Behind`, and a `Tables` array
 with per-table rows, pages and watermark age. Any failed table (API error,

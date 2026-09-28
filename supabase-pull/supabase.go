@@ -43,6 +43,24 @@ type LogAPI interface {
 	Query(ctx context.Context, ref, table string, cur Cursor, from, to time.Time, limit int) ([]Row, error)
 }
 
+// The logs endpoint allows 10 requests per window per project and answers
+// 429 with Retry-After beyond that. Steady state is one request per table per
+// run, well inside it; a catch-up of many pages is not, so a 429 waits and
+// retries rather than failing the table.
+//
+// The endpoint also fails transiently — 502, 504, 500, timeouts, and DNS
+// failures on the host, all seen in the retired poller's log — so those get
+// a couple of short retries before the table is counted as failed.
+const (
+	maxRateLimitWait    = 90 * time.Second
+	maxRateLimitRetries = 5
+	transientRetries    = 2
+	transientWait       = 5 * time.Second
+)
+
+// ErrRateLimited is a 429 that outlasted the retries.
+var ErrRateLimited = errors.New("supabase logs API rate limit")
+
 // ErrAuth marks a PAT the API refused. It is not transient, so it is reported
 // separately from a failed request.
 var ErrAuth = errors.New("supabase rejected the access token")
@@ -51,6 +69,7 @@ type supabaseAPI struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	sleep   func(context.Context, time.Duration) error
 }
 
 func newSupabaseAPI(baseURL, token string) *supabaseAPI {
@@ -58,6 +77,7 @@ func newSupabaseAPI(baseURL, token string) *supabaseAPI {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
 		http:    &http.Client{Timeout: 30 * time.Second},
+		sleep:   sleepCtx,
 	}
 }
 
@@ -69,27 +89,82 @@ func (a *supabaseAPI) Query(ctx context.Context, ref, table string, cur Cursor, 
 	}
 	endpoint := fmt.Sprintf("%s/v1/projects/%s/analytics/endpoints/logs?%s", a.baseURL, url.PathEscape(ref), params.Encode())
 
+	limited, transient := 0, 0
+	for {
+		status, header, body, err := a.get(ctx, endpoint)
+		var wait time.Duration
+		switch {
+		case ctx.Err() != nil:
+			return nil, ctx.Err()
+		case status == http.StatusTooManyRequests:
+			if limited == maxRateLimitRetries {
+				return nil, fmt.Errorf("%w: still limited after %d retries", ErrRateLimited, limited)
+			}
+			limited++
+			wait = retryAfter(header.Get("Retry-After"))
+		case err != nil || status >= 500:
+			if transient == transientRetries {
+				if err != nil {
+					return nil, err
+				}
+				return checkResponse(status, body)
+			}
+			transient++
+			wait = transientWait
+		default:
+			return checkResponse(status, body)
+		}
+		if err := a.sleep(ctx, wait); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (a *supabaseAPI) get(ctx context.Context, endpoint string) (int, http.Header, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+a.token)
 	req.Header.Set("User-Agent", "log-cannon-supabase-pull/1.0")
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
-	if err != nil {
-		return nil, err
+	return resp.StatusCode, resp.Header, body, err
+}
+
+// retryAfter reads the seconds form of Retry-After, which is what the logs
+// endpoint sends, plus a second of slack, bounded. Anything unreadable waits a
+// full minute.
+func retryAfter(v string) time.Duration {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return time.Minute
 	}
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("%w (HTTP %d)", ErrAuth, resp.StatusCode)
+	return min(time.Duration(n)*time.Second+time.Second, maxRateLimitWait)
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("supabase logs API returned HTTP %d: %s", resp.StatusCode, snippet(body))
+}
+
+func checkResponse(status int, body []byte) ([]Row, error) {
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return nil, fmt.Errorf("%w (HTTP %d)", ErrAuth, status)
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("supabase logs API returned HTTP %d: %s", status, snippet(body))
 	}
 	return parseResponse(body)
 }
