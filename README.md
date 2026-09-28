@@ -203,6 +203,15 @@ Build dashboards from configurable widgets backed by raw SQL against ClickHouse.
 
 Define alerts in `alert-worker/alerts.json`. Each alert runs a SQL query on an interval and emails recipients when its condition is met:
 
+> **`count()` over `logs.events` can over-count.** Ingest is at-least-once and
+> nothing dedupes: `id` is generated at insert, so if the consumer inserts a
+> batch and then fails to acknowledge it, the queue redelivers and those events
+> are inserted a second time as distinct rows. The consumer retries the ack
+> inside the message lease to make this rare (`queue-consumer/main.go`), but it
+> is not impossible. Prefer a threshold with margin over one that trips on an
+> exact count, and treat a single doubled interval as suspect before treating it
+> as real.
+
 ```json
 {
   "id": "high-error-rate",

@@ -9,6 +9,11 @@ CREATE TABLE IF NOT EXISTS logs.api_keys (
 ) ENGINE = MergeTree
 ORDER BY api_key;
 
+-- Ingest is at-least-once and there is no deduplication: `id` is generated here
+-- at insert time, not carried from the producer, so a redelivered queue message
+-- inserts a second, indistinguishable row. The consumer retries its ack inside
+-- the lease to keep that rare (refs #116), but anything counting rows should
+-- assume a small over-count is possible rather than exact.
 CREATE TABLE IF NOT EXISTS logs.events (
     id UUID DEFAULT generateUUIDv4(),
     timestamp DateTime64(3),

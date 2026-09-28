@@ -64,6 +64,7 @@ Test coverage is uneven — `queue-consumer` and the ingest Worker have suites, 
 
 ## Conventions & gotchas
 
+- **`logs.events` is at-least-once, not exactly-once.** `id` is generated at insert, not carried from the producer, and nothing collapses duplicates. A consumer that inserts a batch and then fails to ack it will see those events redelivered and inserted again as distinct rows; the ack is retried inside the message lease to keep that rare (`queue-consumer/main.go`, refs #116). Anything built on `count()` should tolerate a small over-count — that includes alert conditions.
 - **No standalone ingest service.** A Go `ingest-api/` existed historically but was retired — ingestion is Worker → Queue → consumer only. Don't reintroduce a direct HTTP ingest path without discussion.
 - **ClickHouse schema** lives in `clickhouse/init/NNN_*.sql`, applied in numeric order. These run **only on a fresh data dir** — an existing volume will not pick up a new migration file automatically; apply schema changes to a running instance by hand (e.g. via `clickhouse-client`).
 - **API keys live in D1, behind the ingest Worker.** The Worker owns the only write path (`/v1/keys`, admin scope); the dashboard is a client of it. Never add a second key store — that dual-homing was the bug this replaced. See `docs/superpowers/specs/2026-08-06-api-key-registry-d1-design.md`.

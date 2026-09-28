@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,37 @@ import (
 )
 
 // QueuePayload mirrors the TypeScript QueuePayload from the Workers.
+// Queue lease and ack-retry budget. The retry sequence must finish well inside
+// the lease: once the visibility timeout elapses the messages are redelivered
+// and retrying the ack is pointless (refs #116).
+//
+// Budget: waits of 1s + 3s plus three ack calls. Acks have been measured at
+// ~2.4s each under Queues degradation, so worst case is roughly 11s.
+//
+// That fits inside either lease this queue might apply, which is the reason it
+// is this conservative. The pull below requests 120s, and the per-request value
+// is what governs — confirmed indirectly, since the requested batch_size of 100
+// also overrides the queue's configured 10 (pulls of 50 have been observed).
+// But the queue's own consumer settings say visibility_timeout_ms = 30000, and
+// an 11s budget is comfortably inside 30s too, so the retry cannot outlive the
+// lease even if that assumption is ever wrong.
+const (
+	visibilityTimeoutMs = 120000
+	ackMaxAttempts      = 3
+	flushTimeout        = 60 * time.Second
+
+	// Ceiling on the WHOLE ack-retry sequence, enforced by a context deadline
+	// rather than by summing the backoff. httpClient has a 30s timeout, so three
+	// unbounded attempts plus backoff could reach ~94s; with the flush already
+	// allowed 60s of the lease, the retry could still be running when Cloudflare
+	// redelivers — creating exactly the duplicate window #116 exists to shrink.
+	// flushTimeout + ackTotalBudget must stay under the lease; a test asserts it.
+	ackTotalBudget = 15 * time.Second
+)
+
+// Overridden in tests so they do not sleep the real backoff.
+var ackRetryBaseDelay = time.Second
+
 type QueuePayload struct {
 	Format      string `json:"format"` // "clef", "webhook", "otlp-logs", "otlp-traces"
 	Source      string `json:"source"`
@@ -192,8 +224,8 @@ func (c *Consumer) poll(ctx context.Context) error {
 	log.Printf("Pulled %d messages from queue in %s", len(messages), pullMs.Round(time.Millisecond))
 
 	var allEvents []LogEvent
-	var deadLetterAcks []QueueAck // Corrupt/unparseable — ack unconditionally
-	var goodAcks []QueueAck       // Successfully processed — ack only after flush
+	var deadLetterAcks []QueueAck    // Corrupt/unparseable — ack unconditionally
+	var processed []processedMessage // Parsed OK — ack only after their events land
 
 	parseStart := time.Now()
 	for _, msg := range messages {
@@ -230,7 +262,11 @@ func (c *Consumer) poll(ctx context.Context) error {
 		}
 
 		allEvents = append(allEvents, events...)
-		goodAcks = append(goodAcks, QueueAck{LeaseID: msg.LeaseID})
+		processed = append(processed, processedMessage{
+			id:     msg.ID,
+			ack:    QueueAck{LeaseID: msg.LeaseID},
+			events: events,
+		})
 	}
 	parseMs := time.Since(parseStart)
 
@@ -239,7 +275,9 @@ func (c *Consumer) poll(ctx context.Context) error {
 	if len(deadLetterAcks) > 0 {
 		log.Printf("Acking %d dead-letter messages (corrupt/unparseable)", len(deadLetterAcks))
 		ackStart := time.Now()
-		if err := c.ackMessages(ctx, deadLetterAcks); err != nil {
+		if err := c.ackWithRetry(ctx, deadLetterAcks); err != nil {
+			// Unlike the good-ack path this does not duplicate anything: a
+			// redelivered corrupt message is simply dead-lettered again.
 			log.Printf("Warning: failed to ack %d dead-letter messages: %v", len(deadLetterAcks), err)
 		}
 		deadAckMs = time.Since(ackStart)
@@ -247,11 +285,36 @@ func (c *Consumer) poll(ctx context.Context) error {
 
 	// Batch insert into ClickHouse with a timeout safely under the visibility window
 	var insertMs time.Duration
+	goodAcks := acksOf(processed)
 	if len(allEvents) > 0 {
-		flushCtx, flushCancel := context.WithTimeout(ctx, 60*time.Second)
+		flushCtx, flushCancel := context.WithTimeout(ctx, flushTimeout)
 		defer flushCancel()
 		insertStart := time.Now()
-		if err := c.flushBatch(flushCtx, allEvents); err != nil {
+		err := c.flushBatch(flushCtx, allEvents)
+
+		// A deterministic append failure (bad type, oversized row) would
+		// otherwise cost the whole pull: nothing is acked, Cloudflare redelivers,
+		// the same event fails again, and at max_retries — 3 on this queue, with
+		// no dead-letter queue configured — every co-pulled message is discarded.
+		// That is far worse collateral than the single silent drop #80 removed.
+		// So retry one message at a time: only the message holding the bad event
+		// goes unacked, and it is the only thing that can be discarded.
+		//
+		// Deliberately not done for a Send failure. That write is *uncertain*, so
+		// re-inserting could duplicate rows; the whole pull is left unacked and
+		// redelivered instead, which is the pre-existing behaviour.
+		if err != nil && errors.Is(err, errAppendFailed) {
+			log.Printf("Flush failed while appending (%v) — retrying %d messages individually", err, len(processed))
+			var failed int
+			goodAcks, failed = c.flushIsolated(flushCtx, processed)
+			if failed == len(processed) {
+				insertMs = time.Since(insertStart)
+				flushErr := fmt.Errorf("flush %d events, and all %d messages failed individually: %w", len(allEvents), failed, err)
+				c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, deadAckMs, flushErr)
+				return flushErr
+			}
+			log.Printf("Isolated flush: %d/%d messages landed, %d left unacked for redelivery", len(goodAcks), len(processed), failed)
+		} else if err != nil {
 			insertMs = time.Since(insertStart)
 			flushErr := fmt.Errorf("flush %d events: %w", len(allEvents), err)
 			// Don't ack good messages if insert failed — they will be redelivered.
@@ -263,14 +326,29 @@ func (c *Consumer) poll(ctx context.Context) error {
 		log.Printf("Inserted %d events into ClickHouse in %s", len(allEvents), insertMs.Round(time.Millisecond))
 	}
 
-	// Acknowledge successfully processed messages only after flush succeeds
+	// Acknowledge successfully processed messages only after flush succeeds.
+	//
+	// These events are already durable, so a failed ack is not a lost write — it
+	// is a duplicate one (refs #116). The lease expires after
+	// visibilityTimeoutMs, Cloudflare redelivers, and the next poll inserts
+	// every one of them again with a fresh `id`. Nothing dedupes. So: retry
+	// inside the lease window, and if it still fails, report the poll as failed
+	// rather than returning a clean cycle that is about to duplicate.
 	var ackMs time.Duration
 	if len(goodAcks) > 0 {
 		ackStart := time.Now()
-		if err := c.ackMessages(ctx, goodAcks); err != nil {
-			log.Printf("Warning: failed to ack %d messages after successful flush: %v", len(goodAcks), err)
-		}
+		ackCtx, ackCancel := context.WithTimeout(ctx, ackTotalBudget)
+		err := c.ackWithRetry(ackCtx, goodAcks)
+		ackCancel()
 		ackMs = time.Since(ackStart)
+		if err != nil {
+			ackErr := fmt.Errorf(
+				"ack %d messages after successful flush: %w — events are durable, so redelivery will duplicate them",
+				len(goodAcks), err,
+			)
+			c.maybeShipPollTiming(len(messages), len(allEvents), pullMs, parseMs, insertMs, ackMs+deadAckMs, ackErr)
+			return ackErr
+		}
 	}
 	ackMs += deadAckMs
 
@@ -334,15 +412,65 @@ func (c *Consumer) processPayload(payload QueuePayload, rawBody []byte) ([]LogEv
 	}
 }
 
-func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
-	batch, err := c.conn.PrepareBatch(ctx,
-		"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties, inserted_at)")
-	if err != nil {
-		return err
-	}
+// processedMessage keeps a message's events with its ack so a failed flush can
+// be narrowed to the messages that actually caused it (refs #80).
+type processedMessage struct {
+	id     string
+	ack    QueueAck
+	events []LogEvent
+}
 
-	now := time.Now()
-	appended := 0
+func acksOf(msgs []processedMessage) []QueueAck {
+	acks := make([]QueueAck, 0, len(msgs))
+	for _, m := range msgs {
+		acks = append(acks, m.ack)
+	}
+	return acks
+}
+
+// flushIsolated re-inserts a failed pull one message at a time. Returns the acks
+// for messages whose events all landed, and how many did not. Safe only after an
+// append failure, where nothing was sent.
+func (c *Consumer) flushIsolated(ctx context.Context, msgs []processedMessage) ([]QueueAck, int) {
+	acks := make([]QueueAck, 0, len(msgs))
+	failed := 0
+	for _, m := range msgs {
+		if len(m.events) == 0 {
+			acks = append(acks, m.ack)
+			continue
+		}
+		if err := c.flushBatch(ctx, m.events); err != nil {
+			log.Printf("Message %s: %d events could not be inserted, leaving unacked: %v", m.id, len(m.events), err)
+			failed++
+			continue
+		}
+		acks = append(acks, m.ack)
+	}
+	return acks, failed
+}
+
+// errAppendFailed marks a flush that failed while appending, before anything was
+// sent. That distinction matters: nothing reached ClickHouse, so the events can
+// safely be retried one message at a time. A Send failure is an *uncertain*
+// write and must not be retried that way.
+var errAppendFailed = errors.New("append failed")
+
+// batchAppender is the part of driver.Batch that appendAll needs. Narrowed so
+// the append-failure path — the one that must never be reported as success
+// (refs #80) — is testable without a ClickHouse connection.
+type batchAppender interface {
+	Append(v ...any) error
+	Abort() error
+}
+
+// appendAll appends every event, or fails. There is no partial success: an ack
+// means "these events are in ClickHouse", so a dropped event has to fail the
+// batch rather than let poll() ack the pull (refs #80). The batch is aborted
+// rather than partially sent, so a retry starts clean instead of double-
+// inserting the rows that did append.
+func appendAll(batch batchAppender, events []LogEvent, now time.Time) error {
+	dropped := 0
+	var firstAppendErr error
 	for i, e := range events {
 		ts := e.Timestamp
 		if ts.After(now) {
@@ -362,19 +490,33 @@ func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
 			// is the epoch sentinel — see clickhouse/init/010_events_inserted_at.sql.
 			now,
 		); err != nil {
-			log.Printf("Skipping event %d/%d (source=%s): batch append error: %v", i+1, len(events), e.Source, err)
+			log.Printf("Append failed for event %d/%d (source=%s): %v", i+1, len(events), e.Source, err)
+			dropped++
+			if firstAppendErr == nil {
+				firstAppendErr = err
+			}
 			continue
 		}
-		appended++
 	}
 
-	if appended == 0 {
-		log.Printf("All %d events failed to append, skipping batch send", len(events))
-		return nil
+	if dropped > 0 {
+		if err := batch.Abort(); err != nil {
+			log.Printf("Warning: aborting batch after %d append failures: %v", dropped, err)
+		}
+		return fmt.Errorf("%w: %d/%d events (first: %v)", errAppendFailed, dropped, len(events), firstAppendErr)
+	}
+	return nil
+}
+
+func (c *Consumer) flushBatch(ctx context.Context, events []LogEvent) error {
+	batch, err := c.conn.PrepareBatch(ctx,
+		"INSERT INTO logs.events (timestamp, level, message_template, message, exception, event_type, source, properties, inserted_at)")
+	if err != nil {
+		return err
 	}
 
-	if appended < len(events) {
-		log.Printf("Appended %d/%d events (%d skipped)", appended, len(events), len(events)-appended)
+	if err := appendAll(batch, events, time.Now()); err != nil {
+		return err
 	}
 
 	return batch.Send()
@@ -389,7 +531,7 @@ func (c *Consumer) pullMessages(ctx context.Context) ([]QueueMessage, error) {
 	)
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"visibility_timeout_ms": 120000,
+		"visibility_timeout_ms": visibilityTimeoutMs,
 		"batch_size":            c.batchSize,
 	})
 
@@ -417,6 +559,34 @@ func (c *Consumer) pullMessages(ctx context.Context) ([]QueueMessage, error) {
 	}
 
 	return pullResp.Result.Messages, nil
+}
+
+// ackWithRetry retries a failed ack inside the message lease. Attempts are
+// spaced so the whole sequence finishes well short of visibilityTimeoutMs —
+// past that the messages are redelivered and retrying stops being useful.
+func (c *Consumer) ackWithRetry(ctx context.Context, acks []QueueAck) error {
+	backoff := ackRetryBaseDelay
+	var err error
+	for attempt := 1; attempt <= ackMaxAttempts; attempt++ {
+		if err = c.ackMessages(ctx, acks); err == nil {
+			if attempt > 1 {
+				log.Printf("Acked %d messages on attempt %d", len(acks), attempt)
+			}
+			return nil
+		}
+		if attempt == ackMaxAttempts {
+			break
+		}
+		log.Printf("Ack attempt %d/%d for %d messages failed (%v), retrying in %s",
+			attempt, ackMaxAttempts, len(acks), err, backoff)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 3
+	}
+	return fmt.Errorf("after %d attempts: %w", ackMaxAttempts, err)
 }
 
 func (c *Consumer) ackMessages(ctx context.Context, acks []QueueAck) error {
