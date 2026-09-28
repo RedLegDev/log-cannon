@@ -1,13 +1,13 @@
 module github.com/logaggregator/queue-consumer
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/logaggregator/ship v0.0.0
-	github.com/twmb/murmur3 v1.1.8
+	github.com/twmb/murmur3 v1.2.0
 	go.opentelemetry.io/proto/otlp v1.11.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 replace github.com/logaggregator/ship => ../go/ship
