@@ -78,11 +78,11 @@ func main() {
 func report(shipper *ship.Client, results []TableResult, took time.Duration) {
 	var inserted, pages, failed int
 	var authFailed, behind bool
-	var maxAge float64
+	var maxLag float64
 	for _, r := range results {
 		inserted += r.Inserted
 		pages += r.Pages
-		maxAge = max(maxAge, r.WatermarkAgeSeconds)
+		maxLag = max(maxLag, r.ReadLagSeconds)
 		behind = behind || r.Behind
 		if r.Error != "" {
 			failed++
@@ -90,12 +90,12 @@ func report(shipper *ship.Client, results []TableResult, took time.Duration) {
 			log.Printf("[%s/%s] ERROR after %d page(s): %s", r.Project, r.Table, r.Pages, r.Error)
 			continue
 		}
-		log.Printf("[%s/%s] fetched=%d inserted=%d skipped=%d pages=%d watermark_age=%.0fs%s",
-			r.Project, r.Table, r.Fetched, r.Inserted, r.Skipped, r.Pages, r.WatermarkAgeSeconds, behindNote(r.Behind))
+		log.Printf("[%s/%s] fetched=%d inserted=%d skipped=%d pages=%d read_lag=%.0fs watermark_age=%s%s",
+			r.Project, r.Table, r.Fetched, r.Inserted, r.Skipped, r.Pages, r.ReadLagSeconds, ageText(r.WatermarkAgeSeconds), behindNote(r.Behind))
 	}
 
 	level, template := "Information",
-		"supabase-pull inserted {Inserted} rows in {Pages} pages; oldest watermark {MaxWatermarkAgeSeconds}s"
+		"supabase-pull inserted {Inserted} rows in {Pages} pages; read lag {MaxReadLagSeconds}s"
 	if failed > 0 {
 		level, template = "Error",
 			"supabase-pull: {Failed} of {TableCount} tables failed; inserted {Inserted} rows"
@@ -107,17 +107,24 @@ func report(shipper *ship.Client, results []TableResult, took time.Duration) {
 		Level:    level,
 		Template: template,
 		Props: map[string]any{
-			"Inserted":               inserted,
-			"Pages":                  pages,
-			"Failed":                 failed,
-			"TableCount":             len(results),
-			"AuthFailed":             authFailed,
-			"Behind":                 behind,
-			"MaxWatermarkAgeSeconds": int(maxAge),
-			"DurationMs":             took.Milliseconds(),
-			"Tables":                 results,
+			"Inserted":          inserted,
+			"Pages":             pages,
+			"Failed":            failed,
+			"TableCount":        len(results),
+			"AuthFailed":        authFailed,
+			"Behind":            behind,
+			"MaxReadLagSeconds": int(maxLag),
+			"DurationMs":        took.Milliseconds(),
+			"Tables":            results,
 		},
 	})
+}
+
+func ageText(age *float64) string {
+	if age == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%.0fs", *age)
 }
 
 func behindNote(b bool) string {

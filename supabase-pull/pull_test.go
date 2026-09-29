@@ -379,3 +379,36 @@ func TestLookbackLongerThanThePageCapStillReachesThePresent(t *testing.T) {
 	}
 	t.Fatal("still behind after 5 runs; each run is restarting from the floor")
 }
+
+func TestReadLagIsTheHealthSignalNotWatermarkAge(t *testing.T) {
+	cfg := testConfig()
+	cfg.Tables = []string{"auth_logs", "function_logs"}
+	api := &fakeAPI{}
+	api.add("auth_logs", Row{ID: "a", Timestamp: t0.Add(-2 * time.Hour), Message: "x"})
+	store := &fakeStore{}
+
+	res := newTestPuller(api, store, cfg, t0).Run(context.Background())
+
+	// A table with a row two hours old, and one with no rows at all: both are
+	// fully read, so neither is behind.
+	for _, r := range res {
+		if r.ReadLagSeconds != 0 {
+			t.Errorf("%s read lag = %v, want 0 once caught up", r.Table, r.ReadLagSeconds)
+		}
+	}
+	if res[0].WatermarkAgeSeconds == nil || *res[0].WatermarkAgeSeconds != (2*time.Hour).Seconds() {
+		t.Errorf("auth_logs watermark age = %v, want 7200s", res[0].WatermarkAgeSeconds)
+	}
+	if res[1].WatermarkAgeSeconds != nil {
+		t.Errorf("function_logs has no rows but reports watermark age %v", *res[1].WatermarkAgeSeconds)
+	}
+}
+
+func TestReadLagOfAFailedTableIsTheWholeLookback(t *testing.T) {
+	api := &fakeAPI{err: fmt.Errorf("boom")}
+	res := newTestPuller(api, &fakeStore{}, testConfig(), t0).Run(context.Background())
+
+	if res[0].ReadLagSeconds != testConfig().MaxLookback.Seconds() {
+		t.Fatalf("read lag = %v, want the full lookback for a table never read", res[0].ReadLagSeconds)
+	}
+}

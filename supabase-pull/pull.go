@@ -45,10 +45,16 @@ type TableResult struct {
 	Pages    int    `json:"pages"`
 	// Behind is true when the run stopped at MaxPagesPerTable with more to read.
 	Behind bool `json:"behind,omitempty"`
-	// WatermarkAgeSeconds is now minus the newest row stored for the table.
-	WatermarkAgeSeconds float64 `json:"watermark_age_s"`
-	Error               string  `json:"error,omitempty"`
-	AuthFailed          bool    `json:"-"`
+	// WatermarkAgeSeconds is now minus the newest row stored for the table;
+	// nil when none is stored within MaxLookback. A quiet table's is large
+	// without anything being wrong, so it is information, not health.
+	WatermarkAgeSeconds *float64 `json:"watermark_age_s,omitempty"`
+	// ReadLagSeconds is how far behind the present this process has read the
+	// table with nothing left behind — near zero when caught up, whether or
+	// not the table has rows. This is the health signal.
+	ReadLagSeconds float64 `json:"read_lag_s"`
+	Error          string  `json:"error,omitempty"`
+	AuthFailed     bool    `json:"-"`
 }
 
 // Run pulls every configured project and table once.
@@ -113,9 +119,14 @@ func (p *Puller) pullTable(ctx context.Context, proj Project, table string, wms 
 
 	defer func() {
 		if wm, ok := wms[table]; ok {
-			res.WatermarkAgeSeconds = now.Sub(wm).Seconds()
-		} else {
-			res.WatermarkAgeSeconds = p.cfg.MaxLookback.Seconds()
+			age := now.Sub(wm).Seconds()
+			res.WatermarkAgeSeconds = &age
+		}
+		// Never read at all (failed before the first page) counts as the
+		// whole lookback behind.
+		res.ReadLagSeconds = p.cfg.MaxLookback.Seconds()
+		if t, ok := p.readTo[proj.Source][table]; ok {
+			res.ReadLagSeconds = max(p.now().Sub(t).Seconds(), 0)
 		}
 	}()
 	fail := func(err error) TableResult {

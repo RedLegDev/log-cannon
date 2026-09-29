@@ -697,8 +697,8 @@ pace. Anything else calling the same project's logs endpoint shares that
 budget.
 
 **Self-report.** One CLEF event per run under the `supabase-pull` key:
-`Inserted`, `Pages`, `MaxWatermarkAgeSeconds`, `Behind`, and a `Tables` array
-with per-table rows, pages and watermark age. Any failed table (API error,
+`Inserted`, `Pages`, `MaxReadLagSeconds` (how far behind the present the worst table has been read — near zero when caught up), `Behind`, and a `Tables` array
+with per-table rows, pages, read lag and watermark age (the newest stored row; absent for a table with none). Any failed table (API error,
 refused token, ClickHouse error) raises the event to `Error`, so
 `source = 'supabase-pull' AND level = 'Error'` is the alert condition for the
 puller itself. Stdout carries one line per table per run.
