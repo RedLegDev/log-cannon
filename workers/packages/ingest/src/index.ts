@@ -562,7 +562,8 @@ async function enqueue(
     send,
     resolveQueueAckDeadlineMs(ingest.env.QUEUE_ACK_DEADLINE_MS),
     ingest.ctx,
-    (error) => reportEnqueueFailure(ingest, format, messages, error),
+    (error, attempts) =>
+      reportEnqueueFailure(ingest, format, messages, error, attempts),
   );
   ingest.trace.enqueued(messages, handedOff);
 }
@@ -588,6 +589,7 @@ export async function reportEnqueueFailure(
   format: QueuePayload["format"],
   messages: number,
   error: unknown,
+  attempts: number,
 ): Promise<void> {
   try {
     const { request, env, trace } = ingest;
@@ -600,6 +602,7 @@ export async function reportEnqueueFailure(
       bodyBytes: trace.bodyBytes,
       waitedMs: trace.span("enqueue"),
       error: error instanceof Error ? error.message : String(error),
+      attempts,
       colo: cf?.colo,
       rayId: request.headers.get("cf-ray") ?? undefined,
     };

@@ -4,6 +4,7 @@ import {
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HANDOFF_RETRY_DELAYS_MS } from "../src/enqueue";
 import worker from "../src/index";
 import { __resetKeyCache } from "../src/keys";
 import { __resetTelemetryThrottle } from "../src/timing";
@@ -166,7 +167,9 @@ describe("QUEUE_ACK_DEADLINE_MS through the router", () => {
     warn.mockRestore();
   });
 
-  it("reports a send that fails after the response as its own event", async () => {
+  // Runs the shipped HANDOFF_RETRY_DELAYS_MS for real (~10 s of backoff), so
+  // it also proves the retries fit inside the router's waitUntil.
+  it("reports a send that fails after the response, and every retry, as its own event", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const q = slowQueue(200, true);
@@ -189,11 +192,12 @@ describe("QUEUE_ACK_DEADLINE_MS through the router", () => {
     expect(loss.ingestSource).toBe("example-app");
     expect(loss.queueMessages).toBe(1);
     expect(loss.error).toBe("queue unavailable");
+    expect(loss.attempts).toBe(1 + HANDOFF_RETRY_DELAYS_MS.length);
     // Distinct from the latency event, so the two can be alerted on apart.
     expect(events(warn, "slow-ingest-request")).toHaveLength(1);
     error.mockRestore();
     warn.mockRestore();
-  });
+  }, 20_000);
 
   it("still fails the request when the send fails before the deadline", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

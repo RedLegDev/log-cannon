@@ -215,6 +215,8 @@ export interface EnqueueFailure {
   /** How long the caller waited before the handoff, in milliseconds. */
   waitedMs: number;
   error: string;
+  /** Sends tried before giving up: the handed-off one plus any retries. */
+  attempts: number;
   colo?: string;
   rayId?: string;
 }
@@ -232,6 +234,7 @@ export function enqueueFailureCLEF(f: EnqueueFailure, at: string): string {
     BodyBytes: f.bodyBytes,
     WaitedMs: f.waitedMs,
     Error: f.error,
+    Attempts: f.attempts,
   };
   if (f.colo) event.Colo = f.colo;
   if (f.rayId) event.RayId = f.rayId;

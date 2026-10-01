@@ -163,6 +163,7 @@ describe("enqueueFailureCLEF", () => {
     bodyBytes: 140_000,
     waitedMs: 250,
     error: "queue unavailable",
+    attempts: 3,
     colo: "IAD",
     rayId: "ray-1",
   };
@@ -182,6 +183,7 @@ describe("enqueueFailureCLEF", () => {
     expect(e.BodyBytes).toBe(140_000);
     expect(e.WaitedMs).toBe(250);
     expect(e.Error).toBe("queue unavailable");
+    expect(e.Attempts).toBe(3);
   });
 
   it("uses a different @mt from slowRequestCLEF, so event_type separates them", () => {
@@ -498,7 +500,7 @@ function failureHarness(vars: Record<string, string> = {}) {
   return {
     sent,
     report: (error: unknown = new Error("queue unavailable")) =>
-      reportEnqueueFailure(ingest, "clef", 3, error),
+      reportEnqueueFailure(ingest, "clef", 3, error, 3),
   };
 }
 
@@ -519,6 +521,7 @@ describe("reportEnqueueFailure", () => {
     expect(logged.waitedMs).toBe(250);
     expect(logged.bodyBytes).toBe(141_000);
     expect(logged.error).toBe("queue unavailable");
+    expect(logged.attempts).toBe(3);
     expect(logged.rayId).toBe("ray-abc");
     error.mockRestore();
 
@@ -529,6 +532,7 @@ describe("reportEnqueueFailure", () => {
     expect(event["@l"]).toBe("Error");
     expect(event.QueueMessages).toBe(3);
     expect(event.IngestSource).toBe("example-app");
+    expect(event.Attempts).toBe(3);
   });
 
   it("reports whatever the latency threshold is set to — a loss is not a latency event", async () => {
@@ -571,7 +575,7 @@ describe("reportEnqueueFailure", () => {
     } as unknown as IngestRequest;
 
     await expect(
-      reportEnqueueFailure(ingest, "clef", 1, new Error("original")),
+      reportEnqueueFailure(ingest, "clef", 1, new Error("original"), 1),
     ).resolves.toBeUndefined();
 
     // The console line is the channel that survives a broken queue, and it

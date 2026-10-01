@@ -101,19 +101,26 @@ describe("sendWithDeadline with a deadline set", () => {
   it("still throws to the caller when the send fails before the deadline", async () => {
     const h = fakeCtx();
     const onFailure = vi.fn();
+    let calls = 0;
 
     await expect(
       sendWithDeadline(
         async () => {
+          calls++;
           await scheduler.wait(5);
           throw new Error("queue unavailable");
         },
         5_000,
         h.ctx,
         onFailure,
+        [5, 5],
       ),
     ).rejects.toThrow("queue unavailable");
     expect(onFailure).not.toHaveBeenCalled();
+    // The caller's 5xx is what gets it resent, so the Worker does not retry
+    // on this side of the deadline.
+    expect(calls).toBe(1);
+    expect(h.pending).toHaveLength(0);
   });
 
   it("returns at the deadline and finishes the send in waitUntil", async () => {
@@ -139,28 +146,81 @@ describe("sendWithDeadline with a deadline set", () => {
     expect(done).toBe(true);
   });
 
-  it("reports a failure that lands after the handoff", async () => {
+  it("reports a failure that lands after the handoff once every retry has failed too", async () => {
     const h = fakeCtx();
     const onFailure = vi.fn();
+    let calls = 0;
 
     const outcome = await sendWithDeadline(
       async () => {
-        await scheduler.wait(200);
-        throw new Error("queue unavailable");
+        calls++;
+        await scheduler.wait(calls === 1 ? 200 : 5);
+        throw new Error(`queue unavailable ${calls}`);
       },
       20,
       h.ctx,
       onFailure,
+      [5, 5],
     );
 
     expect(outcome.handedOff).toBe(true);
     expect(onFailure).not.toHaveBeenCalled(); // nothing known yet at response time
 
     await h.settle();
+    expect(calls).toBe(3);
     expect(onFailure).toHaveBeenCalledTimes(1);
+    // The last attempt's error, and how many sends were tried.
     expect((onFailure.mock.calls[0][0] as Error).message).toBe(
-      "queue unavailable",
+      "queue unavailable 3",
     );
+    expect(onFailure.mock.calls[0][1]).toBe(3);
+  });
+
+  it("does not report a handed-off failure that a retry recovers", async () => {
+    const h = fakeCtx();
+    const onFailure = vi.fn();
+    let calls = 0;
+
+    await sendWithDeadline(
+      async () => {
+        calls++;
+        await scheduler.wait(calls === 1 ? 200 : 5);
+        if (calls === 1) throw new Error("Queue send failed: Too Many Requests");
+      },
+      20,
+      h.ctx,
+      onFailure,
+      [5, 5],
+    );
+
+    await h.settle();
+    expect(calls).toBe(2); // stops at the first success
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("skips a retry that would start past the waitUntil budget and reports at once", async () => {
+    // A retry still running when waitUntil's ~30 s runs out would take the
+    // loss report down with the isolate, so it is not attempted.
+    const h = fakeCtx();
+    const onFailure = vi.fn();
+    let calls = 0;
+
+    await sendWithDeadline(
+      async () => {
+        calls++;
+        await scheduler.wait(200);
+        throw new Error("queue unavailable");
+      },
+      20,
+      h.ctx,
+      onFailure,
+      [25_000],
+    );
+
+    await h.settle();
+    expect(calls).toBe(1);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][1]).toBe(1);
   });
 
   it("waits for an async failure report, so the isolate is not killed mid-report", async () => {
@@ -178,6 +238,7 @@ describe("sendWithDeadline with a deadline set", () => {
         await scheduler.wait(20);
         reported = true;
       },
+      [],
     );
 
     await h.settle();
