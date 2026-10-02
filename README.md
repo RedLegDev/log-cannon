@@ -513,6 +513,7 @@ keys with the names above (and set `retentionDays`) if you want these trimmed.
 | `POLL_SLOW_MS` | `1000` | Ship a timing event when any phase or the total is at least this many milliseconds. `0` disables CLEF timings (stdout unchanged). |
 | `POLL_TELEMETRY_MIN_INTERVAL_MS` | `10000` | Minimum gap between two queue-borne slow-poll events. |
 | `ASYNC_ACK_DEPTH` | `0` | Hand the ack to a background worker instead of waiting for it. `0` keeps acking inline. See below. |
+| `QUEUE_CONSUMER_WORKERS` | `1` | Independent poll loops. `1` is the single serial loop. Clamped to the ClickHouse pool (10). See below. |
 
 ### Taking the ack off the critical path
 
@@ -552,8 +553,11 @@ Two behaviours worth knowing:
 - **Shutdown drains.** Pending acks finish on their own context, not the
   cancelled one, because the events are already in ClickHouse — an abandoned ack
   is not a lost write but a duplicated one on the next start. The grace is
-  derived from the same arithmetic (~50s). **`docker-compose.yml` sets
-  `stop_grace_period: 60s` for this service**; on Docker's 10s default, SIGKILL
+  derived from the same arithmetic (~50s), and a poll still acking inline
+  (synchronously, or because the ack queue was full) can need its own 15s
+  before the drain starts. The synchronous ack also uses its own context, so
+  SIGTERM does not abandon it either. **`docker-compose.yml`
+  sets `stop_grace_period: 75s` for this service**; on Docker's 10s default, SIGKILL
   would land mid-drain and the code's patience would be fiction.
 
 `AckMs` measures the handoff rather than the round trip once this is on, so
@@ -561,6 +565,38 @@ Two behaviours worth knowing:
 what the numbers mean. Events carry `AckAsync: true` so the two regimes are
 distinguishable in `logs.events`; an event from the default path is
 byte-identical to one from before this existed.
+
+### Concurrent poll workers
+
+With the ack moved off the critical path, the pull is the remaining serial
+cost. A pull to Cloudflare Queues takes 1–2s at rest, and several times a day
+it fails with a 504 after ~15s, which freezes the only loop for that long.
+
+`QUEUE_CONSUMER_WORKERS=N` runs N independent poll loops. Each one does the
+same pull → parse → insert → ack-after-flush cycle on its own lease, so
+Queues latency is paid in parallel and one stuck pull holds up 1/N of
+intake instead of all of it.
+
+- **Ack ordering is unchanged.** Pulls lease disjoint sets of messages for the
+  120s visibility window, so each worker keeps the ack-after-flush invariant for
+  its own messages. No worker acks anything another worker inserted.
+- **Order is not a concern.** Every event carries its own `timestamp`;
+  `logs.events` sorts by it.
+- **Shared ack worker.** With `ASYNC_ACK_DEPTH` on, all workers hand off to the
+  same bounded ack queue, and a full queue still acks inline, so the lease
+  arithmetic above holds for any N.
+- **The cost to watch is ClickHouse inserts.** N workers make N smaller inserts
+  per cycle. `InsertMs` is in the slow-poll events; if it starts rising, stop
+  raising N. N is clamped to the ClickHouse connection pool (10) so a flush never
+  waits for a connection.
+- **Idle cost.** An empty queue gets up to N pulls a second instead of one.
+  Pull consumers are limited per queue by message throughput (5,000/s), not by
+  the general API request limit.
+
+It ships at `1`: this is the only writer of `logs.events`, and N workers means
+N times the ack calls, so N times the exposure to a failed ack duplicating a
+batch (#116). Raise it deliberately, and measure with the ingest-lag query in
+#111.
 
 Slow-poll properties: `Messages`, `Events`, `PullMs`, `ParseMs`, `InsertMs`,
 `AckMs`, `TotalMs`.

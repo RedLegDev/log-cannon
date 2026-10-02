@@ -162,8 +162,11 @@ services:
     # own ack drain (~50s with ASYNC_ACK_DEPTH on). Without this, SIGKILL lands
     # mid-drain and acks for events already written to ClickHouse are abandoned
     # — those messages are then redelivered and inserted a second time. Must
-    # stay >= ackDrainGrace() in queue-consumer/main.go.
-    stop_grace_period: 60s
+    # stay >= ackTotalBudget + ackDrainGrace() in queue-consumer/main.go
+    # (15s + 50s): a poll may still be acking inline (the synchronous default,
+    # or a full ack queue) when SIGTERM lands, and run() waits for it before
+    # the drain starts.
+    stop_grace_period: 75s
     environment:
       - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
       - CF_QUEUE_ID=${CF_QUEUE_ID}
@@ -178,6 +181,7 @@ services:
       - POLL_SLOW_MS=${POLL_SLOW_MS:-1000}
       - POLL_TELEMETRY_MIN_INTERVAL_MS=${POLL_TELEMETRY_MIN_INTERVAL_MS:-10000}
       - ASYNC_ACK_DEPTH=${ASYNC_ACK_DEPTH:-0}
+      - QUEUE_CONSUMER_WORKERS=${QUEUE_CONSUMER_WORKERS:-1}
     depends_on:
       clickhouse:
         condition: service_healthy

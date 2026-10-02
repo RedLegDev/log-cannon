@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 // --- minimal driver.Conn: only PrepareBatch is exercised ---
 
 type stubConn struct {
+	mu       sync.Mutex // the real conn is shared by concurrent poll workers
 	batches  int
 	failOnce bool // first batch fails at append, later ones succeed (poison isolation)
 	failAll  bool
@@ -26,9 +28,12 @@ type stubConn struct {
 }
 
 func (c *stubConn) PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error) {
+	c.mu.Lock()
 	c.batches++
+	first := c.batches == 1
+	c.mu.Unlock()
 	b := &fullBatch{failSend: c.failSend}
-	if c.failAll || (c.failOnce && c.batches == 1) {
+	if c.failAll || (c.failOnce && first) {
 		b.failAppend = true
 	}
 	return b, nil
@@ -220,5 +225,35 @@ func TestPoll_SendFailureIsNotIsolated(t *testing.T) {
 	// risking duplicates for rows the failed Send may already have committed.
 	if conn.batches != 1 {
 		t.Errorf("prepared %d batches, want 1 — a Send failure must not trigger per-message retries", conn.batches)
+	}
+}
+
+// cancelOnFlush is a conn whose flush succeeds while SIGTERM lands: it cancels
+// the poll's context during PrepareBatch, so the batch is durable by the time
+// the ack starts.
+type cancelOnFlush struct {
+	stubConn
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnFlush) PrepareBatch(ctx context.Context, query string, opts ...driver.PrepareBatchOption) (driver.Batch, error) {
+	c.cancel()
+	return c.stubConn.PrepareBatch(ctx, query, opts...)
+}
+
+// The synchronous ack must not ride the shutdown context. The events are
+// already in ClickHouse, so a cancelled ack is not a lost write but a
+// duplicated one — and with QUEUE_CONSUMER_WORKERS=N, a SIGTERM would abandon
+// up to N of them at once.
+func TestPoll_ShutdownDuringSyncAckStillAcks(t *testing.T) {
+	q := &queueTransport{messages: 2}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := testConsumer(&cancelOnFlush{cancel: cancel}, q)
+
+	_ = c.poll(ctx)
+
+	if got := q.ackLeases.Load(); got != 2 {
+		t.Errorf("acked %d of 2 leases after a durable flush — SIGTERM abandoned the rest, which will be redelivered and duplicated", got)
 	}
 }

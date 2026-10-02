@@ -50,7 +50,25 @@ const (
 	// redelivers — creating exactly the duplicate window #116 exists to shrink.
 	// flushTimeout + ackTotalBudget must stay under the lease; a test asserts it.
 	ackTotalBudget = 15 * time.Second
+
+	// ClickHouse connection pool size. Each poll worker holds at most one
+	// connection at a time (for its flush), so it also caps the worker count: a
+	// worker past the pool would wait for a connection inside its 60s flush
+	// budget, and that wait eats lease the ack needs.
+	chMaxOpenConns = 10
 )
+
+// clampPollWorkers bounds QUEUE_CONSUMER_WORKERS to [1, chMaxOpenConns].
+func clampPollWorkers(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > chMaxOpenConns {
+		log.Printf("QUEUE_CONSUMER_WORKERS %d exceeds the ClickHouse pool of %d; using %d", n, chMaxOpenConns, chMaxOpenConns)
+		return chMaxOpenConns
+	}
+	return n
+}
 
 // maxSafeAckDepth bounds how many acks may be waiting.
 //
@@ -84,8 +102,10 @@ func maxSafeAckDepth() int {
 // acks whose events are already in ClickHouse, which duplicates them on the
 // next start rather than losing them.
 //
-// docker-compose.yml must give the service a stop_grace_period at least this
-// long, or Docker SIGKILLs mid-drain and the code's own patience is fiction.
+// docker-compose.yml must give the service a stop_grace_period of at least
+// ackTotalBudget + this: run() waits for a poll that may still be acking inline
+// (synchronous ack, or a full ack queue) before the drain starts. Shorter, and Docker SIGKILLs
+// mid-drain and the code's own patience is fiction.
 func ackDrainGrace() time.Duration {
 	return time.Duration(maxSafeAckDepth()+1)*ackTotalBudget + 5*time.Second
 }
@@ -167,6 +187,14 @@ func main() {
 	// deliberately — pushing to main redeploys the consumer.
 	asyncAckDepth := envInt("ASYNC_ACK_DEPTH", 0)
 
+	// Independent poll loops (refs #111 stage 2). 1 — the default — is the
+	// single serial loop that predates this, unchanged. Above 1, each worker
+	// runs the same pull → parse → insert → ack-after-flush cycle on its own
+	// lease, so a pull stuck on a 15s Queues 504 holds up 1/N of intake rather
+	// than all of it. Off by default: this is the only writer of logs.events,
+	// and N workers means N inserts and N times the ack exposure (#116).
+	pollWorkers := clampPollWorkers(envInt("QUEUE_CONSUMER_WORKERS", 1))
+
 	slowMs := envDurationMs("POLL_SLOW_MS", 1000)
 	telemetryMin := envDurationMs("POLL_TELEMETRY_MIN_INTERVAL_MS", 10_000)
 
@@ -185,7 +213,7 @@ func main() {
 				"max_execution_time": 60,
 			},
 			DialTimeout:     10 * time.Second,
-			MaxOpenConns:    10,
+			MaxOpenConns:    chMaxOpenConns,
 			MaxIdleConns:    5,
 			ConnMaxLifetime: time.Hour,
 		})
@@ -231,8 +259,8 @@ func main() {
 		log.Printf("Async ack enabled (depth %d): polls return before the ack lands", asyncAckDepth)
 	}
 
-	log.Printf("Starting queue consumer (poll every %s, batch size %d, slow≥%s)", pollInterval, batchSize, slowMs)
-	consumer.run(ctx, pollInterval)
+	log.Printf("Starting queue consumer (poll every %s, batch size %d, workers %d, slow≥%s)", pollInterval, batchSize, pollWorkers, slowMs)
+	consumer.run(ctx, pollInterval, pollWorkers)
 
 	// After run returns the context is already cancelled, so this must not use
 	// it — the events are durable and an abandoned ack duplicates them.
@@ -255,7 +283,40 @@ type Consumer struct {
 	ackWG sync.WaitGroup
 }
 
-func (c *Consumer) run(ctx context.Context, interval time.Duration) {
+// run polls until ctx is cancelled, with `workers` independent poll loops.
+//
+// Lease exclusivity is what makes this safe: a pull leases its messages for
+// visibilityTimeoutMs, so concurrent pulls get disjoint sets and each worker
+// keeps the ack-after-flush invariant for its own. Event order is not a
+// concern — every event carries its own timestamp.
+//
+// run returns only once every worker has, which drainAcks depends on: it
+// closes the ack channel, and a poll still running would panic sending on it.
+func (c *Consumer) run(ctx context.Context, interval time.Duration, workers int) {
+	if workers <= 1 {
+		c.pollLoop(ctx, interval)
+		return
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		// Stagger the starts across one interval so the workers do not hit
+		// Queues in lockstep.
+		offset := time.Duration(i) * interval / time.Duration(workers)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(offset):
+			}
+			c.pollLoop(ctx, interval)
+		}()
+	}
+	wg.Wait()
+}
+
+func (c *Consumer) pollLoop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -422,7 +483,11 @@ func (c *Consumer) poll(ctx context.Context) error {
 			}
 			ackMs = time.Since(ackStart)
 		} else {
-			ackCtx, ackCancel := context.WithTimeout(ctx, ackTotalBudget)
+			// A fresh context, not ctx, for the same reason runAck uses one: the
+			// events are durable, so an ack abandoned by SIGTERM duplicates them
+			// on redelivery — and with N workers, up to N batches at once. The
+			// 15s budget is inside docker-compose.yml's stop_grace_period.
+			ackCtx, ackCancel := context.WithTimeout(context.Background(), ackTotalBudget)
 			err := c.ackWithRetry(ackCtx, goodAcks)
 			ackCancel()
 			ackMs = time.Since(ackStart)
@@ -536,7 +601,8 @@ func (c *Consumer) startAckWorker(depth int) {
 }
 
 // drainAcks stops accepting acks and waits for the queued ones. Deliberately
-// not tied to the shutdown context — see ackDrainGrace.
+// not tied to the shutdown context — see ackDrainGrace. Call it only after run
+// has returned: closing the channel under a live poll panics its send.
 func (c *Consumer) drainAcks() {
 	if c.ackCh == nil {
 		return
