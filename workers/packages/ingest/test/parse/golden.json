@@ -1,0 +1,1667 @@
+{
+  "clef": [
+    {
+      "name": "basic",
+      "body": "{\"@t\":\"2026-01-01T00:00:00Z\",\"@mt\":\"Hello {Name}\",\"Name\":\"World\"}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "Hello {Name}",
+          "message": "Hello World",
+          "exception": "",
+          "event_type": "0x2c570774",
+          "source": "svc",
+          "properties": {
+            "Name": "World"
+          }
+        }
+      ]
+    },
+    {
+      "name": "rendered numbers",
+      "body": "{\"@t\":\"2026-01-01T00:00:00.123456789Z\",\"@mt\":\"{I} {F} {Big} {Huge} {Neg} {T} {N} {O} {A} {Missing}\",\"I\":42,\"F\":1.5,\"Big\":1234567.5,\"Huge\":1e21,\"Neg\":-0.0,\"T\":true,\"N\":null,\"O\":{\"b\":1,\"a\":\"\u003cx\u003e\"},\"A\":[1,2]}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{I} {F} {Big} {Huge} {Neg} {T} {N} {O} {A} {Missing}",
+          "message": "42 1.5 1.2345675e+06 1e+21 0 true null {\"a\":\"\\u003cx\\u003e\",\"b\":1} [1,2] {Missing}",
+          "exception": "",
+          "event_type": "0x6d1fd27e",
+          "source": "svc",
+          "properties": {
+            "A": [
+              1,
+              2
+            ],
+            "Big": 1234567.5,
+            "F": 1.5,
+            "Huge": 1e+21,
+            "I": 42,
+            "N": null,
+            "Neg": -0,
+            "O": {
+              "a": "\u003cx\u003e",
+              "b": 1
+            },
+            "T": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "explicit fields",
+      "body": "{\"@t\":\"2026-01-01T05:30:00+05:30\",\"@l\":\"Error\",\"@mt\":\"T {X}\",\"@m\":\"given message\",\"@x\":\"System.Exception: boom\",\"@i\":\"deadbeef\",\"X\":1}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Error",
+          "message_template": "T {X}",
+          "message": "given message",
+          "exception": "System.Exception: boom",
+          "event_type": "deadbeef",
+          "source": "svc",
+          "properties": {
+            "X": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "non-string level",
+      "body": "{\"@t\":\"2026-01-01T00:00:00Z\",\"@l\":3,\"@m\":\"msg only\"}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "msg only",
+          "exception": "",
+          "event_type": "0xb622b26b",
+          "source": "svc",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "no template no message",
+      "body": "{\"@t\":\"2026-01-01T00:00:00Z\",\"k\":\"v\"}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "",
+          "exception": "",
+          "event_type": "",
+          "source": "svc",
+          "properties": {
+            "k": "v"
+          }
+        }
+      ]
+    },
+    {
+      "name": "enrichment",
+      "body": "{\"@t\":\"2026-01-01T00:00:00Z\",\"@mt\":\"m\",\"geo_country\":\"\",\"geo_city\":null,\"cf_asn\":\"64500\"}",
+      "source": "svc",
+      "enrich": {
+        "cf_asn": "13335",
+        "empty": "",
+        "geo_city": "Lakeland",
+        "geo_country": "US"
+      },
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "m",
+          "message": "m",
+          "exception": "",
+          "event_type": "0x5ae4385c",
+          "source": "svc",
+          "properties": {
+            "cf_asn": "64500",
+            "geo_city": "Lakeland",
+            "geo_country": "US"
+          }
+        }
+      ]
+    },
+    {
+      "name": "future clamps",
+      "body": "{\"@t\":\"2099-01-01T00:00:00Z\",\"@mt\":\"future\"}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "future",
+          "message": "future",
+          "exception": "",
+          "event_type": "0x5ca3159c",
+          "source": "svc",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "mixed bad lines",
+      "body": "{\"@t\":\"2026-01-01T00:00:00Z\",\"@mt\":\"one\"}\r\nnot-json\n\n{\"@mt\":\"no t\"}\n{\"@t\":5}\n{\"@t\":\"2026-13-01T00:00:00Z\"}\n{\"@t\":\"2026-01-01\"}\n[1]\nnull\n{\"@t\":\"2026-02-30T00:00:00Z\"}\n{\"@t\":\"2026-01-01t00:00:00z\"}\n{\"@t\":\"2026-01-01T00:00:00.5-03:00\",\"@mt\":\"two\"}\n",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "one",
+          "message": "one",
+          "exception": "",
+          "event_type": "0x869186cc",
+          "source": "svc",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T03:00:00.500Z",
+          "level": "Information",
+          "message_template": "two",
+          "message": "two",
+          "exception": "",
+          "event_type": "0x155c9680",
+          "source": "svc",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "all bad",
+      "body": "not-json\n{\"@mt\":\"missing @t\"}\n",
+      "source": "svc",
+      "events": null,
+      "error": "all 2 CLEF line(s) failed to parse (last: line 2: missing @t field)"
+    },
+    {
+      "name": "empty",
+      "body": "\n\n",
+      "source": "svc",
+      "events": []
+    },
+    {
+      "name": "unicode template",
+      "body": "{\"@t\":\"2026-01-01T00:00:00Z\",\"@mt\":\"héllo {Who} ✓\",\"Who\":\"日本\"}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "héllo {Who} ✓",
+          "message": "héllo 日本 ✓",
+          "exception": "",
+          "event_type": "0xe4b95a76",
+          "source": "svc",
+          "properties": {
+            "Who": "日本"
+          }
+        }
+      ]
+    },
+    {
+      "name": "leap day",
+      "body": "{\"@t\":\"2024-02-29T23:59:59.999Z\",\"@mt\":\"leap\"}",
+      "source": "svc",
+      "events": [
+        {
+          "ts": "2024-02-29T23:59:59.999Z",
+          "level": "Information",
+          "message_template": "leap",
+          "message": "leap",
+          "exception": "",
+          "event_type": "0xc5607725",
+          "source": "svc",
+          "properties": {}
+        }
+      ]
+    }
+  ],
+  "floats": [
+    {
+      "bits": "0000000000000000",
+      "g": "0",
+      "template": "0"
+    },
+    {
+      "bits": "3ff0000000000000",
+      "g": "1",
+      "template": "1"
+    },
+    {
+      "bits": "bff0000000000000",
+      "g": "-1",
+      "template": "-1"
+    },
+    {
+      "bits": "3ff8000000000000",
+      "g": "1.5",
+      "template": "1.5"
+    },
+    {
+      "bits": "3fb999999999999a",
+      "g": "0.1",
+      "template": "0.1"
+    },
+    {
+      "bits": "3ee4f8b588e368f1",
+      "g": "1e-05",
+      "template": "1e-05"
+    },
+    {
+      "bits": "3ee9e0fcaf9380fc",
+      "g": "1.234e-05",
+      "template": "1.234e-05"
+    },
+    {
+      "bits": "3f1a36e2eb1c432d",
+      "g": "0.0001",
+      "template": "0.0001"
+    },
+    {
+      "bits": "40fe240000000000",
+      "g": "123456",
+      "template": "123456"
+    },
+    {
+      "bits": "4132d68700000000",
+      "g": "1.234567e+06",
+      "template": "1234567"
+    },
+    {
+      "bits": "4132d68780000000",
+      "g": "1.2345675e+06",
+      "template": "1.2345675e+06"
+    },
+    {
+      "bits": "40f86a0800000000",
+      "g": "100000.5",
+      "template": "100000.5"
+    },
+    {
+      "bits": "412e847fcccccccd",
+      "g": "999999.9",
+      "template": "999999.9"
+    },
+    {
+      "bits": "444b1ae4d6e2ef50",
+      "g": "1e+21",
+      "template": "1e+21"
+    },
+    {
+      "bits": "4415af1d78b58c40",
+      "g": "1e+20",
+      "template": "1e+20"
+    },
+    {
+      "bits": "7fefffffffffffff",
+      "g": "1.7976931348623157e+308",
+      "template": "1.7976931348623157e+308"
+    },
+    {
+      "bits": "0000000000000001",
+      "g": "5e-324",
+      "template": "5e-324"
+    },
+    {
+      "bits": "bf201f31f46ed246",
+      "g": "-0.000123",
+      "template": "-0.000123"
+    },
+    {
+      "bits": "400921fb54442d18",
+      "g": "3.141592653589793",
+      "template": "3.141592653589793"
+    },
+    {
+      "bits": "54b249ad2594c37d",
+      "g": "1e+100",
+      "template": "1e+100"
+    },
+    {
+      "bits": "43e0000000000000",
+      "g": "9.223372036854776e+18",
+      "template": "9.223372036854776e+18"
+    },
+    {
+      "bits": "c3e0000000000000",
+      "g": "-9.223372036854776e+18",
+      "template": "-9223372036854775808"
+    },
+    {
+      "bits": "4321c37937e08000",
+      "g": "2.5e+15",
+      "template": "2500000000000000"
+    },
+    {
+      "bits": "8000000000000000",
+      "g": "-0",
+      "template": "0"
+    }
+  ],
+  "hashes": [
+    {
+      "in": "",
+      "out": ""
+    },
+    {
+      "in": "a",
+      "out": "0x3c2569b2"
+    },
+    {
+      "in": "ab",
+      "out": "0x9bbfd75f"
+    },
+    {
+      "in": "abc",
+      "out": "0xb3dd93fa"
+    },
+    {
+      "in": "abcd",
+      "out": "0x43ed676a"
+    },
+    {
+      "in": "abcde",
+      "out": "0xe89b9af6"
+    },
+    {
+      "in": "Hello {Name}",
+      "out": "0x2c570774"
+    },
+    {
+      "in": "User {UserId} logged in from {Ip}",
+      "out": "0x59efe252"
+    },
+    {
+      "in": "héllo wörld ✓ 日本語",
+      "out": "0x5386b200"
+    },
+    {
+      "in": "{Name} [{Kind}] {Status}",
+      "out": "0xe1bbe3e2"
+    },
+    {
+      "in": "x\u2028y",
+      "out": "0x38678be7"
+    }
+  ],
+  "json": [
+    {
+      "in": "{\"b\":1,\"a\":[1,\"x\",null,true],\"c\":{\"z\":\"\u003c\u0026\u003e\",\"y\":1.5e-7}}",
+      "out": "{\"a\":[1,\"x\",null,true],\"b\":1,\"c\":{\"y\":1.5e-7,\"z\":\"\\u003c\\u0026\\u003e\"}}"
+    },
+    {
+      "in": "\"a\u2028b\u2029c\"",
+      "out": "\"a\\u2028b\\u2029c\""
+    },
+    {
+      "in": "\"tab\\there\\nnew\\u0001\\b\\f\"",
+      "out": "\"tab\\there\\nnew\\u0001\\b\\f\""
+    },
+    {
+      "in": "[1e21,1e20,0.000001,0.0000001,-0,123456789012345678901234567890]",
+      "out": "[1e+21,100000000000000000000,0.000001,1e-7,-0,1.2345678901234568e+29]"
+    },
+    {
+      "in": "{\"é\":1,\"e\":2,\"Z\":3,\"_\":4}",
+      "out": "{\"Z\":3,\"_\":4,\"e\":2,\"é\":1}"
+    },
+    {
+      "in": "\"😀 emoji\"",
+      "out": "\"😀 emoji\""
+    }
+  ],
+  "otlp_logs": [
+    {
+      "name": "protobuf",
+      "body_b64": "Cq0DCi8KEQoJaG9zdC5uYW1lEgQKAmgxChoKDHNlcnZpY2UubmFtZRIKCghjaGVja291dBL5AhLwAQkVzVX1UXKGGBAJGgRXQVJOKg0KC2hlbGxvIHdvcmxkMg8KA3N0chIICgZhPGI+JmMyCQoDaW50EgIYKjISCgNuZWcSCxj5//////////8BMhAKA2RibBIJIQAAAAAAAPQ/MgoKBGJvb2wSAhABMg8KBWJ5dGVzEgY6BN6tvu8yFgoDYXJyEg8qDQoDCgF4CgIYAQoCEAAyJgoDbWFwEh8yHQoLCgF6EgYKBGxhc3QKDgoBYRIJIQAAAAAAAOA/MgkKBWVtcHR5EgAyCAoGbmlsdmFsShABAgMEBQYHCAkKCwwNDg8QUgihoqOkpaanqBIWEBEqCSEAAACAh9YyQVkVl/AwUnKGGBIbEAMqFzIVCgcKAWISAhgCCgoKAWESBQoDPHg+Eh0JFc1V9VFyhhgaBXRyYWNlKgsYgICAgICAgICAARIPCRXNVfVRcoYYEBYqAhAAEhQJFc1V9VFyhhgQDhoFYm9ndXMqABIJCRXNVfVRcoYYCjYKFAoSCgxzZXJ2aWNlLm5hbWUSAhgHEh4SHAkVzVX1UXKGGCoRCg9udW1lcmljIHNlcnZpY2UKLBIqEigJFc1V9VFyhhgaC0luZm9ybWF0aW9uKhAKDmRlZmF1bHQgc291cmNl",
+      "content_type": "application/x-protobuf",
+      "source": "otel-key",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "hello world",
+          "exception": "",
+          "event_type": "0x5e928f0f",
+          "source": "checkout",
+          "properties": {
+            "arr": [
+              "x",
+              1,
+              false
+            ],
+            "bool": true,
+            "bytes": "deadbeef",
+            "dbl": 1.25,
+            "empty": null,
+            "int": 42,
+            "map": {
+              "a": 0.5,
+              "z": "last"
+            },
+            "neg": -7,
+            "nilval": null,
+            "str": "a\u003cb\u003e\u0026c"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:01.123Z",
+          "level": "Error",
+          "message_template": "",
+          "message": "1.2345675e+06",
+          "exception": "",
+          "event_type": "0x3881b3c4",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "now",
+          "level": "Verbose",
+          "message_template": "",
+          "message": "{\"a\":\"\\u003cx\\u003e\",\"b\":2}",
+          "exception": "",
+          "event_type": "0x3836a8bd",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Debug",
+          "message_template": "",
+          "message": "-9223372036854775808",
+          "exception": "",
+          "event_type": "0x33beccc1",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Fatal",
+          "message_template": "",
+          "message": "false",
+          "exception": "",
+          "event_type": "0xd5619e17",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "null",
+          "exception": "",
+          "event_type": "0x66f07992",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "",
+          "exception": "",
+          "event_type": "",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "numeric service",
+          "exception": "",
+          "event_type": "0xbc05dc16",
+          "source": "7",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "default source",
+          "exception": "",
+          "event_type": "0x39d42b77",
+          "source": "otel-key",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "protobuf as application/proto",
+      "body_b64": "Cq0DCi8KEQoJaG9zdC5uYW1lEgQKAmgxChoKDHNlcnZpY2UubmFtZRIKCghjaGVja291dBL5AhLwAQkVzVX1UXKGGBAJGgRXQVJOKg0KC2hlbGxvIHdvcmxkMg8KA3N0chIICgZhPGI+JmMyCQoDaW50EgIYKjISCgNuZWcSCxj5//////////8BMhAKA2RibBIJIQAAAAAAAPQ/MgoKBGJvb2wSAhABMg8KBWJ5dGVzEgY6BN6tvu8yFgoDYXJyEg8qDQoDCgF4CgIYAQoCEAAyJgoDbWFwEh8yHQoLCgF6EgYKBGxhc3QKDgoBYRIJIQAAAAAAAOA/MgkKBWVtcHR5EgAyCAoGbmlsdmFsShABAgMEBQYHCAkKCwwNDg8QUgihoqOkpaanqBIWEBEqCSEAAACAh9YyQVkVl/AwUnKGGBIbEAMqFzIVCgcKAWISAhgCCgoKAWESBQoDPHg+Eh0JFc1V9VFyhhgaBXRyYWNlKgsYgICAgICAgICAARIPCRXNVfVRcoYYEBYqAhAAEhQJFc1V9VFyhhgQDhoFYm9ndXMqABIJCRXNVfVRcoYYCjYKFAoSCgxzZXJ2aWNlLm5hbWUSAhgHEh4SHAkVzVX1UXKGGCoRCg9udW1lcmljIHNlcnZpY2UKLBIqEigJFc1V9VFyhhgaC0luZm9ybWF0aW9uKhAKDmRlZmF1bHQgc291cmNl",
+      "content_type": "application/proto",
+      "source": "otel-key",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "hello world",
+          "exception": "",
+          "event_type": "0x5e928f0f",
+          "source": "checkout",
+          "properties": {
+            "arr": [
+              "x",
+              1,
+              false
+            ],
+            "bool": true,
+            "bytes": "deadbeef",
+            "dbl": 1.25,
+            "empty": null,
+            "int": 42,
+            "map": {
+              "a": 0.5,
+              "z": "last"
+            },
+            "neg": -7,
+            "nilval": null,
+            "str": "a\u003cb\u003e\u0026c"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:01.123Z",
+          "level": "Error",
+          "message_template": "",
+          "message": "1.2345675e+06",
+          "exception": "",
+          "event_type": "0x3881b3c4",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "now",
+          "level": "Verbose",
+          "message_template": "",
+          "message": "{\"a\":\"\\u003cx\\u003e\",\"b\":2}",
+          "exception": "",
+          "event_type": "0x3836a8bd",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Debug",
+          "message_template": "",
+          "message": "-9223372036854775808",
+          "exception": "",
+          "event_type": "0x33beccc1",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Fatal",
+          "message_template": "",
+          "message": "false",
+          "exception": "",
+          "event_type": "0xd5619e17",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "null",
+          "exception": "",
+          "event_type": "0x66f07992",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "",
+          "exception": "",
+          "event_type": "",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "numeric service",
+          "exception": "",
+          "event_type": "0xbc05dc16",
+          "source": "7",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "default source",
+          "exception": "",
+          "event_type": "0x39d42b77",
+          "source": "otel-key",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "json",
+      "body_b64": "eyJyZXNvdXJjZUxvZ3MiOlt7InJlc291cmNlIjp7ImF0dHJpYnV0ZXMiOlt7ImtleSI6Imhvc3QubmFtZSIsInZhbHVlIjp7InN0cmluZ1ZhbHVlIjoiaDEifX0seyJrZXkiOiJzZXJ2aWNlLm5hbWUiLCJ2YWx1ZSI6eyJzdHJpbmdWYWx1ZSI6ImNoZWNrb3V0In19XX0sInNjb3BlTG9ncyI6W3sibG9nUmVjb3JkcyI6W3sidGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsInNldmVyaXR5TnVtYmVyIjoiU0VWRVJJVFlfTlVNQkVSX0lORk8iLCJzZXZlcml0eVRleHQiOiJXQVJOIiwiYm9keSI6eyJzdHJpbmdWYWx1ZSI6ImhlbGxvIHdvcmxkIn0sImF0dHJpYnV0ZXMiOlt7ImtleSI6InN0ciIsInZhbHVlIjp7InN0cmluZ1ZhbHVlIjoiYTxiPiZjIn19LHsia2V5IjoiaW50IiwidmFsdWUiOnsiaW50VmFsdWUiOiI0MiJ9fSx7ImtleSI6Im5lZyIsInZhbHVlIjp7ImludFZhbHVlIjoiLTcifX0seyJrZXkiOiJkYmwiLCJ2YWx1ZSI6eyJkb3VibGVWYWx1ZSI6MS4yNX19LHsia2V5IjoiYm9vbCIsInZhbHVlIjp7ImJvb2xWYWx1ZSI6dHJ1ZX19LHsia2V5IjoiYnl0ZXMiLCJ2YWx1ZSI6eyJieXRlc1ZhbHVlIjoiM3EyKzd3PT0ifX0seyJrZXkiOiJhcnIiLCJ2YWx1ZSI6eyJhcnJheVZhbHVlIjp7InZhbHVlcyI6W3sic3RyaW5nVmFsdWUiOiJ4In0seyJpbnRWYWx1ZSI6IjEifSx7ImJvb2xWYWx1ZSI6ZmFsc2V9XX19fSx7ImtleSI6Im1hcCIsInZhbHVlIjp7Imt2bGlzdFZhbHVlIjp7InZhbHVlcyI6W3sia2V5IjoieiIsInZhbHVlIjp7InN0cmluZ1ZhbHVlIjoibGFzdCJ9fSx7ImtleSI6ImEiLCJ2YWx1ZSI6eyJkb3VibGVWYWx1ZSI6MC41fX1dfX19LHsia2V5IjoiZW1wdHkiLCJ2YWx1ZSI6e319LHsia2V5IjoibmlsdmFsIn1dLCJ0cmFjZUlkIjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQT09Iiwic3BhbklkIjoib2FLanBLV21wNmc9In0seyJvYnNlcnZlZFRpbWVVbml4TmFubyI6IjE3NjcyMjU2MDExMjM0NTY3ODkiLCJzZXZlcml0eU51bWJlciI6IlNFVkVSSVRZX05VTUJFUl9FUlJPUiIsImJvZHkiOnsiZG91YmxlVmFsdWUiOjEyMzQ1NjcuNX19LHsic2V2ZXJpdHlOdW1iZXIiOiJTRVZFUklUWV9OVU1CRVJfVFJBQ0UzIiwiYm9keSI6eyJrdmxpc3RWYWx1ZSI6eyJ2YWx1ZXMiOlt7ImtleSI6ImIiLCJ2YWx1ZSI6eyJpbnRWYWx1ZSI6IjIifX0seyJrZXkiOiJhIiwidmFsdWUiOnsic3RyaW5nVmFsdWUiOiI8eD4ifX1dfX19LHsidGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsInNldmVyaXR5VGV4dCI6InRyYWNlIiwiYm9keSI6eyJpbnRWYWx1ZSI6Ii05MjIzMzcyMDM2ODU0Nzc1ODA4In19LHsidGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsInNldmVyaXR5TnVtYmVyIjoiU0VWRVJJVFlfTlVNQkVSX0ZBVEFMMiIsImJvZHkiOnsiYm9vbFZhbHVlIjpmYWxzZX19LHsidGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsInNldmVyaXR5TnVtYmVyIjoiU0VWRVJJVFlfTlVNQkVSX1dBUk4yIiwic2V2ZXJpdHlUZXh0IjoiYm9ndXMiLCJib2R5Ijp7fX0seyJ0aW1lVW5peE5hbm8iOiIxNzY3MjI1NjAwMTIzNDU2Nzg5In1dfV19LHsicmVzb3VyY2UiOnsiYXR0cmlidXRlcyI6W3sia2V5Ijoic2VydmljZS5uYW1lIiwidmFsdWUiOnsiaW50VmFsdWUiOiI3In19XX0sInNjb3BlTG9ncyI6W3sibG9nUmVjb3JkcyI6W3sidGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsImJvZHkiOnsic3RyaW5nVmFsdWUiOiJudW1lcmljIHNlcnZpY2UifX1dfV19LHsic2NvcGVMb2dzIjpbeyJsb2dSZWNvcmRzIjpbeyJ0aW1lVW5peE5hbm8iOiIxNzY3MjI1NjAwMTIzNDU2Nzg5Iiwic2V2ZXJpdHlUZXh0IjoiSW5mb3JtYXRpb24iLCJib2R5Ijp7InN0cmluZ1ZhbHVlIjoiZGVmYXVsdCBzb3VyY2UifX1dfV19XX0=",
+      "content_type": "application/json",
+      "source": "otel-key",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "hello world",
+          "exception": "",
+          "event_type": "0x5e928f0f",
+          "source": "checkout",
+          "properties": {
+            "arr": [
+              "x",
+              1,
+              false
+            ],
+            "bool": true,
+            "bytes": "deadbeef",
+            "dbl": 1.25,
+            "empty": null,
+            "int": 42,
+            "map": {
+              "a": 0.5,
+              "z": "last"
+            },
+            "neg": -7,
+            "nilval": null,
+            "str": "a\u003cb\u003e\u0026c"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:01.123Z",
+          "level": "Error",
+          "message_template": "",
+          "message": "1.2345675e+06",
+          "exception": "",
+          "event_type": "0x3881b3c4",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "now",
+          "level": "Verbose",
+          "message_template": "",
+          "message": "{\"a\":\"\\u003cx\\u003e\",\"b\":2}",
+          "exception": "",
+          "event_type": "0x3836a8bd",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Debug",
+          "message_template": "",
+          "message": "-9223372036854775808",
+          "exception": "",
+          "event_type": "0x33beccc1",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Fatal",
+          "message_template": "",
+          "message": "false",
+          "exception": "",
+          "event_type": "0xd5619e17",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "null",
+          "exception": "",
+          "event_type": "0x66f07992",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "",
+          "exception": "",
+          "event_type": "",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "numeric service",
+          "exception": "",
+          "event_type": "0xbc05dc16",
+          "source": "7",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "default source",
+          "exception": "",
+          "event_type": "0x39d42b77",
+          "source": "otel-key",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "protobuf sent as json falls back",
+      "body_b64": "Cq0DCi8KEQoJaG9zdC5uYW1lEgQKAmgxChoKDHNlcnZpY2UubmFtZRIKCghjaGVja291dBL5AhLwAQkVzVX1UXKGGBAJGgRXQVJOKg0KC2hlbGxvIHdvcmxkMg8KA3N0chIICgZhPGI+JmMyCQoDaW50EgIYKjISCgNuZWcSCxj5//////////8BMhAKA2RibBIJIQAAAAAAAPQ/MgoKBGJvb2wSAhABMg8KBWJ5dGVzEgY6BN6tvu8yFgoDYXJyEg8qDQoDCgF4CgIYAQoCEAAyJgoDbWFwEh8yHQoLCgF6EgYKBGxhc3QKDgoBYRIJIQAAAAAAAOA/MgkKBWVtcHR5EgAyCAoGbmlsdmFsShABAgMEBQYHCAkKCwwNDg8QUgihoqOkpaanqBIWEBEqCSEAAACAh9YyQVkVl/AwUnKGGBIbEAMqFzIVCgcKAWISAhgCCgoKAWESBQoDPHg+Eh0JFc1V9VFyhhgaBXRyYWNlKgsYgICAgICAgICAARIPCRXNVfVRcoYYEBYqAhAAEhQJFc1V9VFyhhgQDhoFYm9ndXMqABIJCRXNVfVRcoYYCjYKFAoSCgxzZXJ2aWNlLm5hbWUSAhgHEh4SHAkVzVX1UXKGGCoRCg9udW1lcmljIHNlcnZpY2UKLBIqEigJFc1V9VFyhhgaC0luZm9ybWF0aW9uKhAKDmRlZmF1bHQgc291cmNl",
+      "content_type": "application/json",
+      "source": "otel-key",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "hello world",
+          "exception": "",
+          "event_type": "0x5e928f0f",
+          "source": "checkout",
+          "properties": {
+            "arr": [
+              "x",
+              1,
+              false
+            ],
+            "bool": true,
+            "bytes": "deadbeef",
+            "dbl": 1.25,
+            "empty": null,
+            "int": 42,
+            "map": {
+              "a": 0.5,
+              "z": "last"
+            },
+            "neg": -7,
+            "nilval": null,
+            "str": "a\u003cb\u003e\u0026c"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:01.123Z",
+          "level": "Error",
+          "message_template": "",
+          "message": "1.2345675e+06",
+          "exception": "",
+          "event_type": "0x3881b3c4",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "now",
+          "level": "Verbose",
+          "message_template": "",
+          "message": "{\"a\":\"\\u003cx\\u003e\",\"b\":2}",
+          "exception": "",
+          "event_type": "0x3836a8bd",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Debug",
+          "message_template": "",
+          "message": "-9223372036854775808",
+          "exception": "",
+          "event_type": "0x33beccc1",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Fatal",
+          "message_template": "",
+          "message": "false",
+          "exception": "",
+          "event_type": "0xd5619e17",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Warning",
+          "message_template": "",
+          "message": "null",
+          "exception": "",
+          "event_type": "0x66f07992",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "",
+          "exception": "",
+          "event_type": "",
+          "source": "checkout",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "numeric service",
+          "exception": "",
+          "event_type": "0xbc05dc16",
+          "source": "7",
+          "properties": {}
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "default source",
+          "exception": "",
+          "event_type": "0x39d42b77",
+          "source": "otel-key",
+          "properties": {}
+        }
+      ]
+    },
+    {
+      "name": "garbage",
+      "body_b64": "e25vdCBqc29u",
+      "content_type": "application/json",
+      "source": "otel-key",
+      "events": null,
+      "error": "json=proto: syntax error (line 1:2): invalid value not, proto=proto: cannot parse invalid wire-format data"
+    },
+    {
+      "name": "garbage protobuf",
+      "body_b64": "Cv8=",
+      "content_type": "application/x-protobuf",
+      "source": "otel-key",
+      "events": null,
+      "error": "protobuf: proto: cannot parse invalid wire-format data"
+    },
+    {
+      "name": "empty protobuf",
+      "content_type": "application/x-protobuf",
+      "source": "otel-key",
+      "events": []
+    }
+  ],
+  "otlp_traces": [
+    {
+      "name": "protobuf",
+      "body_b64": "CtkDChcKFQoMc2VydmljZS5uYW1lEgUKA2FwaRK9AxKAAgoQAQIDBAUGBwgJCgsMDQ4PEBIIoaKjpKWmp6giCLGys7S1tre4KgZHRVQgL3gwAjkVzVX1UXKGGEFjLhL2UXKGGEoPCgNzdHISCAoGYTxiPiZjSgkKA2ludBICGCpKEgoDbmVnEgsY+f//////////AUoQCgNkYmwSCSEAAAAAAAD0P0oKCgRib29sEgIQAUoPCgVieXRlcxIGOgTerb7vShYKA2FychIPKg0KAwoBeAoCGAEKAhAASiYKA21hcBIfMh0KCwoBehIGCgRsYXN0Cg4KAWESCSEAAAAAAADgP0oJCgVlbXB0eRIASggKBm5pbHZhbHoIEgRib29tGAISOAoQAQIDBAUGBwgJCgsMDQ4PEBIIoaKjpKWmp6gqAmRiMAM5Fc1V9VFyhhhBVQ9l9VFyhhh6AhgBEjAKEAECAwQFBgcICQoLDA0ODxASCKGio6SlpqeoKgV1bnNldDABORXNVfVRcoYYegASHyoJbm8gc3RhdHVzMAQ5Fc1V9VFyhhhBCc9V9VFyhhgSHCoIY29uc3VtZXIwBTkVzVX1UXKGGHoFEgNtc2cSDSoLdW5zcGVjaWZpZWQ=",
+      "content_type": "application/x-protobuf",
+      "source": "otel-key",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Error",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "GET /x [SERVER] ERROR: boom",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "arr": [
+              "x",
+              1,
+              false
+            ],
+            "bool": true,
+            "bytes": "deadbeef",
+            "dbl": 1.25,
+            "durationMs": 12.345678,
+            "empty": null,
+            "int": 42,
+            "map": {
+              "a": 0.5,
+              "z": "last"
+            },
+            "neg": -7,
+            "nilval": null,
+            "parentSpanId": "b1b2b3b4b5b6b7b8",
+            "spanId": "a1a2a3a4a5a6a7a8",
+            "str": "a\u003cb\u003e\u0026c",
+            "traceId": "0102030405060708090a0b0c0d0e0f10"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "db [CLIENT] OK",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "durationMs": 1,
+            "spanId": "a1a2a3a4a5a6a7a8",
+            "traceId": "0102030405060708090a0b0c0d0e0f10"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "unset [INTERNAL] UNSET",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "spanId": "a1a2a3a4a5a6a7a8",
+            "traceId": "0102030405060708090a0b0c0d0e0f10"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "no status [PRODUCER] OK",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "durationMs": 0.0005,
+            "spanId": "",
+            "traceId": ""
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "consumer [CONSUMER] UNSET: msg",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "spanId": "",
+            "traceId": ""
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "unspecified [UNSPECIFIED] OK",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "spanId": "",
+            "traceId": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "json",
+      "body_b64": "eyJyZXNvdXJjZVNwYW5zIjpbeyJyZXNvdXJjZSI6eyJhdHRyaWJ1dGVzIjpbeyJrZXkiOiJzZXJ2aWNlLm5hbWUiLCJ2YWx1ZSI6eyJzdHJpbmdWYWx1ZSI6ImFwaSJ9fV19LCJzY29wZVNwYW5zIjpbeyJzcGFucyI6W3sidHJhY2VJZCI6IkFRSURCQVVHQndnSkNnc01EUTRQRUE9PSIsInNwYW5JZCI6Im9hS2pwS1dtcDZnPSIsInBhcmVudFNwYW5JZCI6InNiS3p0TFcydDdnPSIsIm5hbWUiOiJHRVQgL3giLCJraW5kIjoiU1BBTl9LSU5EX1NFUlZFUiIsInN0YXJ0VGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsImVuZFRpbWVVbml4TmFubyI6IjE3NjcyMjU2MDAxMzU4MDI0NjciLCJhdHRyaWJ1dGVzIjpbeyJrZXkiOiJzdHIiLCJ2YWx1ZSI6eyJzdHJpbmdWYWx1ZSI6ImE8Yj4mYyJ9fSx7ImtleSI6ImludCIsInZhbHVlIjp7ImludFZhbHVlIjoiNDIifX0seyJrZXkiOiJuZWciLCJ2YWx1ZSI6eyJpbnRWYWx1ZSI6Ii03In19LHsia2V5IjoiZGJsIiwidmFsdWUiOnsiZG91YmxlVmFsdWUiOjEuMjV9fSx7ImtleSI6ImJvb2wiLCJ2YWx1ZSI6eyJib29sVmFsdWUiOnRydWV9fSx7ImtleSI6ImJ5dGVzIiwidmFsdWUiOnsiYnl0ZXNWYWx1ZSI6IjNxMis3dz09In19LHsia2V5IjoiYXJyIiwidmFsdWUiOnsiYXJyYXlWYWx1ZSI6eyJ2YWx1ZXMiOlt7InN0cmluZ1ZhbHVlIjoieCJ9LHsiaW50VmFsdWUiOiIxIn0seyJib29sVmFsdWUiOmZhbHNlfV19fX0seyJrZXkiOiJtYXAiLCJ2YWx1ZSI6eyJrdmxpc3RWYWx1ZSI6eyJ2YWx1ZXMiOlt7ImtleSI6InoiLCJ2YWx1ZSI6eyJzdHJpbmdWYWx1ZSI6Imxhc3QifX0seyJrZXkiOiJhIiwidmFsdWUiOnsiZG91YmxlVmFsdWUiOjAuNX19XX19fSx7ImtleSI6ImVtcHR5IiwidmFsdWUiOnt9fSx7ImtleSI6Im5pbHZhbCJ9XSwic3RhdHVzIjp7Im1lc3NhZ2UiOiJib29tIiwiY29kZSI6IlNUQVRVU19DT0RFX0VSUk9SIn19LHsidHJhY2VJZCI6IkFRSURCQVVHQndnSkNnc01EUTRQRUE9PSIsInNwYW5JZCI6Im9hS2pwS1dtcDZnPSIsIm5hbWUiOiJkYiIsImtpbmQiOiJTUEFOX0tJTkRfQ0xJRU5UIiwic3RhcnRUaW1lVW5peE5hbm8iOiIxNzY3MjI1NjAwMTIzNDU2Nzg5IiwiZW5kVGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyNDQ1Njc4OSIsInN0YXR1cyI6eyJjb2RlIjoiU1RBVFVTX0NPREVfT0sifX0seyJ0cmFjZUlkIjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQT09Iiwic3BhbklkIjoib2FLanBLV21wNmc9IiwibmFtZSI6InVuc2V0Iiwia2luZCI6IlNQQU5fS0lORF9JTlRFUk5BTCIsInN0YXJ0VGltZVVuaXhOYW5vIjoiMTc2NzIyNTYwMDEyMzQ1Njc4OSIsInN0YXR1cyI6e319LHsibmFtZSI6Im5vIHN0YXR1cyIsImtpbmQiOiJTUEFOX0tJTkRfUFJPRFVDRVIiLCJzdGFydFRpbWVVbml4TmFubyI6IjE3NjcyMjU2MDAxMjM0NTY3ODkiLCJlbmRUaW1lVW5peE5hbm8iOiIxNzY3MjI1NjAwMTIzNDU3Mjg5In0seyJuYW1lIjoiY29uc3VtZXIiLCJraW5kIjoiU1BBTl9LSU5EX0NPTlNVTUVSIiwic3RhcnRUaW1lVW5peE5hbm8iOiIxNzY3MjI1NjAwMTIzNDU2Nzg5Iiwic3RhdHVzIjp7Im1lc3NhZ2UiOiJtc2cifX0seyJuYW1lIjoidW5zcGVjaWZpZWQifV19XX1dfQ==",
+      "content_type": "application/json",
+      "source": "otel-key",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Error",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "GET /x [SERVER] ERROR: boom",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "arr": [
+              "x",
+              1,
+              false
+            ],
+            "bool": true,
+            "bytes": "deadbeef",
+            "dbl": 1.25,
+            "durationMs": 12.345678,
+            "empty": null,
+            "int": 42,
+            "map": {
+              "a": 0.5,
+              "z": "last"
+            },
+            "neg": -7,
+            "nilval": null,
+            "parentSpanId": "b1b2b3b4b5b6b7b8",
+            "spanId": "a1a2a3a4a5a6a7a8",
+            "str": "a\u003cb\u003e\u0026c",
+            "traceId": "0102030405060708090a0b0c0d0e0f10"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "db [CLIENT] OK",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "durationMs": 1,
+            "spanId": "a1a2a3a4a5a6a7a8",
+            "traceId": "0102030405060708090a0b0c0d0e0f10"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "unset [INTERNAL] UNSET",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "spanId": "a1a2a3a4a5a6a7a8",
+            "traceId": "0102030405060708090a0b0c0d0e0f10"
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "no status [PRODUCER] OK",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "durationMs": 0.0005,
+            "spanId": "",
+            "traceId": ""
+          }
+        },
+        {
+          "ts": "2026-01-01T00:00:00.123Z",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "consumer [CONSUMER] UNSET: msg",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "spanId": "",
+            "traceId": ""
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "{Name} [{Kind}] {Status}",
+          "message": "unspecified [UNSPECIFIED] OK",
+          "exception": "",
+          "event_type": "0xe1bbe3e2",
+          "source": "api",
+          "properties": {
+            "spanId": "",
+            "traceId": ""
+          }
+        }
+      ]
+    }
+  ],
+  "webhook": [
+    {
+      "name": "compact array",
+      "body": "[{\"message\":\"a\",\"level\":\"Info\"},{\"message\":\"b\",\"level\":\"Error\"}]",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Info",
+          "message_template": "",
+          "message": "{\"level\":\"Info\",\"message\":\"a\"}",
+          "exception": "",
+          "event_type": "0xe8fa296f",
+          "source": "hook",
+          "properties": {
+            "level": "Info",
+            "message": "a"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Error",
+          "message_template": "",
+          "message": "{\"level\":\"Error\",\"message\":\"b\"}",
+          "exception": "",
+          "event_type": "0x8e7443d4",
+          "source": "hook",
+          "properties": {
+            "level": "Error",
+            "message": "b"
+          }
+        }
+      ]
+    },
+    {
+      "name": "pretty array",
+      "body": "[\n  {\n    \"message\": \"pretty-one\",\n    \"level\": \"Warning\"\n  }\n]",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Warning",
+          "message_template": "",
+          "message": "{\"level\":\"Warning\",\"message\":\"pretty-one\"}",
+          "exception": "",
+          "event_type": "0x113c4a2d",
+          "source": "hook",
+          "properties": {
+            "level": "Warning",
+            "message": "pretty-one"
+          }
+        }
+      ]
+    },
+    {
+      "name": "single object",
+      "body": "{\"message\":\"solo\",\"level\":\"Information\"}",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"level\":\"Information\",\"message\":\"solo\"}",
+          "exception": "",
+          "event_type": "0xb0aeb96a",
+          "source": "hook",
+          "properties": {
+            "level": "Information",
+            "message": "solo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ndjson",
+      "body": "{\"message\":\"line1\"}\n{\"message\":\"line2\"}\n",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"message\":\"line1\"}",
+          "exception": "",
+          "event_type": "0x1316623c",
+          "source": "hook",
+          "properties": {
+            "message": "line1"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"message\":\"line2\"}",
+          "exception": "",
+          "event_type": "0x13a83ebd",
+          "source": "hook",
+          "properties": {
+            "message": "line2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "empty array",
+      "body": "[]",
+      "source": "hook",
+      "events": []
+    },
+    {
+      "name": "all malformed ndjson",
+      "body": "not-json\nalso-bad\n",
+      "source": "hook",
+      "events": null,
+      "error": "webhook NDJSON produced 0 events (2 malformed lines)"
+    },
+    {
+      "name": "array with non-objects",
+      "body": "[{\"message\":\"ok\"},\"skip-me\",42,null,{\"message\":\"also-ok\"}]",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"message\":\"ok\"}",
+          "exception": "",
+          "event_type": "0x2e4cc483",
+          "source": "hook",
+          "properties": {
+            "message": "ok"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "null",
+          "exception": "",
+          "event_type": "0x66f07992",
+          "source": "hook",
+          "properties": {}
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"message\":\"also-ok\"}",
+          "exception": "",
+          "event_type": "0x6af9ff28",
+          "source": "hook",
+          "properties": {
+            "message": "also-ok"
+          }
+        }
+      ]
+    },
+    {
+      "name": "array all non-objects",
+      "body": "[\"a\",1]",
+      "source": "hook",
+      "events": null,
+      "error": "webhook array produced 0 events (2 elements, 2 skipped)"
+    },
+    {
+      "name": "invalid array",
+      "body": "[{\"a\":1},",
+      "source": "hook",
+      "events": null,
+      "error": "invalid JSON array: unexpected end of JSON input"
+    },
+    {
+      "name": "cloudflare",
+      "body": "[{\"EdgeStartTimestamp\":1700000000000000000,\"ClientRequestMethod\":\"GET\",\"ClientRequestHost\":\"example.com\",\"ClientRequestURI\":\"/\",\"EdgeResponseStatus\":200,\"Extra\":\"x\"}]",
+      "preset": "cloudflare",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "2023-11-14T22:13:20.000Z",
+          "level": "Information",
+          "message_template": "{ClientRequestMethod} {ClientRequestHost}{ClientRequestURI} → {EdgeResponseStatus}",
+          "message": "GET example.com/ → 200",
+          "exception": "",
+          "event_type": "0xc88a7e9c",
+          "source": "example.com",
+          "properties": {
+            "ClientRequestMethod": "GET",
+            "ClientRequestURI": "/",
+            "Extra": "x"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cloudflare 503",
+      "body": "{\"EdgeStartTimestamp\":1700000000123456789,\"ClientRequestMethod\":\"POST\",\"ClientRequestHost\":\"\",\"ClientRequestURI\":\"/a?b=1\",\"EdgeResponseStatus\":503}",
+      "preset": "CloudFlare",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "2023-11-14T22:13:20.123Z",
+          "level": "Error",
+          "message_template": "{ClientRequestMethod} {ClientRequestHost}{ClientRequestURI} → {EdgeResponseStatus}",
+          "message": "POST /a?b=1 → 503",
+          "exception": "",
+          "event_type": "0xc88a7e9c",
+          "source": "hook",
+          "properties": {
+            "ClientRequestMethod": "POST",
+            "ClientRequestURI": "/a?b=1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cloudflare 404 string status",
+      "body": "{\"EdgeStartTimestamp\":\"1700000000000000000\",\"ClientRequestMethod\":\"GET\",\"ClientRequestHost\":\"h\",\"ClientRequestURI\":\"/\",\"EdgeResponseStatus\":\"404\"}",
+      "preset": "cloudflare",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "2023-11-14T22:13:20.000Z",
+          "level": "Warning",
+          "message_template": "{ClientRequestMethod} {ClientRequestHost}{ClientRequestURI} → {EdgeResponseStatus}",
+          "message": "GET h/ → 404",
+          "exception": "",
+          "event_type": "0xc88a7e9c",
+          "source": "h",
+          "properties": {
+            "ClientRequestMethod": "GET",
+            "ClientRequestURI": "/"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unknown preset",
+      "body": "{\"time\":\"2026-01-01T00:00:00Z\",\"msg\":\"x\"}",
+      "preset": "nope",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.000Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"msg\":\"x\",\"time\":\"2026-01-01T00:00:00Z\"}",
+          "exception": "",
+          "event_type": "0x05348990",
+          "source": "hook",
+          "properties": {
+            "msg": "x",
+            "time": "2026-01-01T00:00:00Z"
+          }
+        }
+      ]
+    },
+    {
+      "name": "timestamps",
+      "body": "{\"timestamp\":\"2026-01-01T00:00:00.5Z\"}\n{\"time\":1700000000}\n{\"ts\":1700000000.123}\n{\"date\":1700000000123}\n{\"datetime\":1700000000123456}\n{\"created_at\":1700000000123456789}\n{\"@timestamp\":\"1700000000.5\"}\n{\"@t\":\"garbage\"}\n{\"timestamp\":null}\n{\"timestamp\":true}\n{\"time\":-1700000000}\n{\"timestamp\":\"2099-01-01T00:00:00Z\"}\n{\"time\":\"2026-01-01T00:00:00Z\",\"timestamp\":5}\n",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "2026-01-01T00:00:00.500Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"timestamp\":\"2026-01-01T00:00:00.5Z\"}",
+          "exception": "",
+          "event_type": "0xa50fb166",
+          "source": "hook",
+          "properties": {
+            "timestamp": "2026-01-01T00:00:00.5Z"
+          }
+        },
+        {
+          "ts": "2023-11-14T22:13:20.000Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"time\":1700000000}",
+          "exception": "",
+          "event_type": "0x37905e39",
+          "source": "hook",
+          "properties": {
+            "time": 1700000000
+          }
+        },
+        {
+          "ts": "2023-11-14T22:13:20.122Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"ts\":1700000000.123}",
+          "exception": "",
+          "event_type": "0x64cad8f8",
+          "source": "hook",
+          "properties": {
+            "ts": 1700000000.123
+          }
+        },
+        {
+          "ts": "2023-11-14T22:13:20.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"date\":1700000000123}",
+          "exception": "",
+          "event_type": "0xe8c574d2",
+          "source": "hook",
+          "properties": {
+            "date": 1700000000123
+          }
+        },
+        {
+          "ts": "2023-11-14T22:13:20.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"datetime\":1700000000123456}",
+          "exception": "",
+          "event_type": "0x8a42423c",
+          "source": "hook",
+          "properties": {
+            "datetime": 1700000000123456
+          }
+        },
+        {
+          "ts": "2023-11-14T22:13:20.123Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"created_at\":1700000000123456800}",
+          "exception": "",
+          "event_type": "0xe03be506",
+          "source": "hook",
+          "properties": {
+            "created_at": 1700000000123456800
+          }
+        },
+        {
+          "ts": "2023-11-14T22:13:20.500Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"@timestamp\":\"1700000000.5\"}",
+          "exception": "",
+          "event_type": "0xe7e193db",
+          "source": "hook",
+          "properties": {
+            "@timestamp": "1700000000.5"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"@t\":\"garbage\"}",
+          "exception": "",
+          "event_type": "0x4b516863",
+          "source": "hook",
+          "properties": {
+            "@t": "garbage"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"timestamp\":null}",
+          "exception": "",
+          "event_type": "0xa49dd93a",
+          "source": "hook",
+          "properties": {
+            "timestamp": null
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"timestamp\":true}",
+          "exception": "",
+          "event_type": "0x4cd326b0",
+          "source": "hook",
+          "properties": {
+            "timestamp": true
+          }
+        },
+        {
+          "ts": "1916-02-18T01:46:40.000Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"time\":-1700000000}",
+          "exception": "",
+          "event_type": "0x0e42d6b6",
+          "source": "hook",
+          "properties": {
+            "time": -1700000000
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"timestamp\":\"2099-01-01T00:00:00Z\"}",
+          "exception": "",
+          "event_type": "0x3846e02a",
+          "source": "hook",
+          "properties": {
+            "timestamp": "2099-01-01T00:00:00Z"
+          }
+        },
+        {
+          "ts": "1970-01-01T00:00:05.000Z",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"time\":\"2026-01-01T00:00:00Z\",\"timestamp\":5}",
+          "exception": "",
+          "event_type": "0x891665a6",
+          "source": "hook",
+          "properties": {
+            "time": "2026-01-01T00:00:00Z",
+            "timestamp": 5
+          }
+        }
+      ]
+    },
+    {
+      "name": "levels",
+      "body": "{\"severity\":\"warn\"}\n{\"level\":\"\",\"severity\":\"x\"}\n{\"level\":3,\"log_level\":\"Debug\"}\n{\"loglevel\":\"Fatal\"}\n{\"@l\":\"Verbose\",\"level\":\"Error\"}\n",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "warn",
+          "message_template": "",
+          "message": "{\"severity\":\"warn\"}",
+          "exception": "",
+          "event_type": "0x5711858a",
+          "source": "hook",
+          "properties": {
+            "severity": "warn"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "x",
+          "message_template": "",
+          "message": "{\"level\":\"\",\"severity\":\"x\"}",
+          "exception": "",
+          "event_type": "0x6908bc6c",
+          "source": "hook",
+          "properties": {
+            "level": "",
+            "severity": "x"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Debug",
+          "message_template": "",
+          "message": "{\"level\":3,\"log_level\":\"Debug\"}",
+          "exception": "",
+          "event_type": "0x396b5305",
+          "source": "hook",
+          "properties": {
+            "level": 3,
+            "log_level": "Debug"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Fatal",
+          "message_template": "",
+          "message": "{\"loglevel\":\"Fatal\"}",
+          "exception": "",
+          "event_type": "0x45f68d36",
+          "source": "hook",
+          "properties": {
+            "loglevel": "Fatal"
+          }
+        },
+        {
+          "ts": "now",
+          "level": "Error",
+          "message_template": "",
+          "message": "{\"@l\":\"Verbose\",\"level\":\"Error\"}",
+          "exception": "",
+          "event_type": "0xb3e39bd1",
+          "source": "hook",
+          "properties": {
+            "@l": "Verbose",
+            "level": "Error"
+          }
+        }
+      ]
+    },
+    {
+      "name": "message escaping",
+      "body": "{\"z\":\"\u003cb\u003e\u0026amp;\u003c/b\u003e\",\"a\":{\"y\":[1,2.5,1e21],\"x\":null},\"u\":\"\u2028\"}",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "{\"a\":{\"x\":null,\"y\":[1,2.5,1e+21]},\"u\":\"\\u2028\",\"z\":\"\\u003cb\\u003e\\u0026amp;\\u003c/b\\u003e\"}",
+          "exception": "",
+          "event_type": "0x3e64076f",
+          "source": "hook",
+          "properties": {
+            "a": {
+              "x": null,
+              "y": [
+                1,
+                2.5,
+                1e+21
+              ]
+            },
+            "u": "\u2028",
+            "z": "\u003cb\u003e\u0026amp;\u003c/b\u003e"
+          }
+        }
+      ]
+    },
+    {
+      "name": "null line",
+      "body": "null\n",
+      "source": "hook",
+      "events": [
+        {
+          "ts": "now",
+          "level": "Information",
+          "message_template": "",
+          "message": "null",
+          "exception": "",
+          "event_type": "0x66f07992",
+          "source": "hook",
+          "properties": {}
+        }
+      ]
+    }
+  ]
+}
