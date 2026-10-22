@@ -1,10 +1,12 @@
 import { computeEventType, goFormatG, goJSON, nanosToMs } from "./go-compat";
 import { ProtoReader, WIRE_FIXED64, WIRE_LEN, WIRE_VARINT } from "./protowire";
 import {
-  baseRow,
-  formatTs,
+  MAX_NESTING_DEPTH,
+  NestingTooDeepError,
   ParseError,
+  rowBuilder,
   setOwn,
+  type RowFields,
   type LogRow,
   type ParseContext,
   type ParseResult,
@@ -58,6 +60,8 @@ interface Span {
 interface ResourceGroup<T> {
   resourceAttributes: KeyValue[];
   items: T[];
+  /** Records/spans dropped for nesting past MAX_NESTING_DEPTH. */
+  skipped: number;
 }
 
 const STATUS_CODE_OK = 1;
@@ -72,12 +76,15 @@ export function parseOTLPLogs(
   ctx: ParseContext,
 ): ParseResult {
   const groups = decode(body, contentType, decodeLogsProto, decodeLogsJSON);
+  const build = rowBuilder(ctx, "otlp");
   const rows: LogRow[] = [];
+  let skipped = 0;
   for (const g of groups) {
     const source = serviceName(g.resourceAttributes) || ctx.source;
-    for (const lr of g.items) rows.push(logRecordToRow(lr, source, ctx));
+    for (const lr of g.items) rows.push(build(logRecordFields(lr, source, ctx)));
+    skipped += g.skipped;
   }
-  return { rows, skipped: 0 };
+  return { rows, skipped };
 }
 
 export function parseOTLPTraces(
@@ -86,12 +93,15 @@ export function parseOTLPTraces(
   ctx: ParseContext,
 ): ParseResult {
   const groups = decode(body, contentType, decodeTracesProto, decodeTracesJSON);
+  const build = rowBuilder(ctx, "otlp");
   const rows: LogRow[] = [];
+  let skipped = 0;
   for (const g of groups) {
     const source = serviceName(g.resourceAttributes) || ctx.source;
-    for (const span of g.items) rows.push(spanToRow(span, source, ctx));
+    for (const span of g.items) rows.push(build(spanFields(span, source, ctx)));
+    skipped += g.skipped;
   }
-  return { rows, skipped: 0 };
+  return { rows, skipped };
 }
 
 /** The exact protobuf media types decode as protobuf. Anything else is tried
@@ -125,16 +135,16 @@ function decode<T>(
 // ---------------------------------------------------------------------------
 // Rows
 
-function logRecordToRow(lr: LogRecord, source: string, ctx: ParseContext): LogRow {
+function logRecordFields(lr: LogRecord, source: string, ctx: ParseContext): RowFields {
   let ts = ctx.receivedAt.getTime();
   if (lr.timeUnixNano > 0n) ts = nanosToMs(BigInt.asIntN(64, lr.timeUnixNano));
   else if (lr.observedTimeUnixNano > 0n) ts = nanosToMs(BigInt.asIntN(64, lr.observedTimeUnixNano));
 
   const message = anyValueToString(lr.body);
   return {
-    ...baseRow(ctx, "otlp", "log"),
-    ts: formatTs(ts),
+    tsMs: ts,
     source,
+    kind: "log",
     level: severityToLevel(lr.severityText, lr.severityNumber),
     message,
     message_template: "",
@@ -150,7 +160,7 @@ function logRecordToRow(lr: LogRecord, source: string, ctx: ParseContext): LogRo
 
 const SPAN_TEMPLATE = "{Name} [{Kind}] {Status}";
 
-function spanToRow(span: Span, source: string, ctx: ParseContext): LogRow {
+function spanFields(span: Span, source: string, ctx: ParseContext): RowFields {
   let ts = ctx.receivedAt.getTime();
   if (span.startTimeUnixNano > 0n) ts = nanosToMs(BigInt.asIntN(64, span.startTimeUnixNano));
 
@@ -171,9 +181,9 @@ function spanToRow(span: Span, source: string, ctx: ParseContext): LogRow {
     start > 0n && end > 0n && end >= start ? Number(end - start) / 1e6 : null;
 
   return {
-    ...baseRow(ctx, "otlp", "span"),
-    ts: formatTs(ts),
+    tsMs: ts,
     source,
+    kind: "span",
     level,
     message,
     message_template: SPAN_TEMPLATE,
@@ -330,7 +340,7 @@ function decodeTracesProto(buf: Uint8Array): ResourceGroup<Span>[] {
 /** ResourceLogs / ResourceSpans share a layout: resource = 1, and scope_logs /
  * scope_spans = 2, whose log_records / spans are field 2 again. */
 function readResourceGroup<T>(r: ProtoReader, readItem: (r: ProtoReader) => T): ResourceGroup<T> {
-  const group: ResourceGroup<T> = { resourceAttributes: [], items: [] };
+  const group: ResourceGroup<T> = { resourceAttributes: [], items: [], skipped: 0 };
   r.fields((f, wt) => {
     if (wt !== WIRE_LEN) return false;
     if (f === 1) {
@@ -341,7 +351,13 @@ function readResourceGroup<T>(r: ProtoReader, readItem: (r: ProtoReader) => T): 
       const scope = r.message();
       scope.fields((f2, wt2) => {
         if (f2 !== 2 || wt2 !== WIRE_LEN) return false;
-        group.items.push(readItem(scope.message()));
+        const item = scope.message();
+        try {
+          group.items.push(readItem(item));
+        } catch (err) {
+          if (!(err instanceof NestingTooDeepError)) throw err;
+          group.skipped++;
+        }
         return true;
       });
       return true;
@@ -363,12 +379,12 @@ function readResource(r: ProtoReader): KeyValue[] {
 }
 
 /** KeyValue: key = 1, value = 2 */
-function readKeyValue(r: ProtoReader): KeyValue {
+function readKeyValue(r: ProtoReader, depth = 1): KeyValue {
   const kv: KeyValue = { key: "", value: undefined };
   r.fields((f, wt) => {
     if (wt !== WIRE_LEN) return false;
     if (f === 1) kv.key = r.string();
-    else if (f === 2) kv.value = readAnyValue(r.message());
+    else if (f === 2) kv.value = readAnyValue(r.message(), depth);
     else return false;
     return true;
   });
@@ -377,7 +393,8 @@ function readKeyValue(r: ProtoReader): KeyValue {
 
 /** AnyValue oneof: string 1, bool 2, int 3, double 4, array 5, kvlist 6, bytes 7.
  * The last member on the wire wins, as in Go. */
-function readAnyValue(r: ProtoReader): AnyValue {
+function readAnyValue(r: ProtoReader, depth = 1): AnyValue {
+  if (depth > MAX_NESTING_DEPTH) throw new NestingTooDeepError();
   let v: AnyValue = { kind: "none" };
   r.fields((f, wt) => {
     if (f === 1 && wt === WIRE_LEN) v = { kind: "string", v: r.string() };
@@ -390,7 +407,7 @@ function readAnyValue(r: ProtoReader): AnyValue {
       const values: AnyValue[] = [];
       arr.fields((f2, wt2) => {
         if (f2 !== 1 || wt2 !== WIRE_LEN) return false;
-        values.push(readAnyValue(arr.message()));
+        values.push(readAnyValue(arr.message(), depth + 1));
         return true;
       });
       v = { kind: "array", v: values };
@@ -400,7 +417,7 @@ function readAnyValue(r: ProtoReader): AnyValue {
       const values: KeyValue[] = [];
       list.fields((f2, wt2) => {
         if (f2 !== 1 || wt2 !== WIRE_LEN) return false;
-        values.push(readKeyValue(list.message()));
+        values.push(readKeyValue(list.message(), depth + 1));
         return true;
       });
       v = { kind: "kvlist", v: values };
@@ -576,7 +593,8 @@ const SEVERITY_NAMES = enumNames(
 const SPAN_KIND_NAMES = enumNames("SPAN_KIND_", SPAN_KINDS);
 const STATUS_CODE_NAMES = enumNames("STATUS_CODE_", ["UNSET", "OK", "ERROR"]);
 
-function jsonAnyValue(v: unknown): AnyValue | undefined {
+function jsonAnyValue(v: unknown, depth = 1): AnyValue | undefined {
+  if (depth > MAX_NESTING_DEPTH) throw new NestingTooDeepError();
   const o = obj(v, "AnyValue");
   if (!o) return undefined;
   let out: AnyValue = { kind: "none" };
@@ -594,16 +612,19 @@ function jsonAnyValue(v: unknown): AnyValue | undefined {
   } else if (i !== undefined) out = { kind: "int", v: int64(i, "intValue", false) };
   else if (d !== undefined) out = { kind: "double", v: double(d, "doubleValue") };
   else if (a !== undefined) {
-    out = { kind: "array", v: arr(obj(a, "arrayValue")?.values, "values").map((x) => jsonAnyValue(x)) };
+    out = { kind: "array", v: arr(obj(a, "arrayValue")?.values, "values").map((x) => jsonAnyValue(x, depth + 1)) };
   } else if (kv !== undefined) {
-    out = { kind: "kvlist", v: arr(obj(kv, "kvlistValue")?.values, "values").map(jsonKeyValue) };
+    out = {
+      kind: "kvlist",
+      v: arr(obj(kv, "kvlistValue")?.values, "values").map((x) => jsonKeyValue(x, depth + 1)),
+    };
   } else if (by !== undefined) out = { kind: "bytes", v: base64Bytes(str(by, "bytesValue"), "bytesValue") };
   return out;
 }
 
-function jsonKeyValue(v: unknown): KeyValue {
+function jsonKeyValue(v: unknown, depth = 1): KeyValue {
   const o = obj(v, "KeyValue") ?? {};
-  return { key: str(get(o, "key"), "key"), value: jsonAnyValue(get(o, "value")) };
+  return { key: str(get(o, "key"), "key"), value: jsonAnyValue(get(o, "value"), depth) };
 }
 
 function jsonGroups<T>(
@@ -619,13 +640,21 @@ function jsonGroups<T>(
     const r = obj(rv, resourceField[0]) ?? {};
     const resource = obj(get(r, "resource"), "resource");
     const group: ResourceGroup<T> = {
-      resourceAttributes: resource ? arr(get(resource, "attributes"), "attributes").map(jsonKeyValue) : [],
+      resourceAttributes: resource
+        ? arr(get(resource, "attributes"), "attributes").map((x) => jsonKeyValue(x))
+        : [],
       items: [],
+      skipped: 0,
     };
     for (const sv of arr(get(r, ...scopeField), scopeField[0])) {
       const scope = obj(sv, scopeField[0]) ?? {};
       for (const iv of arr(get(scope, ...itemField), itemField[0])) {
-        group.items.push(readItem(obj(iv, itemField[0]) ?? {}));
+        try {
+          group.items.push(readItem(obj(iv, itemField[0]) ?? {}));
+        } catch (err) {
+          if (!(err instanceof NestingTooDeepError)) throw err;
+          group.skipped++;
+        }
       }
     }
     return group;
@@ -648,7 +677,7 @@ function decodeLogsJSON(root: unknown): ResourceGroup<LogRecord>[] {
       severityNumber: enumValue(get(o, "severityNumber", "severity_number"), SEVERITY_NAMES, "severityNumber"),
       severityText: str(get(o, "severityText", "severity_text"), "severityText"),
       body: jsonAnyValue(get(o, "body")),
-      attributes: arr(get(o, "attributes"), "attributes").map(jsonKeyValue),
+      attributes: arr(get(o, "attributes"), "attributes").map((x) => jsonKeyValue(x)),
       traceId: idBytes(get(o, "traceId", "trace_id"), "traceId"),
       spanId: idBytes(get(o, "spanId", "span_id"), "spanId"),
     }),
@@ -671,7 +700,7 @@ function decodeTracesJSON(root: unknown): ResourceGroup<Span>[] {
         kind: enumValue(get(o, "kind"), SPAN_KIND_NAMES, "kind"),
         startTimeUnixNano: int64(get(o, "startTimeUnixNano", "start_time_unix_nano"), "startTimeUnixNano", true),
         endTimeUnixNano: int64(get(o, "endTimeUnixNano", "end_time_unix_nano"), "endTimeUnixNano", true),
-        attributes: arr(get(o, "attributes"), "attributes").map(jsonKeyValue),
+        attributes: arr(get(o, "attributes"), "attributes").map((x) => jsonKeyValue(x)),
         status: st
           ? {
               code: enumValue(get(st, "code"), STATUS_CODE_NAMES, "status.code"),

@@ -136,18 +136,49 @@ function templateValue(v: unknown): string {
   return goJSON(v);
 }
 
-/** Replace every `{Key}` with that property's value. Port of
- * clef.go renderMessageTemplate (used by the webhook presets too). */
+/** A rendered message stops growing past this many UTF-16 units. */
+export const MAX_RENDERED_CHARS = 1 << 20;
+
+const PLACEHOLDER = /\{([^{}]*)\}/g;
+
+/**
+ * Replace `{Key}` with that property's value. Port of clef.go
+ * renderMessageTemplate (used by the webhook presets too), with two
+ * deliberate differences:
+ *
+ * - One left-to-right pass over the template. Go ran strings.ReplaceAll once
+ *   per property in random map order, so a value containing another `{Key}`
+ *   was sometimes substituted again and sometimes not. Here a substituted value
+ *   is never rescanned, which also keeps rendering linear in the template.
+ * - Bounded output. A substitution that would push the message past
+ *   MAX_RENDERED_CHARS is skipped and its placeholder left literal, so a small
+ *   line with many placeholders and one large value can't render into hundreds
+ *   of megabytes.
+ *
+ * Replacement is literal: `$&`, `$$` and friends in a value are just text.
+ */
 export function renderMessageTemplate(
   template: string,
   properties: Record<string, unknown>,
 ): string {
   if (!template) return "";
-  let result = template;
-  for (const [key, value] of Object.entries(properties)) {
-    result = result.replaceAll("{" + key + "}", templateValue(value));
+  const cache = new Map<string, string>();
+  let out = "";
+  let last = 0;
+  for (const m of template.matchAll(PLACEHOLDER)) {
+    const key = m[1];
+    if (!Object.hasOwn(properties, key)) continue;
+    let rep = cache.get(key);
+    if (rep === undefined) {
+      rep = templateValue(properties[key]);
+      cache.set(key, rep);
+    }
+    const literal = template.slice(last, m.index);
+    out += literal;
+    out += out.length + rep.length > MAX_RENDERED_CHARS ? m[0] : rep;
+    last = m.index + m[0].length;
   }
-  return result;
+  return out + template.slice(last);
 }
 
 const RFC3339 =

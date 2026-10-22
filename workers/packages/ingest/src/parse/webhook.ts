@@ -1,3 +1,4 @@
+import type { RowFields } from "./row";
 import {
   computeEventType,
   goJSON,
@@ -8,10 +9,9 @@ import {
   truncToBigInt,
 } from "./go-compat";
 import {
-  baseRow,
-  formatTs,
-  MAX_DATE_MS,
+  nestingExceeds,
   ParseError,
+  rowBuilder,
   setOwn,
   type LogRow,
   type ParseContext,
@@ -75,23 +75,31 @@ export function parseWebhook(
   presetName?: string | null,
 ): ParseResult {
   const preset = getPreset(presetName);
+  const build = rowBuilder(ctx, "webhook");
   const trimmed = body.trim();
   if (!trimmed) return { rows: [], skipped: 0 };
   return trimmed[0] === "["
-    ? parseArray(trimmed, ctx, preset)
-    : parseNDJSON(trimmed, ctx, preset);
+    ? parseArray(trimmed, ctx, preset, build)
+    : parseNDJSON(trimmed, ctx, preset, build);
 }
+
+type Build = (f: RowFields) => LogRow;
 
 /** Decode as Go's map[string]interface{} did, then map to a row. Go accepted
  * `null` as a nil map: an event whose message is "null" and that has no
- * properties. Anything else that isn't an object is skipped (undefined). */
-function toRow(v: unknown, preset: WebhookPreset, ctx: ParseContext): LogRow | undefined {
-  if (v === null) return mapWebhookEvent({}, preset, ctx, true);
-  if (typeof v === "object" && !Array.isArray(v)) return mapWebhookEvent(v as Raw, preset, ctx);
-  return undefined;
+ * properties. Anything that isn't an object, nests too deeply, or fails to map
+ * is skipped (undefined), so it can never take its siblings down with it. */
+function toRow(v: unknown, preset: WebhookPreset, ctx: ParseContext, build: Build): LogRow | undefined {
+  try {
+    if (v === null) return mapWebhookEvent({}, preset, ctx, build, true);
+    if (typeof v !== "object" || Array.isArray(v) || nestingExceeds(v)) return undefined;
+    return mapWebhookEvent(v as Raw, preset, ctx, build);
+  } catch {
+    return undefined;
+  }
 }
 
-function parseArray(body: string, ctx: ParseContext, preset: WebhookPreset): ParseResult {
+function parseArray(body: string, ctx: ParseContext, preset: WebhookPreset, build: Build): ParseResult {
   let items: unknown;
   try {
     items = JSON.parse(body);
@@ -102,7 +110,7 @@ function parseArray(body: string, ctx: ParseContext, preset: WebhookPreset): Par
   const rows: LogRow[] = [];
   let skipped = 0;
   for (const item of items) {
-    const row = toRow(item, preset, ctx);
+    const row = toRow(item, preset, ctx, build);
     if (row) rows.push(row);
     else skipped++;
   }
@@ -114,7 +122,7 @@ function parseArray(body: string, ctx: ParseContext, preset: WebhookPreset): Par
   return { rows, skipped };
 }
 
-function parseNDJSON(body: string, ctx: ParseContext, preset: WebhookPreset): ParseResult {
+function parseNDJSON(body: string, ctx: ParseContext, preset: WebhookPreset, build: Build): ParseResult {
   const rows: LogRow[] = [];
   let skipped = 0;
   for (const rawLine of body.split("\n")) {
@@ -127,7 +135,7 @@ function parseNDJSON(body: string, ctx: ParseContext, preset: WebhookPreset): Pa
       skipped++;
       continue;
     }
-    const row = toRow(value, preset, ctx);
+    const row = toRow(value, preset, ctx, build);
     if (row) rows.push(row);
     else skipped++;
   }
@@ -165,15 +173,9 @@ function detectNumericTimestamp(f: number): number {
   return unixSecondsToMs(f);
 }
 
-/** Event time in epoch ms, or null for "use now". A number too large for a
- * Date also means now: Go produced a garbage time there, and here formatting it
- * would throw and lose the whole batch. */
+/** Event time in epoch ms, or null for "use now". Out-of-range values are
+ * the row builder's to clamp. */
 function parseWebhookTimestamp(raw: Raw, preset: WebhookPreset): number | null {
-  const ms = webhookTimestampMs(raw, preset);
-  return ms !== null && Math.abs(ms) <= MAX_DATE_MS ? ms : null;
-}
-
-function webhookTimestampMs(raw: Raw, preset: WebhookPreset): number | null {
   let field = preset.timestampField ?? "";
   if (!field) field = COMMON_TIMESTAMP_FIELDS.find((f) => Object.hasOwn(raw, f)) ?? "";
   if (!field || !Object.hasOwn(raw, field)) return null;
@@ -222,6 +224,7 @@ export function mapWebhookEvent(
   raw: Raw,
   preset: WebhookPreset,
   ctx: ParseContext,
+  build: Build = rowBuilder(ctx, "webhook"),
   fromNull = false,
 ): LogRow {
   const now = ctx.receivedAt.getTime();
@@ -269,10 +272,10 @@ export function mapWebhookEvent(
     if (!excluded.has(k)) setOwn(props, k, v);
   }
 
-  return {
-    ...baseRow(ctx, "webhook", "log"),
-    ts: formatTs(ts),
+  return build({
+    tsMs: ts,
     source,
+    kind: "log",
     level,
     message,
     message_template: messageTemplate,
@@ -283,5 +286,5 @@ export function mapWebhookEvent(
     parent_span_id: null,
     duration_ms: null,
     properties: props,
-  };
+  });
 }

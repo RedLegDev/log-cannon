@@ -1,8 +1,9 @@
 import { computeEventType, parseRFC3339, renderMessageTemplate } from "./go-compat";
 import {
-  baseRow,
-  formatTs,
+  nestingExceeds,
+  NestingTooDeepError,
   ParseError,
+  rowBuilder,
   type LogRow,
   type ParseContext,
   type ParseResult,
@@ -26,12 +27,13 @@ export function parseCLEF(body: string, ctx: ParseContext): ParseResult {
   const rows: LogRow[] = [];
   let skipped = 0;
   let lastErr = "";
+  const build = rowBuilder(ctx, "clef");
   const lines = body.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     try {
-      rows.push(parseCLEFLine(line, ctx));
+      rows.push(parseCLEFLine(line, ctx, build));
     } catch (err) {
       skipped++;
       lastErr = `line ${i + 1}: ${(err as Error).message}`;
@@ -47,7 +49,11 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-export function parseCLEFLine(line: string, ctx: ParseContext): LogRow {
+export function parseCLEFLine(
+  line: string,
+  ctx: ParseContext,
+  build = rowBuilder(ctx, "clef"),
+): LogRow {
   if (line.length * 3 > MAX_LINE_BYTES && utf8.encode(line).length > MAX_LINE_BYTES) {
     throw new Error("line exceeds 1 MiB");
   }
@@ -59,6 +65,7 @@ export function parseCLEFLine(line: string, ctx: ParseContext): LogRow {
   }
   if (raw === null) raw = {}; // Go unmarshals `null` into an empty map.
   if (!isObject(raw)) throw new Error("invalid JSON");
+  if (nestingExceeds(raw)) throw new NestingTooDeepError();
 
   if (!("@t" in raw)) throw new Error("missing @t field");
   const tsRaw = raw["@t"];
@@ -69,7 +76,8 @@ export function parseCLEFLine(line: string, ctx: ParseContext): LogRow {
   if (ts > now) ts = now;
 
   const str = (k: string) => (typeof raw[k] === "string" ? (raw[k] as string) : "");
-  const level = typeof raw["@l"] === "string" ? (raw["@l"] as string) : "Information";
+  // Go kept an explicit "@l": "" as an empty level; the stream needs one.
+  const level = str("@l") || "Information";
   const messageTemplate = str("@mt");
   let message = str("@m");
   const exception = str("@x");
@@ -84,10 +92,10 @@ export function parseCLEFLine(line: string, ctx: ParseContext): LogRow {
   // After @-field handling, so it only ever touches properties.
   applyEnrichment(props, ctx.enrich);
 
-  return {
-    ...baseRow(ctx, "clef", "log"),
-    ts: formatTs(ts),
+  return build({
+    tsMs: ts,
     source: ctx.source,
+    kind: "log",
     level,
     message,
     message_template: messageTemplate,
@@ -98,7 +106,7 @@ export function parseCLEFLine(line: string, ctx: ParseContext): LogRow {
     parent_span_id: null,
     duration_ms: null,
     properties: props,
-  };
+  });
 }
 
 /**

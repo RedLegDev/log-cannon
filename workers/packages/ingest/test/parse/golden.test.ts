@@ -19,7 +19,7 @@ import {
   goJSON,
   renderMessageTemplate,
 } from "../../src/parse/go-compat";
-import { ParseError, type LogRow, type ParseResult } from "../../src/parse/row";
+import { assertRowValid, ParseError, type LogRow, type ParseResult } from "../../src/parse/row";
 import { base64Bytes, ctx, expectRowShape, RECEIVED_AT } from "./helpers";
 
 interface GoEvent {
@@ -52,6 +52,7 @@ function compare(rows: LogRow[], events: GoEvent[], spans: boolean): void {
   rows.forEach((row, i) => {
     const want = events[i];
     expectRowShape(row, expect);
+    assertRowValid(row);
     expect(row.ts).toBe(want.ts === "now" ? RECEIVED_AT.toISOString() : want.ts);
     expect({
       level: row.level,
