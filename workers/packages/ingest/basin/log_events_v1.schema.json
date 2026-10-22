@@ -1,0 +1,21 @@
+{
+  "fields": [
+    { "name": "id", "type": "string", "required": true },
+    { "name": "ts", "type": "timestamp", "required": true },
+    { "name": "received_at", "type": "timestamp", "required": true },
+    { "name": "source", "type": "string", "required": true },
+    { "name": "key_id", "type": "string", "required": true },
+    { "name": "format", "type": "string", "required": true },
+    { "name": "kind", "type": "string", "required": true },
+    { "name": "level", "type": "string", "required": true },
+    { "name": "message", "type": "string", "required": false },
+    { "name": "message_template", "type": "string", "required": false },
+    { "name": "event_type", "type": "string", "required": false },
+    { "name": "exception", "type": "string", "required": false },
+    { "name": "trace_id", "type": "string", "required": false },
+    { "name": "span_id", "type": "string", "required": false },
+    { "name": "parent_span_id", "type": "string", "required": false },
+    { "name": "duration_ms", "type": "float64", "required": false },
+    { "name": "properties", "type": "json", "required": false }
+  ]
+}
