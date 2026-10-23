@@ -14,7 +14,7 @@ const MAX_LINE_BYTES = 1024 * 1024;
 
 const utf8 = new TextEncoder();
 
-const CLEF_FIELDS =["@t", "@l", "@mt", "@m", "@x", "@i"] as const;
+export const CLEF_FIELDS = ["@t", "@l", "@mt", "@m", "@x", "@i"] as const;
 
 /**
  * Parse an NDJSON CLEF body (`/ingest/clef`, `/api/events/raw`). Port of

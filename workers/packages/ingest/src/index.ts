@@ -21,6 +21,7 @@ import {
   type LogStream,
 } from "./basin";
 import { BasinQueryError, queryBasin } from "./basin-sql";
+import { CLEF_FIELDS } from "./parse/clef";
 import { handleMcp, type CreateLogArgs } from "./mcp";
 import {
   QueryRejected,
@@ -995,6 +996,9 @@ function basinError(e: unknown, sql?: string): Response {
  * so during dual-write it lands in ClickHouse and Basin alike. The caller
  * names the source; `key_id` stays the calling key.
  */
+const MAX_SOURCE_CHARS = 200;
+const CLEF_RESERVED = new Set<string>(CLEF_FIELDS);
+
 async function createLog(
   request: Request,
   env: Env,
@@ -1002,9 +1006,21 @@ async function createLog(
   key: APIKeyRecord,
   entry: CreateLogArgs,
 ): Promise<void> {
+  const source = entry.source.trim();
+  if (!source || source.length > MAX_SOURCE_CHARS) {
+    throw new Error(`source must be 1-${MAX_SOURCE_CHARS} characters`);
+  }
+  if (source === env.SLOW_REQUEST_SOURCE?.trim()) {
+    throw new Error(`source ${source} is reserved for the Worker's own telemetry`);
+  }
   const receivedAt = new Date();
+  // A property named like a CLEF field the parser consumes (@x, @i, …) would
+  // set that field instead of being data. Double its @ (Serilog's escape);
+  // other @-keys are plain properties to the parser and pass through.
+  const props: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(entry.properties ?? {})) props[CLEF_RESERVED.has(k) ? `@${k}` : k] = v;
   const line: Record<string, unknown> = {
-    ...(entry.properties ?? {}),
+    ...props,
     "@t": receivedAt.toISOString(),
     "@l": entry.level,
     "@m": entry.message,
@@ -1023,12 +1039,12 @@ async function createLog(
     ctx,
     trace: new RequestTrace(),
     route: "/api/mcp#create_log",
-    source: entry.source,
+    source,
     keyId: key.keyId,
     receivedAt,
   };
   await enqueue(ingest, "clef", 1, () =>
-    env.INGEST_QUEUE.send({ format: "clef", source: entry.source, body: encodeBody(bytes), contentType }),
+    env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType }),
   );
   copyToBasin(ingest, { format: "clef", bodies: [bytes], contentType });
 }

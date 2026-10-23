@@ -22,7 +22,7 @@ export interface BasinResult<T = Record<string, unknown>> {
 export class BasinQueryError extends Error {
   override name = "BasinQueryError";
   constructor(
-    readonly status: 400 | 502 | 503 | 504,
+    readonly status: 400 | 413 | 502 | 503 | 504,
     message: string,
   ) {
     super(message);
@@ -30,6 +30,54 @@ export class BasinQueryError extends Error {
 }
 
 export const BASIN_QUERY_TIMEOUT_MS = 30_000;
+
+/**
+ * Largest Basin response this Worker will hold. Reads share isolates with
+ * ingest (128 MB each), and a parsed JSON body costs several times its size,
+ * so an unbounded `SELECT properties … LIMIT 10000` could reset an isolate
+ * mid-ingest. 5 MB fits 10k rows of narrow columns.
+ */
+export const MAX_BASIN_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+async function readCapped(res: Response, max: number): Promise<string> {
+  const declared = Number(res.headers.get("Content-Length"));
+  if (Number.isFinite(declared) && declared > max) {
+    await res.body?.cancel();
+    throw tooLarge(max);
+  }
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel();
+      throw tooLarge(max);
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    buf.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
+}
+
+function tooLarge(max: number): BasinQueryError {
+  return new BasinQueryError(
+    413,
+    `Result is over ${max / 1024 / 1024} MB. Select fewer columns (properties is the big one) or lower the LIMIT.`,
+  );
+}
+
+function isTimeout(e: unknown): boolean {
+  return e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+}
 
 interface BasinResponse {
   success?: boolean;
@@ -61,15 +109,26 @@ export async function queryBasin<T = Record<string, unknown>>(
       },
     );
   } catch (e) {
-    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
-      throw new BasinQueryError(504, `Query exceeded ${timeoutMs / 1000} seconds`);
-    }
+    if (isTimeout(e)) throw new BasinQueryError(504, `Query exceeded ${timeoutMs / 1000} seconds`);
     throw new BasinQueryError(502, "Basin SQL unreachable");
   }
 
+  if (res.status === 429) {
+    await res.body?.cancel();
+    throw new BasinQueryError(503, "Basin SQL is rate limiting; retry shortly");
+  }
+
+  let text: string;
+  try {
+    text = await readCapped(res, MAX_BASIN_RESPONSE_BYTES);
+  } catch (e) {
+    if (e instanceof BasinQueryError) throw e;
+    if (isTimeout(e)) throw new BasinQueryError(504, `Query exceeded ${timeoutMs / 1000} seconds`);
+    throw new BasinQueryError(502, "Basin SQL response was cut off");
+  }
   let body: BasinResponse;
   try {
-    body = (await res.json()) as BasinResponse;
+    body = JSON.parse(text) as BasinResponse;
   } catch {
     throw new BasinQueryError(502, `Basin SQL returned ${res.status} with a non-JSON body`);
   }
@@ -80,7 +139,7 @@ export async function queryBasin<T = Record<string, unknown>>(
     // Basin reports the caller's mistakes as 4xxxx codes (invalid SQL,
     // unknown column, argument limits). Everything else is on our side.
     const callerError =
-      (res.status >= 400 && res.status < 500 && res.status !== 401 && res.status !== 403 && res.status !== 429) ||
+      (res.status >= 400 && res.status < 500 && res.status !== 401 && res.status !== 403) ||
       (err?.code !== undefined && err.code >= 40000 && err.code < 50000);
     throw new BasinQueryError(callerError ? 400 : 502, message);
   }
@@ -103,7 +162,9 @@ export function sqlString(s: string): string {
  * bytes, and ~15% of rows carry larger `properties`. Every generated read of
  * `properties` goes through these guards: JSON functions on rows under the
  * cap, and a regex over the raw text above it. The regex reads top-level keys
- * only, and string values only when they contain no escapes.
+ * only by intent: a nested key of the same name can also match. String values
+ * match only when they contain no escapes. Numbers go through TRY_CAST, so a
+ * value like "1.2.3" reads as NULL instead of failing the query.
  */
 export const JSON_ARG_LIMIT = 2000;
 
@@ -147,7 +208,7 @@ export function propNumber(path: string[]): string {
       : `coalesce(${direct}, json_get_float(json_get_str(properties, ${sqlString(path[0])}), ${jsonPath(path.slice(1))}))`;
   const large =
     path.length === 1
-      ? `CAST((regexp_match(properties, ${sqlString(`${keyPattern(path[0])}:"?(-?[0-9][0-9.eE+-]*)`)}))[1] AS DOUBLE)`
+      ? `TRY_CAST((regexp_match(properties, ${sqlString(`${keyPattern(path[0])}:"?(-?[0-9][0-9.eE+-]*)`)}))[1] AS DOUBLE)`
       : "NULL";
   return `CASE WHEN ${SMALL} THEN ${small} ELSE ${large} END`;
 }

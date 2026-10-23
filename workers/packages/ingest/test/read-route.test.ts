@@ -100,7 +100,7 @@ describe("/v2/api/v1/query", () => {
     const body = (await res.json()) as { data: unknown[]; meta: Record<string, number> };
     expect(body.data).toHaveLength(1);
     expect(body.meta).toMatchObject({ rows: 1, bytes_scanned: 7 });
-    expect(h.sent.basin).toEqual(["SELECT * FROM logs.events LIMIT 10000"]);
+    expect(h.sent.basin).toEqual(["SELECT * FROM logs.events\nLIMIT 10000"]);
   });
 
   it("rejects a non-SELECT without calling Basin", async () => {
@@ -198,6 +198,41 @@ describe("/v2/api/mcp", () => {
     expect(h.sent.queue[0].source).toBe("my-agent");
     expect(h.sent.logs).toHaveLength(1);
     expect(h.sent.logs[0]).toMatchObject({ source: "my-agent", key_id: "id-k-ingest", level: "Warning", message: "hi there", properties: { Task: "x" } });
+  });
+
+  it("escapes properties named like CLEF fields, so they stay data", async () => {
+    const h = harness();
+    await h.rpc("k-ingest", {
+      jsonrpc: "2.0",
+      id: 5,
+      method: "tools/call",
+      params: { name: "create_log", arguments: { level: "Information", message: "m", source: "s", properties: { "@x": "not an exception", "@tr": "kept" } } },
+    });
+    expect(h.sent.logs[0]).toMatchObject({ exception: "", properties: { "@@x": "not an exception", "@tr": "kept" } });
+  });
+
+  it("won't write to an empty source or the Worker's telemetry source", async () => {
+    const h = harness();
+    for (const source of ["  ", "log-cannon-ingest"]) {
+      const res = await h.rpc("k-ingest", { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "create_log", arguments: { level: "Error", message: "m", source } } });
+      expect(((await res.json()) as { result: { isError: boolean } }).result.isError).toBe(true);
+    }
+    expect(h.sent.queue).toHaveLength(0);
+  });
+
+  it("doesn't run a tools/call sent as a notification", async () => {
+    const h = harness();
+    const res = await h.rpc("k-read", { jsonrpc: "2.0", method: "tools/call", params: { name: "execute_query", arguments: { sql: "SELECT 1" } } });
+    expect(res.status).toBe(202);
+    expect(h.sent.basin).toHaveLength(0);
+  });
+
+  it("refuses a batch over the cap before running any of it", async () => {
+    const h = harness();
+    const call = { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_overview", arguments: {} } };
+    const res = await h.rpc("k-read", Array.from({ length: 11 }, (_, i) => ({ ...call, id: i })));
+    expect(res.status).toBe(400);
+    expect(h.sent.basin).toHaveLength(0);
   });
 
   it("rejects bad arguments as invalid params", async () => {

@@ -37,7 +37,8 @@ export function prepareQuery(sql: unknown): string {
   if (!/^(select|with)\b/i.test(body)) {
     throw new QueryRejected("Only SELECT statements are allowed");
   }
-  return /\blimit\s+\d+/i.test(body) ? body : `${body} LIMIT ${MAX_QUERY_ROWS}`;
+  // On its own line, so a trailing `-- comment` can't swallow it.
+  return /\blimit\s+\d+/i.test(body) ? body : `${body}\nLIMIT ${MAX_QUERY_ROWS}`;
 }
 
 /**

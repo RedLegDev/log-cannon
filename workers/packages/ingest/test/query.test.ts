@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BasinQueryError, JSON_ARG_LIMIT, propNumber, propString, queryBasin, sqlString } from "../src/basin-sql";
+import { BasinQueryError, JSON_ARG_LIMIT, MAX_BASIN_RESPONSE_BYTES, propNumber, propString, queryBasin, sqlString } from "../src/basin-sql";
 import {
   MAX_QUERY_ROWS,
   QueryRejected,
@@ -15,12 +15,16 @@ const ENV = { BASIN_SQL_TOKEN: "t", BASIN_SQL_ACCOUNT: "acct", BASIN_SQL_BUCKET:
 
 describe("prepareQuery", () => {
   it("adds the row cap only when there is no LIMIT", () => {
-    expect(prepareQuery("SELECT 1 FROM logs.events")).toBe(`SELECT 1 FROM logs.events LIMIT ${MAX_QUERY_ROWS}`);
+    expect(prepareQuery("SELECT 1 FROM logs.events")).toBe(`SELECT 1 FROM logs.events\nLIMIT ${MAX_QUERY_ROWS}`);
     expect(prepareQuery("select 1 from logs.events limit 5")).toBe("select 1 from logs.events limit 5");
   });
 
   it("strips a trailing semicolon before appending the cap", () => {
-    expect(prepareQuery("SELECT 1 FROM logs.events; ")).toBe(`SELECT 1 FROM logs.events LIMIT ${MAX_QUERY_ROWS}`);
+    expect(prepareQuery("SELECT 1 FROM logs.events; ")).toBe(`SELECT 1 FROM logs.events\nLIMIT ${MAX_QUERY_ROWS}`);
+  });
+
+  it("keeps the cap out of a trailing line comment", () => {
+    expect(prepareQuery("SELECT 1 FROM logs.events -- note").split("\n").at(-1)).toBe(`LIMIT ${MAX_QUERY_ROWS}`);
   });
 
   it("accepts WITH and rejects anything that isn't a read", () => {
@@ -65,6 +69,10 @@ describe("sqlString and property guards", () => {
   it("falls back to a regex over the raw text for top-level keys only", () => {
     expect(propString(["Path"])).toContain(`regexp_match(properties, '"Path":"([^"\\\\]*)"')`);
     expect(propString(["a", "b"]).split(" ELSE ")[1]).toBe("NULL END");
+  });
+
+  it("reads a malformed number on a large row as NULL, not a query error", () => {
+    expect(propNumber(["Version"]).split(" ELSE ")[1]).toMatch(/^TRY_CAST\(/);
   });
 
   it("escapes regex and SQL metacharacters in a key", () => {
@@ -158,6 +166,19 @@ describe("queryBasin", () => {
   it("is a 503, not a crash, when the token isn't set", async () => {
     await expect(queryBasin({}, "x")).rejects.toBeInstanceOf(BasinQueryError);
     await expect(queryBasin({}, "x")).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("refuses a response over the byte cap without buffering it", async () => {
+    const big = new Uint8Array(MAX_BASIN_RESPONSE_BYTES + 1).fill(32);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Blob([big]).stream()));
+    await expect(queryBasin(ENV, "x")).rejects.toMatchObject({ status: 413 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { headers: { "Content-Length": String(MAX_BASIN_RESPONSE_BYTES + 1) } }));
+    await expect(queryBasin(ENV, "x")).rejects.toMatchObject({ status: 413 });
+  });
+
+  it("treats Basin rate limiting as retryable", async () => {
+    reply(429, { success: false, errors: [{ code: 10429, message: "slow down" }] });
+    await expect(queryBasin(ENV, "x")).rejects.toMatchObject({ status: 503 });
   });
 
   it("reports a timeout as 504", async () => {

@@ -61,8 +61,11 @@ interface ToolResult {
 class InvalidParams extends Error {}
 
 const json = (data: unknown): ToolResult => ({
-  content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+  content: [{ type: "text", text: JSON.stringify(data) }],
 });
+
+/** JSON-RPC batches were dropped from MCP in 2025-06-18; kept for older clients, but bounded. */
+export const MAX_BATCH = 10;
 const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
 function str(args: Record<string, unknown>, k: string, required = false): string | undefined {
@@ -286,8 +289,10 @@ async function dispatch(req: RpcRequest, ctx: McpContext): Promise<RpcResponse |
   if (!req || typeof req !== "object" || req.jsonrpc !== "2.0" || typeof req.method !== "string") {
     return rpcError(req?.id, -32600, "Invalid Request");
   }
-  // Notifications (no id) get no response.
+  // Notifications (no id) get no response, and only `notifications/*`
+  // means anything as one: a tools/call without an id isn't run.
   const isNotification = req.id === undefined;
+  if (isNotification) return null;
   const id = req.id ?? null;
 
   switch (req.method) {
@@ -307,7 +312,7 @@ async function dispatch(req: RpcRequest, ctx: McpContext): Promise<RpcResponse |
       };
     }
     case "ping":
-      return isNotification ? null : { jsonrpc: "2.0", id, result: {} };
+      return { jsonrpc: "2.0", id, result: {} };
     case "tools/list":
       return {
         jsonrpc: "2.0",
@@ -330,7 +335,6 @@ async function dispatch(req: RpcRequest, ctx: McpContext): Promise<RpcResponse |
       }
     }
     default:
-      if (isNotification) return null;
       return rpcError(id, -32601, `Method not found: ${req.method}`);
   }
 }
@@ -362,7 +366,7 @@ export async function handleMcp(request: Request, ctx: McpContext): Promise<Resp
   }
 
   if (Array.isArray(body)) {
-    if (body.length === 0) {
+    if (body.length === 0 || body.length > MAX_BATCH) {
       return new Response(JSON.stringify(rpcError(null, -32600, "Invalid Request")), { status: 400, headers: JSON_HEADERS });
     }
     const out = (await Promise.all(body.map((r) => dispatch(r as RpcRequest, ctx)))).filter((r) => r !== null);
