@@ -12,6 +12,14 @@ import {
   type EnqueueFailure,
 } from "./timing";
 import { resolveQueueAckDeadlineMs, sendWithDeadline } from "./enqueue";
+import {
+  basinFailureCLEF,
+  basinWriteEnabled,
+  classifyFailure,
+  writeCopy,
+  type BasinCopy,
+  type LogStream,
+} from "./basin";
 
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
@@ -34,6 +42,16 @@ interface Env {
    * existed. See `src/enqueue.ts` for why it ships off.
    */
   QUEUE_ACK_DEADLINE_MS?: string | number;
+  /**
+   * v2 dual-write (refs #163). The Basin stream `log_events_v1`; absent until
+   * the `[[pipelines]]` binding is configured.
+   */
+  LOGS?: LogStream;
+  /**
+   * Exactly "true" copies every accepted request into `LOGS` after the queue
+   * has taken it. Anything else is off. See `src/basin.ts`.
+   */
+  BASIN_WRITE?: string;
 }
 
 interface QueuePayload {
@@ -541,6 +559,74 @@ export interface IngestRequest {
   route: string;
   /** The API key's name — the `logs.events.source` being written to. */
   source: string;
+  /** The API key's id, stamped on Basin rows as `key_id`. */
+  keyId: string;
+  /** When the request arrived; Basin rows carry it as `received_at`. */
+  receivedAt: Date;
+}
+
+/**
+ * Copy an accepted request into Basin, in `waitUntil` so it is off the response
+ * path. Call only after the queue accepted the payload: a request the queue
+ * refused becomes a 5xx the client retries, and copying it first would put the
+ * retry's rows into Basin twice.
+ *
+ * Never throws. A failure is reported on both channels, the way a lost enqueue
+ * is, on its own throttle budget.
+ */
+export function copyToBasin(
+  ingest: IngestRequest,
+  copy: Omit<BasinCopy, "source" | "keyId" | "receivedAt">,
+): void {
+  const { env, ctx } = ingest;
+  if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
+  const stream = env.LOGS;
+  ctx.waitUntil(
+    (async () => {
+      try {
+        await writeCopy(stream, {
+          ...copy,
+          source: ingest.source,
+          keyId: ingest.keyId,
+          receivedAt: ingest.receivedAt,
+        });
+      } catch (e) {
+        await reportBasinFailure(ingest, copy, e);
+      }
+    })(),
+  );
+}
+
+async function reportBasinFailure(
+  ingest: IngestRequest,
+  copy: Pick<BasinCopy, "format" | "body">,
+  error: unknown,
+): Promise<void> {
+  try {
+    const failure = {
+      route: ingest.route,
+      format: copy.format,
+      ingestSource: ingest.source,
+      bodyBytes: copy.body.byteLength,
+      stage: classifyFailure(error),
+      error: error instanceof Error ? error.message : String(error),
+    };
+    console.error(JSON.stringify({ event: "basin-copy-failed", ...failure }));
+
+    const telemetrySource = ingest.env.SLOW_REQUEST_SOURCE?.trim() ?? "";
+    if (!telemetrySource) return;
+    if (!shouldEmitTelemetry(Date.now(), "basin-failure")) return;
+    await ingest.env.INGEST_QUEUE.send({
+      format: "clef",
+      source: telemetrySource,
+      body: encodeBody(
+        new TextEncoder().encode(basinFailureCLEF(failure, new Date().toISOString())),
+      ),
+      contentType: "application/vnd.serilog.clef",
+    });
+  } catch (e) {
+    warnReportFailed(e);
+  }
 }
 
 /**
@@ -653,6 +739,7 @@ async function handleCLEF(ingest: IngestRequest): Promise<Response> {
         enrich,
       }),
     );
+    copyToBasin(ingest, { format: "clef", body: bodyBytes, contentType, enrich });
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
@@ -676,6 +763,7 @@ async function handleCLEF(ingest: IngestRequest): Promise<Response> {
       enrich,
     }),
   );
+  copyToBasin(ingest, { format: "clef", body: bodyBytes, contentType, enrich });
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -698,15 +786,22 @@ async function handleWebhook(ingest: IngestRequest): Promise<Response> {
   // follow-up if a webhook producer ever exceeds the cap.
   const preset = new URL(request.url).searchParams.get("preset") ?? "";
 
+  const contentType = request.headers.get("Content-Type") ?? "application/json";
   await enqueue(ingest, "webhook", 1, () =>
     env.INGEST_QUEUE.send({
       format: "webhook",
       source,
       body: encodeBody(bodyBytes),
-      contentType: request.headers.get("Content-Type") ?? "application/json",
+      contentType,
       preset: preset || undefined,
     }),
   );
+  copyToBasin(ingest, {
+    format: "webhook",
+    body: bodyBytes,
+    contentType,
+    preset: preset || undefined,
+  });
 
   return jsonResponse({ accepted: true });
 }
@@ -731,6 +826,7 @@ async function handleOTLP(
         contentType,
       }),
     );
+    copyToBasin(ingest, { format, body: bodyBytes, contentType });
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
@@ -762,6 +858,7 @@ async function handleOTLP(
       contentType,
     }),
   );
+  copyToBasin(ingest, { format, body: bodyBytes, contentType });
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
@@ -885,6 +982,7 @@ export default {
     // a path that never touches D1 or the queue. The auth span below is the
     // first I/O the request does.
     const trace = new RequestTrace();
+    const receivedAt = new Date();
 
     // Authenticate
     let key: APIKeyRecord;
@@ -920,7 +1018,16 @@ export default {
       | undefined;
     if (!format) return errorResponse(404, "Not found");
 
-    const ingest: IngestRequest = { request, env, ctx, trace, route: path, source };
+    const ingest: IngestRequest = {
+      request,
+      env,
+      ctx,
+      trace,
+      route: path,
+      source,
+      keyId: key.keyId,
+      receivedAt,
+    };
 
     let response: Response;
     try {

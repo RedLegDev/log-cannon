@@ -128,10 +128,16 @@ SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # The generic [vars] default above stays "0" on purpose. Self-hosters have
 # their own senders and their own queue tail, and this number is neither.
 QUEUE_ACK_DEADLINE_MS = "4000"
+BASIN_WRITE = "false"
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"
 binding = "INGEST_QUEUE"
+
+# v2 dual-write (refs #163): Basin stream log_events_v1. BASIN_WRITE gates it.
+[[env.production.pipelines]]
+stream = "77f5efc2ffb5428e9a49c6cf1444cd67"
+binding = "LOGS"
 
 [[env.production.d1_databases]]
 binding = "KEYS_DB"
