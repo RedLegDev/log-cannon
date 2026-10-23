@@ -1,6 +1,10 @@
 name = "log-cannon-ingest"
 main = "src/index.ts"
 compatibility_date = "2024-12-30"
+# Keep vars set on the deployed Worker that this file doesn't declare, such
+# as production's SUPABASE_PULL_PROJECTS (it names projects, and this repo is
+# public). Vars declared here still win on every deploy. Applies to all envs.
+keep_vars = true
 
 # Replace yourdomain.com with the zone that fronts your ingest hostname.
 #
@@ -158,9 +162,10 @@ BASIN_SQL_BUCKET = "log-cannon-events"
 ALERTS_MODE = "off"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
-# Supabase pull (refs #164). Empty until the shadow run starts; the token is
-# the SUPABASE_ACCESS_TOKEN secret.
-SUPABASE_PULL_PROJECTS = ""
+# Supabase pull (refs #164). SUPABASE_PULL_PROJECTS is deliberately not set
+# here: its "ref=source" pairs name projects and this repo is public. It is a
+# var set on the deployed Worker, kept across deploys by keep_vars below. The
+# token is the SUPABASE_ACCESS_TOKEN secret.
 SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs"
 
 [env.production.triggers]
