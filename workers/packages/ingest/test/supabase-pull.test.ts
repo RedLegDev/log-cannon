@@ -4,7 +4,7 @@
 // mocked fetch that honours the endpoint's semantics: the iso window is
 // second-granular and inclusive, the SQL keyset is exact.
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireLease } from "../src/alerts/store";
 import type { LogStream } from "../src/basin";
 import { assertRowValid, type LogRow } from "../src/parse/row";
@@ -661,6 +661,28 @@ describe("runSupabasePull", () => {
       MaxReadLagSeconds: 0,
       Tables: [],
     });
+  });
+});
+
+describe("the real fetch", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("calls the global fetch unbound, as workerd requires", async () => {
+    // workerd throws "Illegal invocation" when fetch runs with any `this` but
+    // the global scope; a fetch kept on an object and called as obj.fetch()
+    // did exactly that in production on 2026-10-23.
+    const h = harness();
+    vi.spyOn(globalThis, "fetch").mockImplementation(function (this: unknown, input, init) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation: function called with incorrect `this` reference.");
+      return h.api.fetch(input, init);
+    });
+    const res = await runSupabasePull(h.pullEnv, {
+      now: () => new Date(),
+      sleep: async () => {},
+      emit: async () => {},
+      apiUrl: "https://api.example.test",
+    });
+    expect(res.results.map((r) => r.error ?? "ok")).toEqual(["ok"]);
   });
 });
 

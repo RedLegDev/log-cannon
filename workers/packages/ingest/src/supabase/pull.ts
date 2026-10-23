@@ -148,7 +148,9 @@ export async function runSupabasePull(env: SupabasePullEnv, deps: PullDeps): Pro
     const api: ApiClient = {
       baseUrl: deps.apiUrl ?? DEFAULT_API_URL,
       token,
-      fetch: deps.fetch ?? fetch,
+      // Wrapped: called as api.fetch(), the bare global would run with `this`
+      // set to api, which workerd rejects as an illegal invocation.
+      fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
       sleep: deps.sleep ?? ((ms) => scheduler.wait(ms)),
     };
     const ctx: TableCtx = { db: env.KEYS_DB, stream, api, limits, deps, pastDeadline: () => clock() - started >= TICK_DEADLINE_MS };
