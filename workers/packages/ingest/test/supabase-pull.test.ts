@@ -20,7 +20,7 @@ import {
   type ApiClient,
   type Row,
 } from "../src/supabase/api";
-import { mapLevel, propertyName, toRow } from "../src/supabase/event";
+import { keepEdgeProperty, mapLevel, propertyName, toRow } from "../src/supabase/event";
 import { DEFAULT_LIMITS, parseProjects, runSupabasePull, summaryLine, type PullDeps, type PullLimits, type SupabasePullEnv } from "../src/supabase/pull";
 
 const REF = "abcdefghijklmnopqrst";
@@ -313,6 +313,15 @@ describe("edge-row trim", () => {
     const json = JSON.stringify(row.properties);
     expect(json).not.toContain("203.0.113.10");
     expect(Object.keys(row.properties).filter((k) => k.startsWith("sb_request_cf_"))).toEqual([]);
+  });
+
+  it("drops a connecting IP wherever it sits, even beside a kept header", () => {
+    for (const k of ["sb_client_ip", "sb_request_x_forwarded_for", "sb_metadata_x_real_ip", "sb_request_cf_connecting_ip"]) {
+      expect(keepEdgeProperty(k), k).toBe(false);
+    }
+    expect(keepEdgeProperty("sb_request_headers_user_agent")).toBe(true);
+    expect(keepEdgeProperty("sb_request_pathname")).toBe(true);
+    expect(keepEdgeProperty("sb_response_headers_date")).toBe(false);
   });
 
   it("leaves the other tables' properties alone", () => {
