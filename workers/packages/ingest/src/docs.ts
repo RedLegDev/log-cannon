@@ -230,7 +230,7 @@ which is Apache DataFusion SQL, not ClickHouse. Ingest is unchanged.
 | received_at | timestamp | When the Worker accepted it. Ingest lag is received_at - ts |
 | source | string | Key name, or OTLP service.name / webhook preset override |
 | key_id | string | The API key that sent it |
-| format | string | clef, otlp, webhook, api |
+| format | string | clef, otlp, webhook, api, supabase |
 | kind | string | log or span |
 | level | string | Verbose, Debug, Information, Warning, Error, Fatal |
 | message | string | Rendered message |
@@ -240,6 +240,20 @@ which is Apache DataFusion SQL, not ClickHouse. Ingest is unchanged.
 | trace_id, span_id, parent_span_id | string | Tracing ids (hex) |
 | duration_ms | double | Span duration |
 | properties | json (text) | Structured properties |
+
+## Supabase platform logs (format = 'supabase')
+
+Pulled from the Supabase Management API once a minute, one source per project
+(\`<name>-supabase\`). \`id\` is the Supabase row id, \`key_id\` is \`supabase-pull\`, and
+\`message\` is the Supabase event_message. Properties: \`Source\` (same as the column),
+\`LogTable\` (postgres_logs, auth_logs, function_logs, function_edge_logs), \`ProjectRef\`,
+\`sb_id\`, and every log attribute flattened to \`sb_<path>\` (request.path → \`sb_request_path\`).
+function_edge_logs rows keep method, path, URL, status, function and execution ids,
+timing and user agent (\`sb_request_method\`, \`sb_request_pathname\`, \`sb_response_status_code\`,
+\`sb_function_id\`, \`sb_execution_id\`, \`sb_execution_time_ms\`); Cloudflare request context,
+most headers and connecting IPs are dropped so the row stays under the 2000-byte limit.
+Delivery is at-least-once: count(DISTINCT id) when an exact count matters. The puller's
+own per-run summary is source \`supabase-pull\` (Error level when a table failed).
 
 ## Things that differ from ClickHouse
 
