@@ -18,6 +18,8 @@ import {
   acquireLease,
   destinationsByIds,
   enabledAlerts,
+  markErrorReported,
+  markTriggered,
   parseJsonArray,
   pruneEvaluations,
   recordEvaluation,
@@ -51,9 +53,20 @@ export function timestampLiteral(at: Date): string {
   return `TIMESTAMP '${at.toISOString().replace(/\.\d{3}Z$/, "Z")}'`;
 }
 
-/** Replace every `now()` call with a fixed instant. */
+const CLOCK = /\b(now\s*\(\s*\)|current_timestamp(?:\s*\(\s*\))?|current_date(?:\s*\(\s*\))?)/gi;
+
+/**
+ * Replace every clock call (`now()`, `current_timestamp`, `current_date`) with
+ * a fixed instant, outside string literals, so a quoted 'now()' in a LIKE
+ * pattern is left alone.
+ */
 export function pinNow(sql: string, at: Date): string {
-  return sql.replace(/\bnow\s*\(\s*\)/gi, timestampLiteral(at));
+  const ts = timestampLiteral(at);
+  const date = `DATE '${at.toISOString().slice(0, 10)}'`;
+  return sql
+    .split(/('(?:[^']|'')*')/)
+    .map((part, i) => (i % 2 ? part : part.replace(CLOCK, (m) => (/^current_date/i.test(m) ? date : ts))))
+    .join("");
 }
 
 /**
@@ -72,10 +85,18 @@ export function isDue(alert: AlertRow, now: Date): boolean {
 export const ALERT_CONCURRENCY = 6;
 export const ALERT_QUERY_TIMEOUT_MS = 30_000;
 const LEASE_NAME = "alerts";
-const LEASE_TTL_MS = 5 * 60_000;
+export const LEASE_TTL_MS = 5 * 60_000;
+/**
+ * Stop starting alerts this long into a tick. The slowest single evaluation
+ * is a 30 s query plus a 30 s delivery, so work started before the deadline
+ * finishes inside the lease; anything left over is still due next tick.
+ */
+export const TICK_DEADLINE_MS = LEASE_TTL_MS - 90_000;
 
 export interface AlertDeps {
   now: () => Date;
+  /** Wall clock for the tick deadline; defaults to Date.now. */
+  clock?: () => number;
   /** One CLEF line per event, for the alerts telemetry source. Never throws. */
   emit: (lines: string[]) => Promise<void>;
   fetch?: typeof fetch;
@@ -93,6 +114,8 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
   if (mode === "off") return { mode, skipped: "off", due: 0, evaluated: [] };
 
   const now = deps.now();
+  const clock = deps.clock ?? Date.now;
+  const started = clock();
   const holder = crypto.randomUUID();
   if (!(await acquireLease(env.KEYS_DB, LEASE_NAME, holder, now.getTime(), LEASE_TTL_MS))) {
     return { mode, skipped: "lease-held", due: 0, evaluated: [] };
@@ -104,12 +127,14 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
     const lines: string[] = [];
     let next = 0;
     const worker = async () => {
-      while (next < due.length) {
+      while (next < due.length && clock() - started < TICK_DEADLINE_MS) {
         const alert = due[next++];
         const e = await evaluateAlert(env, alert, mode, now, lag, deps.fetch);
         evaluated.push(e);
-        lines.push(...telemetryFor(alert, e, now));
+        const report = telemetryFor(alert, e, now);
+        lines.push(...report);
         try {
+          if (e.status === "error" && report.length) await markErrorReported(env.KEYS_DB, alert.id, now);
           await recordEvaluation(env.KEYS_DB, e);
         } catch (err) {
           console.error(JSON.stringify({ event: "alert-record-failed", alertId: alert.id, error: String(err) }));
@@ -165,7 +190,12 @@ export async function evaluateAlert(
   if (last && now.getTime() - Date.parse(last) < alert.cooldown_seconds * 1000) {
     return done({ status: "cooldown", value: row });
   }
-  if (mode === "shadow") return done({ status: "triggered", value: row, wouldSend: true });
+  if (mode === "shadow") {
+    await markTriggered(env.KEYS_DB, alert.id, "shadow", now).catch((err) =>
+      console.error(JSON.stringify({ event: "alert-cooldown-write-failed", alertId: alert.id, error: String(err) })),
+    );
+    return done({ status: "triggered", value: row, wouldSend: true });
+  }
 
   let destinations: Awaited<ReturnType<typeof destinationsByIds>> = [];
   try {
@@ -174,6 +204,13 @@ export async function evaluateAlert(
     console.error(JSON.stringify({ event: "alert-destinations-failed", alertId: alert.id, error: String(e) }));
   }
   const delivery = await deliverAlert(env, alert, destinations, row, now, doFetch);
+  if (delivery.delivered > 0) {
+    // First, and on its own: the cooldown is what stops a resend every tick.
+    // One retry, because a lost write here means duplicate pages.
+    await markTriggered(env.KEYS_DB, alert.id, "live", now)
+      .catch(() => markTriggered(env.KEYS_DB, alert.id, "live", now))
+      .catch((err) => console.error(JSON.stringify({ event: "alert-cooldown-write-failed", alertId: alert.id, error: String(err) })));
+  }
   const failed = delivery.attempts.filter((a) => !a.ok);
   return done({
     status: "triggered",
@@ -189,17 +226,20 @@ export async function evaluateAlert(
   });
 }
 
+export const ERROR_REPORT_INTERVAL_MS = 3_600_000;
+
 /**
  * The CLEF lines one evaluation contributes, in v1's `[id] …` message shape so
  * the "an alert cannot evaluate" alert keeps its pattern. An error reports on
- * the first failing run and then once an hour while it persists; a send (or a
- * shadow would-send) always reports.
+ * the first failing run and then at most hourly while it persists; a send (or
+ * a shadow would-send) always reports.
  */
 export function telemetryFor(alert: AlertRow, e: Evaluation, now: Date): string[] {
   const t = now.toISOString();
   const base = { "@t": t, AlertId: alert.id, AlertName: alert.name, Mode: e.mode };
   if (e.status === "error") {
-    const fresh = alert.last_status !== "error" || now.getUTCMinutes() === 0;
+    const last = alert.last_error_reported_at ? Date.parse(alert.last_error_reported_at) : NaN;
+    const fresh = alert.last_status !== "error" || !(now.getTime() - last < ERROR_REPORT_INTERVAL_MS);
     if (!fresh) return [];
     return [JSON.stringify({ ...base, "@l": "Warning", "@m": `[${alert.id}] ${e.error}`, "@mt": "[{AlertId}] {Error}", Error: e.error })];
   }

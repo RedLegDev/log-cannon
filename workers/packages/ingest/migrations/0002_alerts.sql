@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS alerts (
   last_run_at              TEXT,
   last_status              TEXT,
   last_value               TEXT,
-  last_error               TEXT
+  last_error               TEXT,
+  -- When an evaluation error was last reported as an event (hourly throttle).
+  last_error_reported_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS alert_destinations (

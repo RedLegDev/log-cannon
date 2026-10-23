@@ -4,7 +4,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConditionError, evaluateCondition } from "../src/alerts/condition";
 import { deriveService } from "../src/alerts/deliver";
-import { isDue, pinNow, runAlerts, telemetryFor, type AlertsEnv } from "../src/alerts/evaluate";
+import { LEASE_TTL_MS, TICK_DEADLINE_MS, isDue, pinNow, runAlerts, telemetryFor, type AlertsEnv } from "../src/alerts/evaluate";
 import { acquireLease, getAlert, insertAlert, insertDestination, type AlertRow } from "../src/alerts/store";
 
 describe("evaluateCondition (alert-worker's grammar)", () => {
@@ -54,6 +54,14 @@ describe("pinNow", () => {
     );
     expect(pinNow("SELECT known_now() FROM t", at)).toBe("SELECT known_now() FROM t");
   });
+
+  it("pins current_timestamp and current_date too, and leaves string literals alone", () => {
+    const at = new Date("2026-10-23T14:00:00Z");
+    expect(pinNow("WHERE ts > current_timestamp - INTERVAL '1 hour' AND ts >= current_date AND m LIKE '%now()%'", at)).toBe(
+      "WHERE ts > TIMESTAMP '2026-10-23T14:00:00Z' - INTERVAL '1 hour' AND ts >= DATE '2026-10-23' AND m LIKE '%now()%'",
+    );
+    expect(pinNow("WHERE m = 'it''s now()' AND ts > now()", at)).toBe("WHERE m = 'it''s now()' AND ts > TIMESTAMP '2026-10-23T14:00:00Z'");
+  });
 });
 
 describe("deriveService", () => {
@@ -86,6 +94,7 @@ function alertRow(over: Partial<AlertRow> = {}): AlertRow {
     last_status: null,
     last_value: null,
     last_error: null,
+    last_error_reported_at: null,
     ...over,
   };
 }
@@ -94,6 +103,7 @@ describe("isDue", () => {
   it("runs a never-run alert, and a 60 s alert on every tick despite jitter", () => {
     expect(isDue(alertRow(), NOW)).toBe(true);
     expect(isDue(alertRow({ last_run_at: new Date(NOW.getTime() - 58_000).toISOString() }), NOW)).toBe(true);
+    expect(isDue(alertRow({ last_run_at: new Date(NOW.getTime() - 49_000).toISOString() }), NOW)).toBe(false);
     expect(isDue(alertRow({ interval_seconds: 300, last_run_at: new Date(NOW.getTime() - 120_000).toISOString() }), NOW)).toBe(false);
   });
 });
@@ -284,6 +294,42 @@ describe("runAlerts against D1", () => {
     expect(basinQueries).toHaveLength(1);
   });
 
+  it("live: the cooldown holds even when recording the evaluation fails", async () => {
+    const id = await addAlert();
+    await env.KEYS_DB.prepare("ALTER TABLE alert_evaluations RENAME TO alert_evaluations_off").run();
+    try {
+      await tick(baseEnv({ ALERTS_MODE: "live" }));
+    } finally {
+      await env.KEYS_DB.prepare("ALTER TABLE alert_evaluations_off RENAME TO alert_evaluations").run();
+    }
+    expect(sent).toHaveLength(1);
+    expect((await getAlert(env.KEYS_DB, id))?.last_triggered_at).toBe(NOW.toISOString());
+    // last_run_at never got written, so it is due again, but the cooldown stops a resend.
+    const t2 = await tick(baseEnv({ ALERTS_MODE: "live" }), new Date(NOW.getTime() + 60_000));
+    expect(t2.evaluated[0]).toMatchObject({ status: "cooldown" });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("stops starting alerts at the tick deadline; the rest stay due", async () => {
+    for (let i = 0; i < 3; i++) await addAlert({ id: `4444444${i}-4444-4444-8444-444444444444` });
+    let t = 0;
+    const res = await runAlerts(baseEnv({ ALERTS_MODE: "shadow" }), {
+      now: () => NOW,
+      clock: () => (t += TICK_DEADLINE_MS / 2),
+      emit: async () => {},
+    });
+    expect(res.due).toBe(3);
+    expect(res.evaluated.length).toBeLessThan(3);
+  });
+
+  it("takes over an expired lease", async () => {
+    await addAlert();
+    expect(await acquireLease(env.KEYS_DB, "alerts", "crashed", NOW.getTime() - LEASE_TTL_MS - 1, LEASE_TTL_MS)).toBe(true);
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow" }));
+    expect(t.skipped).toBeUndefined();
+    expect(basinQueries).toHaveLength(1);
+  });
+
   it("skips the tick while another holds the lease", async () => {
     await addAlert();
     expect(await acquireLease(env.KEYS_DB, "alerts", "other", NOW.getTime(), 60_000)).toBe(true);
@@ -294,10 +340,12 @@ describe("runAlerts against D1", () => {
 });
 
 describe("telemetryFor", () => {
-  it("reports a persisting error again on the hour", () => {
+  it("reports an error when it starts, then at most hourly while it persists", () => {
     const e = { alertId: "a1", evaluatedAt: NOW, mode: "shadow" as const, status: "error" as const, wouldSend: false, sent: false, value: null, error: "Query error: x", durationMs: 1 };
-    expect(telemetryFor(alertRow({ last_status: "error" }), e, new Date("2026-10-23T15:05:10Z"))).toHaveLength(0);
-    expect(telemetryFor(alertRow({ last_status: "ok" }), e, new Date("2026-10-23T15:05:10Z"))).toHaveLength(1);
-    expect(telemetryFor(alertRow({ last_status: "error" }), e, new Date("2026-10-23T16:00:10Z"))).toHaveLength(1);
+    const at = new Date("2026-10-23T15:05:10Z");
+    expect(telemetryFor(alertRow({ last_status: "ok" }), e, at)).toHaveLength(1);
+    expect(telemetryFor(alertRow({ last_status: "error", last_error_reported_at: "2026-10-23T14:20:00Z" }), e, at)).toHaveLength(0);
+    expect(telemetryFor(alertRow({ last_status: "error", last_error_reported_at: "2026-10-23T14:05:00Z" }), e, at)).toHaveLength(1);
+    expect(telemetryFor(alertRow({ last_status: "error", last_error_reported_at: null }), e, at)).toHaveLength(1);
   });
 });

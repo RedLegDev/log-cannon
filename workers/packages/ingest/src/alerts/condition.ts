@@ -29,7 +29,7 @@ export function evaluateCondition(condition: string, row: Record<string, unknown
     if (at === -1) continue;
     const name = c.slice(0, at).trim();
     const rhs = c.slice(at + op.length).trim();
-    if (!(name in row)) throw new ConditionError(`variable ${name} not found in result`);
+    if (!Object.hasOwn(row, name)) throw new ConditionError(`variable ${name} not found in result`);
     const value = toNumber(row[name]);
     if (value === null) {
       throw new ConditionError(`cannot convert ${name} (${JSON.stringify(row[name])}) to number`);

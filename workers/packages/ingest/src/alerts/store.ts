@@ -20,6 +20,7 @@ export interface AlertRow {
   last_status: string | null;
   last_value: string | null;
   last_error: string | null;
+  last_error_reported_at: string | null;
 }
 
 export interface DestinationRow {
@@ -196,14 +197,37 @@ export async function deleteDestination(db: D1Database, id: string): Promise<boo
   return r.meta.changes > 0;
 }
 
+/** Largest first-row JSON kept on an evaluation; D1 rows are capped and the readout only needs a glance. */
+export const MAX_VALUE_CHARS = 4000;
+
+export function valueJson(v: Record<string, unknown> | null): string | null {
+  if (!v) return null;
+  const s = JSON.stringify(v);
+  return s.length <= MAX_VALUE_CHARS ? s : JSON.stringify({ truncated: true, json: s.slice(0, MAX_VALUE_CHARS) });
+}
+
 /**
- * Record one evaluation: the log row, plus the alert's latest-run columns and,
- * when it fired, the cooldown column for its mode. One batch, so the log and
- * the alert row can't disagree.
+ * Start an alert's cooldown. Live mode calls this the moment a delivery is
+ * accepted, on its own, so a later failure recording the evaluation can't
+ * leave the alert with no cooldown and sending every tick.
+ */
+export async function markTriggered(db: D1Database, id: string, mode: "shadow" | "live", at: Date): Promise<void> {
+  const col = mode === "live" ? "last_triggered_at" : "shadow_last_triggered_at";
+  await db.prepare(`UPDATE alerts SET ${col} = ? WHERE id = ?`).bind(at.toISOString(), id).run();
+}
+
+export async function markErrorReported(db: D1Database, id: string, at: Date): Promise<void> {
+  await db.prepare("UPDATE alerts SET last_error_reported_at = ? WHERE id = ?").bind(at.toISOString(), id).run();
+}
+
+/**
+ * Record one evaluation: the log row plus the alert's latest-run columns, in
+ * one batch so they can't disagree. The cooldown is set separately
+ * (markTriggered) and first.
  */
 export async function recordEvaluation(db: D1Database, e: Evaluation): Promise<void> {
   const at = e.evaluatedAt.toISOString();
-  const value = e.value ? JSON.stringify(e.value) : null;
+  const value = valueJson(e.value);
   const stmts = [
     db
       .prepare(
@@ -215,10 +239,6 @@ export async function recordEvaluation(db: D1Database, e: Evaluation): Promise<v
       .prepare("UPDATE alerts SET last_run_at = ?, last_status = ?, last_value = ?, last_error = ? WHERE id = ?")
       .bind(at, e.status, value, e.error, e.alertId),
   ];
-  const cooldownColumn = e.mode === "live" ? (e.sent ? "last_triggered_at" : null) : e.wouldSend ? "shadow_last_triggered_at" : null;
-  if (cooldownColumn) {
-    stmts.push(db.prepare(`UPDATE alerts SET ${cooldownColumn} = ? WHERE id = ?`).bind(at, e.alertId));
-  }
   await db.batch(stmts);
 }
 

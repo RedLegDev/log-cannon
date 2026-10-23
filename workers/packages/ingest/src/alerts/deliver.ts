@@ -19,6 +19,8 @@ type Fetch = typeof fetch;
 
 const EMAIL_TIMEOUT_MS = 30_000;
 const DEFAULT_WEBHOOK_TIMEOUT_S = 10;
+/** One slow webhook must not hold the evaluator's tick past its lease. */
+const MAX_WEBHOOK_TIMEOUT_S = 30;
 
 /**
  * Send to the alert's destinations, falling back to its legacy recipient list
@@ -107,11 +109,14 @@ export function webhookPayload(alert: AlertRow, row: Record<string, unknown>, no
 }
 
 async function sendWebhook(cfg: WebhookConfig, payload: unknown, doFetch: Fetch): Promise<void> {
-  const timeout = cfg.timeout_seconds && cfg.timeout_seconds > 0 ? cfg.timeout_seconds : DEFAULT_WEBHOOK_TIMEOUT_S;
+  const timeout = Math.min(cfg.timeout_seconds && cfg.timeout_seconds > 0 ? cfg.timeout_seconds : DEFAULT_WEBHOOK_TIMEOUT_S, MAX_WEBHOOK_TIMEOUT_S);
+  const method = (cfg.method || "POST").toUpperCase();
   const res = await doFetch(cfg.url!, {
-    method: cfg.method || "POST",
-    headers: { ...cfg.headers, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    method,
+    // v1 lets a destination's headers override Content-Type.
+    headers: { "Content-Type": "application/json", ...cfg.headers },
+    // fetch refuses a body on GET/HEAD; Go sent one. Nothing reads it there.
+    body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(payload),
     signal: AbortSignal.timeout(timeout * 1000),
   });
   if (res.status >= 400) throw new Error(`webhook error (status ${res.status}): ${(await res.text()).slice(0, 300)}`);
