@@ -128,7 +128,7 @@ SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # The generic [vars] default above stays "0" on purpose. Self-hosters have
 # their own senders and their own queue tail, and this number is neither.
 QUEUE_ACK_DEADLINE_MS = "4000"
-BASIN_WRITE = "false"
+BASIN_WRITE = "true"
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"
