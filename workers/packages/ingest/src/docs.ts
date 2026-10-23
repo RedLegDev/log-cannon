@@ -259,6 +259,10 @@ own per-run summary is source \`supabase-pull\` (Error level when a table failed
 
 - **Data is 1-2 minutes behind.** Rows land when the sink rolls (60 s) and commits.
   For "nothing arrived" checks, end the window at now() - INTERVAL '3 minutes'.
+- **During a Basin write outage, rows arrive late, not never.** The Worker retries,
+  then holds what Basin won't take and replays it oldest first once it recovers. Those
+  rows keep their id and received_at, so a "nothing arrived" window can fill in after the
+  fact. Delivery is at-least-once: count(DISTINCT id) when an exact count matters.
 - **json_get_* fails the whole query if any row's properties is over 2000 bytes.**
   Guard it: \`CASE WHEN octet_length(properties) <= 2000 THEN json_get_str(properties, 'k') END\`.
   For big rows, \`(regexp_match(properties, '"k":"([^"]*)"'))[1]\` reads a top-level string.

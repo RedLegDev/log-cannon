@@ -5,7 +5,9 @@
 // `log_events_v1`. The copy is best-effort and off the response path: it runs
 // in `waitUntil` after the queue has accepted the payload, so it can neither
 // slow nor fail an ingest request. A failure is reported, never retried into
-// the client.
+// the client. A send is retried briefly; rows the stream still won't take are
+// spilled to R2 (`BASIN_SPILL`) and replayed by the cron (refs #166, see
+// `basin-spill.ts`).
 
 import { parseCLEF } from "./parse/clef";
 import { parseOTLPLogs, parseOTLPTraces } from "./parse/otlp";
@@ -109,46 +111,177 @@ export interface BasinOutcome {
   rows: number;
   skipped: number;
   sends: number;
+  /** Send attempts retried, across the whole copy. */
+  retries: number;
+  /** Rows written to the spill bucket for the replay to send later. */
+  spilled: number;
+  /** Rows neither sent nor spilled: no bucket, or its put failed too. */
+  lost: number;
 }
 
-/** A copy that lost rows. `stage` says whether a body failed to parse (its
- * siblings were still sent) or a send failed (the rows after it weren't). */
+/** A copy that didn't send every row. `stage` says whether a body failed to
+ * parse (its siblings were still sent) or a send failed (the rows after it
+ * were spilled, or lost if the spill failed too). */
 export class BasinCopyError extends Error {
   override name = "BasinCopyError";
   constructor(
     readonly stage: "parse" | "send",
     message: string,
     readonly outcome: BasinOutcome,
+    /** Why the unsent rows weren't spilled, when they weren't. */
+    readonly spillError?: string,
   ) {
     super(message);
   }
 }
 
 /**
+ * Backoff before each retry of a failed send. The retries are a budget for the
+ * whole copy, not per batch: a stream that is down fails every batch, and the
+ * copy has to finish (spill included) inside `waitUntil`'s ~30 s after the
+ * response. Worst case is four attempts and 7.5 s of waiting.
+ */
+export const SEND_RETRY_DELAYS_MS: readonly number[] = [500, 2_000, 5_000];
+
+/**
+ * Latest a retry may start, in milliseconds after the copy began. Leaves well
+ * over half of `waitUntil`'s budget for the rest of the parse, the gzip and the
+ * spill put, which is the step that actually saves the rows.
+ */
+export const SEND_RETRY_BUDGET_MS = 12_000;
+
+/** Retry delays and sleep. Mutable so tests can run the retries without
+ * waiting seconds of real time; nothing else should touch it. */
+export const sendRetry = {
+  delaysMs: SEND_RETRY_DELAYS_MS,
+  sleep: (ms: number): Promise<void> => scheduler.wait(ms),
+};
+
+/** The part of the `BASIN_SPILL` R2 binding a copy writes with. */
+export interface SpillBucket {
+  put(key: string, value: Blob, options?: R2PutOptions): Promise<unknown>;
+}
+
+export const SPILL_PREFIX = "spill/";
+
+/** `spill/<received_at ISO>/<uuid>.ndjson.gz`: a lexical list is oldest first. */
+export function spillKey(receivedAt: Date): string {
+  return `${SPILL_PREFIX}${receivedAt.toISOString()}/${crypto.randomUUID()}.ndjson.gz`;
+}
+
+/** The receive time a spill key was named for, or NaN for a foreign key. */
+export function spillKeyTime(key: string): number {
+  return Date.parse(key.slice(SPILL_PREFIX.length).split("/")[0] ?? "");
+}
+
+/**
+ * Rows serialised as NDJSON into a gzip stream as they arrive, so a large copy
+ * holds its compressed spill in memory rather than every parsed row.
+ */
+export class SpillWriter {
+  rows = 0;
+  private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
+  private readonly out: Promise<ArrayBuffer>;
+
+  constructor() {
+    const gz = new CompressionStream("gzip");
+    this.writer = gz.writable.getWriter();
+    this.out = new Response(gz.readable).arrayBuffer();
+  }
+
+  async add(rows: LogRow[]): Promise<void> {
+    if (!rows.length) return;
+    await this.writer.write(new TextEncoder().encode(`${rows.map((r) => JSON.stringify(r)).join("\n")}\n`));
+    this.rows += rows.length;
+  }
+
+  async finish(): Promise<Blob> {
+    await this.writer.close();
+    return new Blob([await this.out]);
+  }
+}
+
+/** Gzipped NDJSON of `rows`, as a spill object holds them. */
+export async function gzipRows(rows: LogRow[]): Promise<Blob> {
+  const w = new SpillWriter();
+  await w.add(rows);
+  return w.finish();
+}
+
+/** Rows from a spill object's body. */
+export async function gunzipRows(body: ReadableStream<Uint8Array>): Promise<LogRow[]> {
+  const text = await new Response(body.pipeThrough(new DecompressionStream("gzip"))).text();
+  return text.split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l) as LogRow);
+}
+
+export interface CopyOptions {
+  /** Where rows go when the stream stays down. Absent loses them, reported. */
+  spill?: SpillBucket;
+}
+
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
  * Parse and send one request's copy, a chunk at a time. A chunk that fails to
  * parse is skipped and the rest still go out, the way the consumer fails one
- * queue message and not its siblings. A failed send stops the copy, because
- * the stream is what's down. Either way the outcome so far is reported
- * through a BasinCopyError.
+ * queue message and not its siblings.
+ *
+ * A failed send is retried from the copy's budget (`SEND_RETRY_DELAYS_MS`).
+ * Once that is spent the stream is taken to be down: nothing more is sent, and
+ * every row not yet sent (the failing batch, the batches behind it and the
+ * bodies not yet parsed) goes to one spill object for the cron to replay. A
+ * row is sent or spilled, never both. Whatever happened is reported through a
+ * BasinCopyError, whose outcome counts the rows spilled and lost.
  */
 export async function writeCopy(
   stream: LogStream,
   copy: BasinCopy,
+  opts: CopyOptions = {},
 ): Promise<BasinOutcome> {
-  const out: BasinOutcome = { rows: 0, skipped: 0, sends: 0 };
+  const out: BasinOutcome = { rows: 0, skipped: 0, sends: 0, retries: 0, spilled: 0, lost: 0 };
   const batcher = new RowBatcher();
+  // `Date.now()` advances across I/O, and every send and sleep is I/O.
+  const started = Date.now();
   let parseError: string | undefined;
+  let sendError: string | undefined;
+  let spill: SpillWriter | undefined;
+  let unspilled = 0;
+
+  const send = async (batch: LogRow[]): Promise<boolean> => {
+    for (;;) {
+      try {
+        await stream.send(batch);
+        return true;
+      } catch (e) {
+        const delay = sendRetry.delaysMs[out.retries];
+        if (delay === undefined || Date.now() - started + delay > SEND_RETRY_BUDGET_MS) {
+          sendError = message(e);
+          return false;
+        }
+        out.retries++;
+        await sendRetry.sleep(delay);
+      }
+    }
+  };
+
+  const keep = async (rows: LogRow[]) => {
+    if (!opts.spill) {
+      unspilled += rows.length;
+      return;
+    }
+    spill ??= new SpillWriter();
+    await spill.add(rows);
+  };
 
   const flush = async () => {
     while (batcher.ready.length > 0) {
       const batch = batcher.ready.shift()!;
-      try {
-        await stream.send(batch);
-      } catch (e) {
-        throw new BasinCopyError("send", e instanceof Error ? e.message : String(e), out);
+      if (sendError === undefined && (await send(batch))) {
+        out.sends++;
+        out.rows += batch.length;
+      } else {
+        await keep(batch);
       }
-      out.sends++;
-      out.rows += batch.length;
     }
   };
 
@@ -157,7 +290,7 @@ export async function writeCopy(
     try {
       parsed = parseBody(copy, body);
     } catch (e) {
-      parseError ??= e instanceof Error ? e.message : String(e);
+      parseError ??= message(e);
       out.skipped++;
       continue;
     }
@@ -168,6 +301,26 @@ export async function writeCopy(
   batcher.cut();
   await flush();
 
+  if (sendError !== undefined) {
+    let spillError: string | undefined;
+    if (!opts.spill) {
+      spillError = "no spill bucket bound";
+      out.lost = unspilled;
+    } else if (spill) {
+      try {
+        const blob = await spill.finish();
+        await opts.spill.put(spillKey(copy.receivedAt), blob, {
+          httpMetadata: { contentType: "application/x-ndjson" },
+          customMetadata: { rows: String(spill.rows) },
+        });
+        out.spilled = spill.rows;
+      } catch (e) {
+        spillError = message(e);
+        out.lost = spill.rows;
+      }
+    }
+    throw new BasinCopyError("send", sendError, out, spillError);
+  }
   if (parseError !== undefined) throw new BasinCopyError("parse", parseError, out);
   return out;
 }
@@ -179,16 +332,27 @@ export interface BasinFailure {
   bodyBytes: number;
   stage: "parse" | "send";
   error: string;
+  /** Rows saved to the spill bucket for the replay. */
+  spilledRows?: number;
+  /** Rows neither sent nor spilled. Non-zero is data loss. */
+  lostRows?: number;
+  /** Why the spill didn't happen, when it didn't. */
+  spillError?: string;
 }
 
 export function classifyFailure(e: unknown): BasinFailure["stage"] {
   return e instanceof BasinCopyError ? e.stage : "send";
 }
 
+/**
+ * Error only when rows are gone. A send failure whose rows all reached the
+ * spill bucket is a Warning, like an unparseable body: the replay sends them.
+ */
 export function basinFailureCLEF(f: BasinFailure, at: string): string {
+  const safe = f.stage === "parse" || (f.spilledRows !== undefined && !f.lostRows);
   return `${JSON.stringify({
     "@t": at,
-    "@l": f.stage === "send" ? "Error" : "Warning",
+    "@l": safe ? "Warning" : "Error",
     "@mt":
       "Basin copy failed at {Stage}: {Route} for {IngestSource}: {Error}",
     Stage: f.stage,
@@ -197,5 +361,8 @@ export function basinFailureCLEF(f: BasinFailure, at: string): string {
     IngestSource: f.ingestSource,
     BodyBytes: f.bodyBytes,
     Error: f.error,
+    SpilledRows: f.spilledRows,
+    LostRows: f.lostRows,
+    SpillError: f.spillError,
   })}\n`;
 }

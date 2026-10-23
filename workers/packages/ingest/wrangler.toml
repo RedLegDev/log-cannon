@@ -180,6 +180,12 @@ binding = "INGEST_QUEUE"
 stream = "77f5efc2ffb5428e9a49c6cf1444cd67"
 binding = "LOGS"
 
+# Basin copies the stream wouldn't take after retries (refs #166), replayed by
+# the cron. Create with: wrangler r2 bucket create log-cannon-basin-spill
+[[env.production.r2_buckets]]
+binding = "BASIN_SPILL"
+bucket_name = "log-cannon-basin-spill"
+
 [[env.production.d1_databases]]
 binding = "KEYS_DB"
 database_name = "log-cannon-keys"

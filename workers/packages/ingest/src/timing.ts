@@ -251,7 +251,7 @@ export function enqueueFailureCLEF(f: EnqueueFailure, at: string): string {
  * one budget would let the common event crowd out the irreplaceable one at
  * exactly the moment both fire.
  */
-export type TelemetryChannel = "slow-request" | "enqueue-failure" | "basin-failure";
+export type TelemetryChannel = "slow-request" | "enqueue-failure" | "basin-failure" | "basin-loss";
 
 // Isolate-scoped, like the key cache in `keys.ts`: shared by every request this
 // isolate serves, and reset when it is evicted. Throttling per isolate rather
@@ -262,6 +262,7 @@ const lastTelemetryAt: Record<TelemetryChannel, number> = {
   "slow-request": 0,
   "enqueue-failure": 0,
   "basin-failure": 0,
+  "basin-loss": 0,
 };
 
 /**

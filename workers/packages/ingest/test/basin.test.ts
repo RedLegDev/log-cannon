@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  BasinCopyError,
   MAX_SEND_CHARS,
+  SEND_RETRY_DELAYS_MS,
+  SPILL_PREFIX,
+  gunzipRows,
+  sendRetry,
   basinFailureCLEF,
   basinWriteEnabled,
   batchRows,
@@ -9,11 +15,39 @@ import {
   type BasinCopy,
   type LogStream,
 } from "../src/basin";
-import { copyToBasin, type IngestRequest } from "../src/index";
+import { copyToBasin, sendTelemetry, type IngestRequest } from "../src/index";
 import { assertRowValid, type LogRow } from "../src/parse/row";
 import { __resetTelemetryThrottle } from "../src/timing";
 
 const RECEIVED_AT = new Date("2026-10-22T00:00:00.000Z");
+
+// Retries sleep for real seconds; record the delays instead.
+let slept: number[] = [];
+const realSleep = sendRetry.sleep;
+beforeEach(async () => {
+  slept = [];
+  sendRetry.sleep = async (ms) => void slept.push(ms);
+  await clearSpill();
+});
+afterEach(() => {
+  sendRetry.sleep = realSleep;
+  vi.restoreAllMocks();
+});
+
+async function clearSpill() {
+  const { objects } = await env.BASIN_SPILL.list();
+  if (objects.length) await env.BASIN_SPILL.delete(objects.map((o) => o.key));
+}
+
+/** Every row in the spill bucket, oldest object first. */
+async function spilledRows(): Promise<LogRow[]> {
+  const { objects } = await env.BASIN_SPILL.list({ prefix: SPILL_PREFIX });
+  const rows: LogRow[] = [];
+  for (const o of objects) rows.push(...(await gunzipRows((await env.BASIN_SPILL.get(o.key))!.body)));
+  return rows;
+}
+
+const noRetries = { rows: 0, skipped: 0, sends: 0, retries: 0, spilled: 0, lost: 0 };
 const utf8 = (s: string) => new TextEncoder().encode(s);
 
 function fakeStream(fail?: (batch: number) => boolean) {
@@ -94,7 +128,7 @@ describe("writeCopy", () => {
   it("sends valid rows stamped with the request's source, key and receive time", async () => {
     const { stream, batches } = fakeStream();
     const out = await writeCopy(stream, copy());
-    expect(out).toEqual({ rows: 2, skipped: 0, sends: 1 });
+    expect(out).toEqual({ ...noRetries, rows: 2, sends: 1 });
     const rows = batches.flat();
     for (const r of rows) {
       assertRowValid(r);
@@ -160,7 +194,7 @@ describe("writeCopy", () => {
     await expect(writeCopy(stream, copy({ bodies: [utf8(lines)] }))).rejects.toMatchObject({
       stage: "send",
       message: "stream unavailable",
-      outcome: { sends: 1 },
+      outcome: { sends: 1, retries: SEND_RETRY_DELAYS_MS.length, lost: 2 },
     });
     expect(batches).toHaveLength(1);
   });
@@ -169,7 +203,7 @@ describe("writeCopy", () => {
     const { stream, batches } = fakeStream();
     const chunk = (i: number) => utf8(`{"@t":"2026-10-21T12:00:0${i}Z","@m":"m${i}"}\n`);
     const out = await writeCopy(stream, copy({ bodies: [chunk(1), chunk(2), chunk(3)] }));
-    expect(out).toEqual({ rows: 3, skipped: 0, sends: 1 });
+    expect(out).toEqual({ ...noRetries, rows: 3, sends: 1 });
     expect(batches.flat().map((r) => r.message)).toEqual(["m1", "m2", "m3"]);
   });
 
@@ -266,5 +300,169 @@ describe("copyToBasin", () => {
     expect(h.queued).toHaveLength(1);
     expect((h.queued[0] as { source: string }).source).toBe("log-cannon-ingest");
     error.mockRestore();
+  });
+});
+
+// --- retry and spill (refs #166) ----------------------------------------------
+
+/** A stream whose send `n` (0-based, every attempt counted) fails when `fail(n)`.
+ * It records what each attempt carried, sent or not. */
+function flakyStream(fail: (attempt: number) => boolean) {
+  const sent: LogRow[][] = [];
+  const attempts: LogRow[][] = [];
+  const stream: LogStream = {
+    send: async (records) => {
+      attempts.push(records);
+      if (fail(attempts.length - 1)) throw new Error("CF_SB_EDGE_INGEST_ERROR: 10037");
+      sent.push(records);
+    },
+  };
+  return { stream, sent, attempts };
+}
+
+const big = (n: string) => JSON.stringify({ "@t": "2026-10-21T12:00:00Z", "@m": n, Pad: "z".repeat(900_000) });
+const small = (n: string) => JSON.stringify({ "@t": "2026-10-21T12:00:00Z", "@m": n });
+const ids = (rows: LogRow[]) => rows.map((r) => r.id);
+
+describe("writeCopy retry and spill", () => {
+  it("a send that fails then succeeds spills nothing", async () => {
+    const { stream, sent } = flakyStream((n) => n === 0);
+    const out = await writeCopy(stream, copy(), { spill: env.BASIN_SPILL });
+    expect(out).toEqual({ ...noRetries, rows: 2, sends: 1, retries: 1 });
+    expect(slept).toEqual([SEND_RETRY_DELAYS_MS[0]]);
+    expect(sent.flat()).toHaveLength(2);
+    expect(await spilledRows()).toEqual([]);
+  });
+
+  it("an always-failing send spills exactly the unsent rows, unparsed bodies included, none both sent and spilled", async () => {
+    // Send 0 succeeds, every later attempt fails.
+    const { stream, sent, attempts } = flakyStream((n) => n > 0);
+    const bodies = [
+      utf8(`${big("A")}\n${big("B")}\n`), // A goes out alone; B waits in the batcher
+      utf8(`${small("C")}\n${small("D")}\n`),
+      utf8(`${big("E")}\n`), // cuts [B,C,D], whose send fails
+      utf8(`${small("F")}\n`), // parsed only after the stream is down
+    ];
+    const err = await writeCopy(stream, copy({ bodies }), { spill: env.BASIN_SPILL }).catch((e) => e);
+    expect(err).toBeInstanceOf(BasinCopyError);
+    expect(err.stage).toBe("send");
+    expect(err.outcome).toMatchObject({ rows: 1, sends: 1, retries: 3, spilled: 5, lost: 0 });
+    expect(err.spillError).toBeUndefined();
+    expect(slept).toEqual([...SEND_RETRY_DELAYS_MS]);
+    // No more sends after the retries ran out: E and F were never attempted.
+    expect(attempts).toHaveLength(1 + 1 + SEND_RETRY_DELAYS_MS.length);
+
+    const spilled = await spilledRows();
+    expect(sent.flat().map((r) => r.message)).toEqual(["A"]);
+    expect(spilled.map((r) => r.message)).toEqual(["B", "C", "D", "E", "F"]);
+    const sentIds = new Set(ids(sent.flat()));
+    expect(spilled.filter((r) => sentIds.has(r.id))).toEqual([]);
+    for (const r of spilled) assertRowValid(r);
+
+    // One object for the copy, keyed by its receive time.
+    const { objects } = await env.BASIN_SPILL.list({ prefix: SPILL_PREFIX, include: ["customMetadata"] });
+    expect(objects).toHaveLength(1);
+    expect(objects[0].key).toMatch(new RegExp(`^spill/${RECEIVED_AT.toISOString()}/[0-9a-f-]{36}\\.ndjson\\.gz$`));
+    expect(objects[0].customMetadata).toEqual({ rows: "5" });
+  });
+
+  it("keeps the failing batch's ids in the spill", async () => {
+    const { stream, attempts } = flakyStream(() => true);
+    await writeCopy(stream, copy(), { spill: env.BASIN_SPILL }).catch(() => {});
+    expect(ids(await spilledRows())).toEqual(ids(attempts[0]));
+  });
+
+  it("reports the rows as lost, with why, when the R2 put fails", async () => {
+    const { stream } = flakyStream(() => true);
+    const broken = { put: async () => { throw new Error("r2 unavailable"); } };
+    const err = await writeCopy(stream, copy(), { spill: broken }).catch((e) => e);
+    expect(err.outcome).toMatchObject({ spilled: 0, lost: 2 });
+    expect(err.spillError).toBe("r2 unavailable");
+  });
+
+  it("stops retrying when a retry couldn't start inside the budget", async () => {
+    const { stream, attempts } = flakyStream(() => true);
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => (t += 6_000));
+    const err = await writeCopy(stream, copy(), { spill: env.BASIN_SPILL }).catch((e) => e);
+    // started, then +6 s: a 500 ms retry fits under 12 s; +12 s: 2 s doesn't.
+    expect(err.outcome).toMatchObject({ retries: 1, spilled: 2 });
+    expect(attempts).toHaveLength(2);
+  });
+});
+
+describe("copyToBasin spill reporting", () => {
+  beforeEach(() => __resetTelemetryThrottle());
+
+  async function run(spill: unknown) {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const pending: Promise<unknown>[] = [];
+    const queued: { body: string }[] = [];
+    const ingest = {
+      request: new Request("https://logs.example.com/ingest/clef", { method: "POST" }),
+      env: {
+        INGEST_QUEUE: { send: async (m: { body: string }) => void queued.push(m) },
+        SLOW_REQUEST_SOURCE: "log-cannon-ingest",
+        LOGS: flakyStream(() => true).stream,
+        BASIN_WRITE: "true",
+        BASIN_SPILL: spill,
+      },
+      ctx: { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} },
+      route: "/ingest/clef",
+      source: "example-app",
+      keyId: "key-1",
+      receivedAt: RECEIVED_AT,
+    } as unknown as IngestRequest;
+    const { format, bodies, contentType } = copy();
+    copyToBasin(ingest, { format, bodies, contentType });
+    await Promise.all(pending);
+    const logged = JSON.parse(error.mock.calls.find((c) => String(c[0]).includes("basin-copy-failed"))![0] as string);
+    const event = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(queued[0].body), (c) => c.charCodeAt(0))));
+    return { logged, event };
+  }
+
+  it("reports a spilled copy as a Warning with the spilled row count", async () => {
+    const { logged, event } = await run(env.BASIN_SPILL);
+    expect(logged).toMatchObject({ stage: "send", spilledRows: 2, lostRows: 0 });
+    expect(event).toMatchObject({ "@l": "Warning", SpilledRows: 2, LostRows: 0 });
+    // The copy's two rows, and the failure report's own Basin copy, which the
+    // same down stream refused.
+    expect((await spilledRows()).map((r) => r.source).sort()).toEqual(["example-app", "example-app", "log-cannon-ingest"]);
+  });
+
+  it("reports an R2 put failure as an Error with the lost row count", async () => {
+    const { logged, event } = await run({ put: async () => { throw new Error("r2 unavailable"); } });
+    expect(logged).toMatchObject({ spilledRows: 0, lostRows: 2, spillError: "r2 unavailable" });
+    expect(event).toMatchObject({ "@l": "Error", LostRows: 2, SpillError: "r2 unavailable" });
+  });
+
+  it("a loss still reports when a spill report just used the throttle", async () => {
+    await run(env.BASIN_SPILL);
+    const { event } = await run({ put: async () => { throw new Error("r2 unavailable"); } });
+    expect(event).toMatchObject({ "@l": "Error", LostRows: 2 });
+  });
+});
+
+describe("sendTelemetry spill", () => {
+  it("spills the Worker's own event when the stream won't take it", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const line = JSON.stringify({ "@t": "2026-10-23T15:30:00Z", "@mt": "Basin copy failed", Stage: "send" });
+    await sendTelemetry(
+      { ...env, INGEST_QUEUE: { send: async () => {} }, LOGS: flakyStream(() => true).stream, BASIN_WRITE: "true", BASIN_SPILL: env.BASIN_SPILL } as never,
+      "log-cannon-ingest",
+      [line],
+    );
+    const rows = await spilledRows();
+    expect(rows.map((r) => [r.source, r.key_id, r.message_template])).toEqual([["log-cannon-ingest", "log-cannon-ingest", "Basin copy failed"]]);
+    expect(JSON.parse(error.mock.calls[0][0] as string)).toMatchObject({ event: "telemetry-basin-copy-failed", spilledRows: 1, lostRows: 0 });
+  });
+});
+
+describe("basinFailureCLEF spill fields", () => {
+  const base = { route: "/ingest/clef", format: "clef" as const, ingestSource: "a", bodyBytes: 10, error: "x", stage: "send" as const };
+  it("is a Warning only when every unsent row was spilled", () => {
+    expect(JSON.parse(basinFailureCLEF({ ...base, spilledRows: 5, lostRows: 0 }, "t"))["@l"]).toBe("Warning");
+    expect(JSON.parse(basinFailureCLEF({ ...base, spilledRows: 0, lostRows: 5 }, "t"))["@l"]).toBe("Error");
+    expect(JSON.parse(basinFailureCLEF(base, "t"))["@l"]).toBe("Error");
   });
 });

@@ -19,6 +19,8 @@ export default defineWorkersConfig(async () => {
           singleWorker: true,
           wrangler: { configPath: "./wrangler.toml" },
           miniflare: {
+            // The spill bucket is production-only in wrangler.toml.
+            r2Buckets: ["BASIN_SPILL"],
             bindings: {
               TEST_MIGRATIONS: migrations,
               // The worker reads its vars from wrangler.toml and does not see

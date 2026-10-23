@@ -13,6 +13,7 @@ import {
 } from "./timing";
 import { resolveQueueAckDeadlineMs, sendWithDeadline } from "./enqueue";
 import {
+  BasinCopyError,
   basinFailureCLEF,
   basinWriteEnabled,
   classifyFailure,
@@ -26,6 +27,7 @@ import { handleMcp, type CreateLogArgs } from "./mcp";
 import { handleAlerts, handleDestinations } from "./alerts/api";
 import { runAlerts } from "./alerts/evaluate";
 import { runSupabasePull } from "./supabase/pull";
+import { runBasinSpillReplay } from "./basin-spill";
 import {
   QueryRejected,
   dialectHints,
@@ -65,6 +67,11 @@ interface Env {
    * has taken it. Anything else is off. See `src/basin.ts`.
    */
   BASIN_WRITE?: string;
+  /**
+   * R2 bucket for Basin copies the stream wouldn't take after retries (refs
+   * #166). The cron replays it. Absent, such rows are lost and reported.
+   */
+  BASIN_SPILL?: R2Bucket;
   /**
    * v2 read path (refs #163): Basin SQL REST. The token is a secret with
    * Basin SQL read only; account and bucket are plain vars.
@@ -613,8 +620,8 @@ export const TELEMETRY_KEY_ID = "log-cannon-ingest";
  * Write the Worker's own CLEF events (slow requests, losses, alert evaluator
  * events) to `source`: the queue first, as every ingest is, then Basin when the
  * dual-write is on, so v2 readers and alerts see them too. Throws only if the
- * queue send does; a failed Basin copy is logged and dropped, never reported
- * through this same path.
+ * queue send does. The Basin copy retries and spills like any other; one that
+ * still fails is logged, never reported through this same path.
  */
 export async function sendTelemetry(env: Env, source: string, lines: string[]): Promise<void> {
   if (!lines.length) return;
@@ -626,9 +633,14 @@ export async function sendTelemetry(env: Env, source: string, lines: string[]): 
     // Off the response path, as copyToBasin is: the slow-request report runs
     // inside the request it describes.
     await scheduler.wait(0);
-    await writeCopy(env.LOGS, { format: "clef", bodies: [bytes], contentType, source, keyId: TELEMETRY_KEY_ID, receivedAt: new Date() });
+    await writeCopy(
+      env.LOGS,
+      { format: "clef", bodies: [bytes], contentType, source, keyId: TELEMETRY_KEY_ID, receivedAt: new Date() },
+      { spill: env.BASIN_SPILL },
+    );
   } catch (e) {
-    console.error(JSON.stringify({ event: "telemetry-basin-copy-failed", source, error: e instanceof Error ? e.message : String(e) }));
+    const spill = e instanceof BasinCopyError ? { spilledRows: e.outcome.spilled, lostRows: e.outcome.lost, spillError: e.spillError } : {};
+    console.error(JSON.stringify({ event: "telemetry-basin-copy-failed", source, error: e instanceof Error ? e.message : String(e), ...spill }));
   }
 }
 
@@ -639,7 +651,8 @@ export async function sendTelemetry(env: Env, source: string, lines: string[]): 
  * retry's rows into Basin twice.
  *
  * Never throws. A failure is reported on both channels, the way a lost enqueue
- * is, on its own throttle budget.
+ * is, on its own throttle budget; a copy that lost rows (its spill failed too)
+ * on a separate one, so a run of spills can't hide it.
  */
 export function copyToBasin(
   ingest: IngestRequest,
@@ -655,12 +668,11 @@ export function copyToBasin(
       // function returns and the handler sends its response.
       await scheduler.wait(0);
       try {
-        await writeCopy(stream, {
-          ...copy,
-          source: ingest.source,
-          keyId: ingest.keyId,
-          receivedAt: ingest.receivedAt,
-        });
+        await writeCopy(
+          stream,
+          { ...copy, source: ingest.source, keyId: ingest.keyId, receivedAt: ingest.receivedAt },
+          { spill: env.BASIN_SPILL },
+        );
       } catch (e) {
         await reportBasinFailure(ingest, copy, e);
       }
@@ -681,12 +693,15 @@ async function reportBasinFailure(
       bodyBytes: copy.bodies.reduce((n, b) => n + b.byteLength, 0),
       stage: classifyFailure(error),
       error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof BasinCopyError && error.stage === "send"
+        ? { spilledRows: error.outcome.spilled, lostRows: error.outcome.lost, spillError: error.spillError }
+        : {}),
     };
     console.error(JSON.stringify({ event: "basin-copy-failed", ...failure }));
 
     const telemetrySource = ingest.env.SLOW_REQUEST_SOURCE?.trim() ?? "";
     if (!telemetrySource) return;
-    if (!shouldEmitTelemetry(Date.now(), "basin-failure")) return;
+    if (!shouldEmitTelemetry(Date.now(), failure.lostRows ? "basin-loss" : "basin-failure")) return;
     await sendTelemetry(ingest.env, telemetrySource, [basinFailureCLEF(failure, new Date().toISOString())]);
   } catch (e) {
     warnReportFailed(e);
@@ -1157,12 +1172,27 @@ async function handleRead(
 // --- Cron ---
 
 /**
- * The once-a-minute cron: alerts and the Supabase pull (#164), side by side.
- * Each has its own try/catch, so one failing or overrunning never stops the
- * other.
+ * The once-a-minute cron: alerts, the Supabase pull (#164) and the Basin spill
+ * replay (#166), side by side. Each has its own try/catch, so one failing or
+ * overrunning never stops the others.
  */
 export async function scheduled(env: Env): Promise<void> {
-  await Promise.all([alertsTick(env), supabasePullTick(env)]);
+  await Promise.all([alertsTick(env), supabasePullTick(env), basinSpillReplayTick(env)]);
+}
+
+async function basinSpillReplayTick(env: Env): Promise<void> {
+  const source = env.SLOW_REQUEST_SOURCE?.trim() || TELEMETRY_KEY_ID;
+  try {
+    const tick = await runBasinSpillReplay(env, {
+      now: () => new Date(),
+      emit: (lines) => sendTelemetry(env, source, lines).catch(warnReportFailed),
+    });
+    if (tick.skipped !== "off" && (tick.skipped || tick.replayed || tick.backlog || tick.error)) {
+      console.log(JSON.stringify({ event: "basin-spill-replay-tick", ...tick }));
+    }
+  } catch (e) {
+    console.error(JSON.stringify({ event: "basin-spill-replay-tick-failed", error: e instanceof Error ? e.message : String(e) }));
+  }
 }
 
 async function alertsTick(env: Env): Promise<void> {
