@@ -583,6 +583,10 @@ export function copyToBasin(
   const stream = env.LOGS;
   ctx.waitUntil(
     (async () => {
+      // Yield a macrotask first. Without it the async body runs synchronously
+      // up to its first await, so the whole parse would happen before this
+      // function returns and the handler sends its response.
+      await scheduler.wait(0);
       try {
         await writeCopy(stream, {
           ...copy,
@@ -599,7 +603,7 @@ export function copyToBasin(
 
 async function reportBasinFailure(
   ingest: IngestRequest,
-  copy: Pick<BasinCopy, "format" | "body">,
+  copy: Pick<BasinCopy, "format" | "bodies">,
   error: unknown,
 ): Promise<void> {
   try {
@@ -607,7 +611,7 @@ async function reportBasinFailure(
       route: ingest.route,
       format: copy.format,
       ingestSource: ingest.source,
-      bodyBytes: copy.body.byteLength,
+      bodyBytes: copy.bodies.reduce((n, b) => n + b.byteLength, 0),
       stage: classifyFailure(error),
       error: error instanceof Error ? error.message : String(error),
     };
@@ -739,7 +743,7 @@ async function handleCLEF(ingest: IngestRequest): Promise<Response> {
         enrich,
       }),
     );
-    copyToBasin(ingest, { format: "clef", body: bodyBytes, contentType, enrich });
+    copyToBasin(ingest, { format: "clef", bodies: [bodyBytes], contentType, enrich });
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
@@ -763,7 +767,7 @@ async function handleCLEF(ingest: IngestRequest): Promise<Response> {
       enrich,
     }),
   );
-  copyToBasin(ingest, { format: "clef", body: bodyBytes, contentType, enrich });
+  copyToBasin(ingest, { format: "clef", bodies: chunks, contentType, enrich });
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -798,7 +802,7 @@ async function handleWebhook(ingest: IngestRequest): Promise<Response> {
   );
   copyToBasin(ingest, {
     format: "webhook",
-    body: bodyBytes,
+    bodies: [bodyBytes],
     contentType,
     preset: preset || undefined,
   });
@@ -826,7 +830,7 @@ async function handleOTLP(
         contentType,
       }),
     );
-    copyToBasin(ingest, { format, body: bodyBytes, contentType });
+    copyToBasin(ingest, { format, bodies: [bodyBytes], contentType });
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
@@ -858,7 +862,7 @@ async function handleOTLP(
       contentType,
     }),
   );
-  copyToBasin(ingest, { format, body: bodyBytes, contentType });
+  copyToBasin(ingest, { format, bodies: chunks, contentType });
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }

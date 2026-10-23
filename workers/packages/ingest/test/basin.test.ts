@@ -4,6 +4,7 @@ import {
   basinFailureCLEF,
   basinWriteEnabled,
   batchRows,
+  classifyFailure,
   writeCopy,
   type BasinCopy,
   type LogStream,
@@ -29,10 +30,12 @@ function fakeStream(fail?: (batch: number) => boolean) {
 function copy(over: Partial<BasinCopy> = {}): BasinCopy {
   return {
     format: "clef",
-    body: utf8(
-      '{"@t":"2026-10-21T12:00:00Z","@mt":"Hello {Name}","Name":"a"}\n' +
-        '{"@t":"2026-10-21T12:00:01Z","@l":"Error","@m":"boom"}\n',
-    ),
+    bodies: [
+      utf8(
+        '{"@t":"2026-10-21T12:00:00Z","@mt":"Hello {Name}","Name":"a"}\n' +
+          '{"@t":"2026-10-21T12:00:01Z","@l":"Error","@m":"boom"}\n',
+      ),
+    ],
     contentType: "application/vnd.serilog.clef",
     source: "example-app",
     keyId: "key-1",
@@ -110,7 +113,7 @@ describe("writeCopy", () => {
       copy({
         format: "webhook",
         contentType: "application/json",
-        body: utf8('[{"message":"one","level":"warn"},{"message":"two"}]'),
+        bodies: [utf8('[{"message":"one","level":"warn"},{"message":"two"}]')],
       }),
     );
     expect(batches.flat().map((r) => r.format)).toEqual(["webhook", "webhook"]);
@@ -140,8 +143,8 @@ describe("writeCopy", () => {
         },
       ],
     };
-    await writeCopy(stream, copy({ format: "otlp-logs", contentType: "application/json", body: utf8(JSON.stringify(logs)) }));
-    await writeCopy(stream, copy({ format: "otlp-traces", contentType: "application/json", body: utf8(JSON.stringify(traces)) }));
+    await writeCopy(stream, copy({ format: "otlp-logs", contentType: "application/json", bodies: [utf8(JSON.stringify(logs))] }));
+    await writeCopy(stream, copy({ format: "otlp-traces", contentType: "application/json", bodies: [utf8(JSON.stringify(traces))] }));
     const [log, span] = batches.flat();
     expect(log.kind).toBe("log");
     expect(span.kind).toBe("span");
@@ -154,8 +157,41 @@ describe("writeCopy", () => {
     const lines = Array.from({ length: 3 }, (_, i) =>
       JSON.stringify({ "@t": "2026-10-21T12:00:00Z", "@m": "z".repeat(900_000), N: i }),
     ).join("\n");
-    await expect(writeCopy(stream, copy({ body: utf8(lines) }))).rejects.toThrow("stream unavailable");
+    await expect(writeCopy(stream, copy({ bodies: [utf8(lines)] }))).rejects.toMatchObject({
+      stage: "send",
+      message: "stream unavailable",
+      outcome: { sends: 1 },
+    });
     expect(batches).toHaveLength(1);
+  });
+
+  it("parses a chunked body chunk by chunk and batches rows across chunks", async () => {
+    const { stream, batches } = fakeStream();
+    const chunk = (i: number) => utf8(`{"@t":"2026-10-21T12:00:0${i}Z","@m":"m${i}"}\n`);
+    const out = await writeCopy(stream, copy({ bodies: [chunk(1), chunk(2), chunk(3)] }));
+    expect(out).toEqual({ rows: 3, skipped: 0, sends: 1 });
+    expect(batches.flat().map((r) => r.message)).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("keeps the other chunks when one fails to parse, then reports it as a parse failure", async () => {
+    const { stream, batches } = fakeStream();
+    const err = await writeCopy(
+      stream,
+      copy({
+        bodies: [
+          utf8('{"@t":"2026-10-21T12:00:00Z","@m":"a"}\n'),
+          utf8("not json at all\n"),
+          utf8('{"@t":"2026-10-21T12:00:02Z","@m":"c"}\n'),
+        ],
+      }),
+    ).catch((e) => e);
+    expect(classifyFailure(err)).toBe("parse");
+    expect(err.outcome).toMatchObject({ rows: 2, skipped: 1 });
+    expect(batches.flat().map((r) => r.message)).toEqual(["a", "c"]);
+  });
+
+  it("labels anything that isn't a BasinCopyError as a send failure", () => {
+    expect(classifyFailure(new Error("x"))).toBe("send");
   });
 });
 
@@ -187,9 +223,9 @@ describe("copyToBasin", () => {
       keyId: "key-1",
       receivedAt: RECEIVED_AT,
     } as unknown as IngestRequest;
-    const { format, body, contentType } = copy();
+    const { format, bodies, contentType } = copy();
     return {
-      run: () => copyToBasin(ingest, { format, body, contentType }),
+      run: () => copyToBasin(ingest, { format, bodies, contentType }),
       pending,
       queued,
     };
@@ -203,10 +239,16 @@ describe("copyToBasin", () => {
     expect(batches).toHaveLength(0);
   });
 
-  it("copies in waitUntil when on", async () => {
+  it("copies in waitUntil when on, without parsing before it returns", async () => {
     const { stream, batches } = fakeStream();
+    const parsed = vi.spyOn(JSON, "stringify");
     const h = harness({ BASIN_WRITE: "true" }, stream);
     h.run();
+    // Drain microtasks: the copy must still not have started, because the
+    // handler sends its response after copyToBasin returns.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(parsed).not.toHaveBeenCalled();
+    parsed.mockRestore();
     expect(h.pending).toHaveLength(1);
     await Promise.all(h.pending);
     expect(batches.flat()).toHaveLength(2);

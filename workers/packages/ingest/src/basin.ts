@@ -10,7 +10,7 @@
 import { parseCLEF } from "./parse/clef";
 import { parseOTLPLogs, parseOTLPTraces } from "./parse/otlp";
 import { parseWebhook } from "./parse/webhook";
-import { ParseError, type LogRow, type ParseResult } from "./parse/row";
+import type { LogRow, ParseResult } from "./parse/row";
 
 /** Structural view of a Pipelines stream binding (`[[pipelines]]`). */
 export interface LogStream {
@@ -21,7 +21,13 @@ export type BasinFormat = "clef" | "webhook" | "otlp-logs" | "otlp-traces";
 
 export interface BasinCopy {
   format: BasinFormat;
-  body: Uint8Array;
+  /**
+   * The payload as the queue received it: one body, or the ≤90 KB chunks a
+   * large body was split into. Each chunk is a complete payload of its format,
+   * and the copy parses and sends chunk by chunk, so a 32 MB body never holds
+   * more than one chunk's rows plus one pending send in memory.
+   */
+  bodies: Uint8Array[];
   contentType: string;
   source: string;
   keyId: string;
@@ -47,7 +53,7 @@ export function basinWriteEnabled(
   return flag?.trim() === "true" && stream !== undefined;
 }
 
-export function parseCopy(copy: BasinCopy): ParseResult {
+export function parseBody(copy: BasinCopy, body: Uint8Array): ParseResult {
   const ctx = {
     source: copy.source,
     keyId: copy.keyId,
@@ -56,35 +62,47 @@ export function parseCopy(copy: BasinCopy): ParseResult {
   };
   switch (copy.format) {
     case "clef":
-      return parseCLEF(new TextDecoder().decode(copy.body), ctx);
+      return parseCLEF(new TextDecoder().decode(body), ctx);
     case "webhook":
-      return parseWebhook(new TextDecoder().decode(copy.body), ctx, copy.preset);
+      return parseWebhook(new TextDecoder().decode(body), ctx, copy.preset);
     case "otlp-logs":
-      return parseOTLPLogs(copy.body, copy.contentType, ctx);
+      return parseOTLPLogs(body, copy.contentType, ctx);
     case "otlp-traces":
-      return parseOTLPTraces(copy.body, copy.contentType, ctx);
+      return parseOTLPTraces(body, copy.contentType, ctx);
   }
 }
 
-/** Split rows into sends whose serialised size stays under `maxChars`. A row
- * that alone exceeds it still goes out on its own; the stream rejecting it is
- * a reported failure, not a reason to hold back its siblings. */
-export function batchRows(rows: LogRow[], maxChars = MAX_SEND_CHARS): LogRow[][] {
-  const batches: LogRow[][] = [];
-  let current: LogRow[] = [];
-  let size = 2; // the surrounding []
-  for (const row of rows) {
+/** Accumulates rows into sends whose serialised size stays under `maxChars`.
+ * A row that alone exceeds it still goes out on its own; the stream rejecting
+ * it is a reported failure, not a reason to hold back its siblings. */
+export class RowBatcher {
+  private batch: LogRow[] = [];
+  private size = 2; // the surrounding []
+  readonly ready: LogRow[][] = [];
+
+  constructor(private readonly maxChars = MAX_SEND_CHARS) {}
+
+  add(row: LogRow): void {
     const rowChars = JSON.stringify(row).length + 1;
-    if (current.length > 0 && size + rowChars > maxChars) {
-      batches.push(current);
-      current = [];
-      size = 2;
-    }
-    current.push(row);
-    size += rowChars;
+    if (this.batch.length > 0 && this.size + rowChars > this.maxChars) this.cut();
+    this.batch.push(row);
+    this.size += rowChars;
   }
-  if (current.length > 0) batches.push(current);
-  return batches;
+
+  /** Close the open batch, if any. */
+  cut(): void {
+    if (this.batch.length === 0) return;
+    this.ready.push(this.batch);
+    this.batch = [];
+    this.size = 2;
+  }
+}
+
+export function batchRows(rows: LogRow[], maxChars = MAX_SEND_CHARS): LogRow[][] {
+  const b = new RowBatcher(maxChars);
+  for (const row of rows) b.add(row);
+  b.cut();
+  return b.ready;
 }
 
 export interface BasinOutcome {
@@ -93,16 +111,65 @@ export interface BasinOutcome {
   sends: number;
 }
 
-/** Parse and send one request's copy. Throws on a send failure (after the
- * batches before it went out) and on a ParseError; the caller reports. */
+/** A copy that lost rows. `stage` says whether a body failed to parse (its
+ * siblings were still sent) or a send failed (the rows after it weren't). */
+export class BasinCopyError extends Error {
+  override name = "BasinCopyError";
+  constructor(
+    readonly stage: "parse" | "send",
+    message: string,
+    readonly outcome: BasinOutcome,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Parse and send one request's copy, a chunk at a time. A chunk that fails to
+ * parse is skipped and the rest still go out, the way the consumer fails one
+ * queue message and not its siblings. A failed send stops the copy, because
+ * the stream is what's down. Either way the outcome so far is reported
+ * through a BasinCopyError.
+ */
 export async function writeCopy(
   stream: LogStream,
   copy: BasinCopy,
 ): Promise<BasinOutcome> {
-  const { rows, skipped } = parseCopy(copy);
-  const batches = batchRows(rows);
-  for (const batch of batches) await stream.send(batch);
-  return { rows: rows.length, skipped, sends: batches.length };
+  const out: BasinOutcome = { rows: 0, skipped: 0, sends: 0 };
+  const batcher = new RowBatcher();
+  let parseError: string | undefined;
+
+  const flush = async () => {
+    while (batcher.ready.length > 0) {
+      const batch = batcher.ready.shift()!;
+      try {
+        await stream.send(batch);
+      } catch (e) {
+        throw new BasinCopyError("send", e instanceof Error ? e.message : String(e), out);
+      }
+      out.sends++;
+      out.rows += batch.length;
+    }
+  };
+
+  for (const body of copy.bodies) {
+    let parsed: ParseResult;
+    try {
+      parsed = parseBody(copy, body);
+    } catch (e) {
+      parseError ??= e instanceof Error ? e.message : String(e);
+      out.skipped++;
+      continue;
+    }
+    out.skipped += parsed.skipped;
+    for (const row of parsed.rows) batcher.add(row);
+    await flush();
+  }
+  batcher.cut();
+  await flush();
+
+  if (parseError !== undefined) throw new BasinCopyError("parse", parseError, out);
+  return out;
 }
 
 export interface BasinFailure {
@@ -115,7 +182,7 @@ export interface BasinFailure {
 }
 
 export function classifyFailure(e: unknown): BasinFailure["stage"] {
-  return e instanceof ParseError ? "parse" : "send";
+  return e instanceof BasinCopyError ? e.stage : "send";
 }
 
 export function basinFailureCLEF(f: BasinFailure, at: string): string {
