@@ -28,9 +28,9 @@ describe("evaluateCondition (alert-worker's grammar)", () => {
   });
 
   it("splits on && before ||, as v1 does", () => {
-    // v1 reads this as (cnt > 100 || zero == 0) && ws_cnt > 5 → false, where
-    // usual precedence would give true.
-    expect(evaluateCondition("cnt > 100 || zero == 0 && ws_cnt > 5", row)).toBe(false);
+    // v1 reads this as (zero == 0 || cnt > 100) && ws_cnt > 5 → false, where
+    // splitting on || first (or usual precedence) would give true.
+    expect(evaluateCondition("zero == 0 || cnt > 100 && ws_cnt > 5", row)).toBe(false);
   });
 
   it("takes a numeric string, as Basin returns past 2^53", () => {
