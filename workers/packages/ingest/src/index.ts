@@ -1,6 +1,6 @@
 // --- Types ---
 
-import { validateKey, isKeyCached, type APIKeyRecord } from "./keys";
+import { validateKey, isKeyCached, hasScope, type APIKeyRecord } from "./keys";
 import { handleAdminKeys } from "./admin";
 import {
   RequestTrace,
@@ -20,6 +20,15 @@ import {
   type BasinCopy,
   type LogStream,
 } from "./basin";
+import { BasinQueryError, queryBasin } from "./basin-sql";
+import { handleMcp, type CreateLogArgs } from "./mcp";
+import {
+  QueryRejected,
+  dialectHints,
+  prepareQuery,
+  searchLogs,
+  searchParamsFromUrl,
+} from "./query";
 
 interface Env {
   INGEST_QUEUE: Queue<QueuePayload>;
@@ -52,6 +61,13 @@ interface Env {
    * has taken it. Anything else is off. See `src/basin.ts`.
    */
   BASIN_WRITE?: string;
+  /**
+   * v2 read path (refs #163): Basin SQL REST. The token is a secret with
+   * Basin SQL read only; account and bucket are plain vars.
+   */
+  BASIN_SQL_TOKEN?: string;
+  BASIN_SQL_ACCOUNT?: string;
+  BASIN_SQL_BUCKET?: string;
 }
 
 interface QueuePayload {
@@ -941,6 +957,143 @@ export function reportIfSlow(
   }
 }
 
+// --- v2 read API (refs #163) ---
+
+/**
+ * The read surface runs side by side with v1 under `/v2` until cutover, when
+ * the unprefixed routes move here too. Only these paths take the prefix.
+ */
+const READ_PREFIX = "/v2";
+const READ_PATHS = new Set(["/api/v1/query", "/api/v1/logs", "/api/mcp"]);
+
+export function readPath(path: string): string | null {
+  if (!path.startsWith(`${READ_PREFIX}/`)) return null;
+  const rest = path.slice(READ_PREFIX.length);
+  return READ_PATHS.has(rest) ? rest : null;
+}
+
+function apiError(error: string, message: string, status: number, extra?: Record<string, unknown>): Response {
+  return jsonResponse({ error, message, ...extra }, status);
+}
+
+function basinError(e: unknown, sql?: string): Response {
+  if (e instanceof QueryRejected) return apiError("validation_error", e.message, 400);
+  if (e instanceof BasinQueryError) {
+    if (e.status === 400) {
+      const hints = sql ? dialectHints(sql) : [];
+      return apiError("query_error", e.message, 400, hints.length ? { hints } : undefined);
+    }
+    if (e.status === 504) return apiError("query_timeout", e.message, 504);
+    return apiError("upstream_error", e.message, e.status);
+  }
+  console.error(JSON.stringify({ event: "read-api-error", error: e instanceof Error ? e.message : String(e) }));
+  return apiError("internal_error", "Query execution failed", 500);
+}
+
+/**
+ * MCP `create_log`: one CLEF line through the same path as `/ingest/clef`,
+ * so during dual-write it lands in ClickHouse and Basin alike. The caller
+ * names the source; `key_id` stays the calling key.
+ */
+async function createLog(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  key: APIKeyRecord,
+  entry: CreateLogArgs,
+): Promise<void> {
+  const receivedAt = new Date();
+  const line: Record<string, unknown> = {
+    ...(entry.properties ?? {}),
+    "@t": receivedAt.toISOString(),
+    "@l": entry.level,
+    "@m": entry.message,
+    "@mt": entry.message_template || entry.message,
+  };
+  if (entry.exception) line["@x"] = entry.exception;
+  if (entry.event_type) line["@i"] = entry.event_type;
+  const bytes = new TextEncoder().encode(`${JSON.stringify(line)}\n`);
+  if (bytes.byteLength > MAX_QUEUE_CHUNK_BYTES) {
+    throw new Error(`log entry exceeds ${MAX_QUEUE_CHUNK_BYTES} bytes`);
+  }
+  const contentType = "application/vnd.serilog.clef";
+  const ingest: IngestRequest = {
+    request,
+    env,
+    ctx,
+    trace: new RequestTrace(),
+    route: "/api/mcp#create_log",
+    source: entry.source,
+    keyId: key.keyId,
+    receivedAt,
+  };
+  await enqueue(ingest, "clef", 1, () =>
+    env.INGEST_QUEUE.send({ format: "clef", source: entry.source, body: encodeBody(bytes), contentType }),
+  );
+  copyToBasin(ingest, { format: "clef", bodies: [bytes], contentType });
+}
+
+async function handleRead(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  route: string,
+): Promise<Response> {
+  let key: APIKeyRecord;
+  try {
+    key = (await authenticate(request, env)).record;
+  } catch (e) {
+    if (e instanceof AuthError) {
+      return apiError(e.status === 401 ? "unauthorized" : e.status === 403 ? "forbidden" : "internal_error", e.message, e.status);
+    }
+    return apiError("internal_error", "Authentication failed", 500);
+  }
+
+  if (route === "/api/mcp") {
+    return handleMcp(request, {
+      env,
+      scopes: key.scopes,
+      createLog: (entry) => createLog(request, env, ctx, key, entry),
+    });
+  }
+
+  if (!hasScope(key, "read")) {
+    return apiError("forbidden", "This key lacks the required 'read' scope", 403);
+  }
+
+  if (route === "/api/v1/logs") {
+    if (request.method === "DELETE") {
+      return apiError("not_supported", "Basin is read-only; logs are removed by per-key retention", 405);
+    }
+    if (request.method !== "GET") return apiError("method_not_allowed", "Use GET", 405);
+    try {
+      return jsonResponse(await searchLogs(env, searchParamsFromUrl(new URL(request.url))));
+    } catch (e) {
+      return basinError(e);
+    }
+  }
+
+  // /api/v1/query
+  if (request.method !== "POST") return apiError("method_not_allowed", "Use POST", 405);
+  let sql: unknown;
+  try {
+    sql = ((await request.json()) as { sql?: unknown })?.sql;
+  } catch {
+    return apiError("validation_error", "Body must be JSON: {\"sql\": \"SELECT ...\"}", 400);
+  }
+  try {
+    const prepared = prepareQuery(sql);
+    const start = Date.now();
+    const { rows, bytesScanned } = await queryBasin(env, prepared);
+    return jsonResponse({
+      data: rows,
+      meta: { rows: rows.length, elapsed_ms: Date.now() - start, bytes_scanned: bytesScanned },
+    });
+  } catch (e) {
+    return basinError(e, typeof sql === "string" ? sql : undefined);
+  }
+}
+
 // --- Router ---
 
 export default {
@@ -977,6 +1130,9 @@ export default {
       }
       return await handleAdminKeys(request, env.KEYS_DB, adminKey);
     }
+
+    const read = readPath(path);
+    if (read) return await handleRead(request, env, ctx, read);
 
     if (request.method !== "POST") {
       return errorResponse(405, "Method not allowed");

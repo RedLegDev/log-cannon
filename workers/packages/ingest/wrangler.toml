@@ -102,6 +102,9 @@ routes = [
   # query strings. Without these the handler deploys but is unreachable —
   # the request falls through to the dashboard and 307s to its login page.
   { pattern = "logs.redleg.dev/v1/keys*", zone_name = "redleg.dev" },
+  # v2 read API on Basin (refs #163): /v2/api/v1/query, /v2/api/v1/logs,
+  # /v2/api/mcp, side by side with the dashboard's v1 until cutover.
+  { pattern = "logs.redleg.dev/v2/*", zone_name = "redleg.dev" },
 ]
 
 [env.production.observability]
@@ -129,6 +132,9 @@ SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # their own senders and their own queue tail, and this number is neither.
 QUEUE_ACK_DEADLINE_MS = "4000"
 BASIN_WRITE = "true"
+# v2 read API (refs #163). BASIN_SQL_TOKEN is a secret (Basin SQL read only).
+BASIN_SQL_ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
+BASIN_SQL_BUCKET = "log-cannon-events"
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"
