@@ -75,6 +75,13 @@ QUEUE_ACK_DEADLINE_MS = "0"
 ALERTS_MODE = "off"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
+# Supabase platform-log pull (refs #164), on the same cron: "ref=source,…"
+# for each project, written to the Basin stream as format = 'supabase'. Empty
+# is a no-op. Needs BASIN_WRITE on and the SUPABASE_ACCESS_TOKEN secret.
+# Empty tables means postgres_logs, auth_logs, function_logs and
+# function_edge_logs.
+SUPABASE_PULL_PROJECTS = ""
+SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs"
 
 [triggers]
 crons = ["* * * * *"]
@@ -151,6 +158,10 @@ BASIN_SQL_BUCKET = "log-cannon-events"
 ALERTS_MODE = "off"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
+# Supabase pull (refs #164). Empty until the shadow run starts; the token is
+# the SUPABASE_ACCESS_TOKEN secret.
+SUPABASE_PULL_PROJECTS = ""
+SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs"
 
 [env.production.triggers]
 crons = ["* * * * *"]

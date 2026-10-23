@@ -8,7 +8,7 @@
  * `event_type`, `exception`) keep its "" convention. The fields v2 promoted out
  * of `properties` (span identity and duration) are null when absent.
  */
-export type LogFormat = "clef" | "otlp" | "webhook" | "api";
+export type LogFormat = "clef" | "otlp" | "webhook" | "api" | "supabase";
 export type LogKind = "log" | "span";
 
 export interface LogRow {
@@ -172,7 +172,7 @@ export function rowBuilder(ctx: ParseContext, format: LogFormat): (f: RowFields)
 }
 
 const TS_FORMAT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const FORMATS = new Set<LogFormat>(["clef", "otlp", "webhook", "api"]);
+const FORMATS = new Set<LogFormat>(["clef", "otlp", "webhook", "api", "supabase"]);
 const KINDS = new Set<LogKind>(["log", "span"]);
 
 function isWellFormed(s: string): boolean {

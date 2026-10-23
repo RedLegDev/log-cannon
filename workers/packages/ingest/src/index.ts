@@ -25,6 +25,7 @@ import { CLEF_FIELDS } from "./parse/clef";
 import { handleMcp, type CreateLogArgs } from "./mcp";
 import { handleAlerts, handleDestinations } from "./alerts/api";
 import { runAlerts } from "./alerts/evaluate";
+import { runSupabasePull } from "./supabase/pull";
 import {
   QueryRejected,
   dialectHints,
@@ -84,6 +85,14 @@ interface Env {
   SAASMAIL_API_KEY?: string;
   SAASMAIL_API_URL?: string;
   ALERT_FROM_EMAIL?: string;
+  /**
+   * Supabase platform-log pull (refs #164): `ref=source,…` projects (empty is
+   * a no-op), optional table list, and the Management API token (secret).
+   * Runs only while BASIN_WRITE is on. See `src/supabase/pull.ts`.
+   */
+  SUPABASE_PULL_PROJECTS?: string;
+  SUPABASE_PULL_TABLES?: string;
+  SUPABASE_ACCESS_TOKEN?: string;
 }
 
 interface QueuePayload {
@@ -1148,10 +1157,15 @@ async function handleRead(
 // --- Cron ---
 
 /**
- * The once-a-minute cron. Alerts are the only job so far; the Supabase pull
- * (#164) joins here.
+ * The once-a-minute cron: alerts and the Supabase pull (#164), side by side.
+ * Each has its own try/catch, so one failing or overrunning never stops the
+ * other.
  */
 export async function scheduled(env: Env): Promise<void> {
+  await Promise.all([alertsTick(env), supabasePullTick(env)]);
+}
+
+async function alertsTick(env: Env): Promise<void> {
   const source = env.ALERTS_SOURCE?.trim() || "log-cannon-alerts";
   try {
     const tick = await runAlerts(env, {
@@ -1165,6 +1179,18 @@ export async function scheduled(env: Env): Promise<void> {
     }
   } catch (e) {
     console.error(JSON.stringify({ event: "alerts-tick-failed", error: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
+async function supabasePullTick(env: Env): Promise<void> {
+  try {
+    const tick = await runSupabasePull(env, {
+      now: () => new Date(),
+      emit: (lines) => sendTelemetry(env, "supabase-pull", lines).catch(warnReportFailed),
+    });
+    if (tick.skipped !== "off") console.log(JSON.stringify({ event: "supabase-pull-tick", skipped: tick.skipped, tables: tick.results }));
+  } catch (e) {
+    console.error(JSON.stringify({ event: "supabase-pull-tick-failed", error: e instanceof Error ? e.message : String(e) }));
   }
 }
 
