@@ -70,6 +70,24 @@ export function pinNow(sql: string, at: Date): string {
 }
 
 /**
+ * Basin's newest `received_at`, looking back an hour. Every alert window ends
+ * at the pinned instant, so evaluating before Basin has rows up to it would
+ * read a partial window, and every zero-count / silence alert would fire on a
+ * pipeline delay instead of a real silence.
+ */
+export async function basinNewest(env: BasinSqlEnv, pinned: Date): Promise<Date | null> {
+  const { rows } = await queryBasin<{ newest: string | null }>(
+    env,
+    `SELECT CAST(max(received_at) AS VARCHAR) AS newest FROM logs.events WHERE received_at > ${timestampLiteral(new Date(pinned.getTime() - 3_600_000))}`,
+    ALERT_QUERY_TIMEOUT_MS,
+  );
+  const v = rows[0]?.newest;
+  if (!v) return null;
+  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(v) ? v : `${v}Z`);
+  return Number.isNaN(t) ? null : new Date(t);
+}
+
+/**
  * Cron ticks land roughly, not exactly, a minute apart. Without slack a 60 s
  * alert whose previous run was 59.8 s ago would skip a tick and run every
  * two minutes.
@@ -104,7 +122,9 @@ export interface AlertDeps {
 
 export interface TickSummary {
   mode: AlertsMode;
-  skipped?: "off" | "lease-held";
+  skipped?: "off" | "lease-held" | "basin-behind";
+  /** Newest `received_at` in Basin when the tick held for freshness. */
+  basinNewest?: string | null;
   due: number;
   evaluated: Evaluation[];
 }
@@ -123,6 +143,23 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
   try {
     const due = (await enabledAlerts(env.KEYS_DB)).filter((a) => isDue(a, now));
     const lag = alertLagSeconds(env.ALERT_LAG_SECONDS);
+    if (due.length) {
+      // Hold the whole tick while Basin hasn't caught up to the pinned
+      // instant. Nothing is recorded, so every alert is still due next tick.
+      const pinned = new Date(now.getTime() - lag * 1000);
+      let newest: Date | null = null;
+      try {
+        newest = await basinNewest(env, pinned);
+      } catch (e) {
+        console.error(JSON.stringify({ event: "alerts-freshness-check-failed", error: e instanceof Error ? e.message : String(e) }));
+      }
+      if (!newest || newest < pinned) {
+        if (now.getUTCMinutes() % 10 === 0 || !newest) {
+          await deps.emit([behindLine(now, pinned, newest, due.length)]);
+        }
+        return { mode, skipped: "basin-behind", basinNewest: newest?.toISOString() ?? null, due: due.length, evaluated: [] };
+      }
+    }
     const evaluated: Evaluation[] = [];
     const lines: string[] = [];
     let next = 0;
@@ -227,6 +264,22 @@ export async function evaluateAlert(
 }
 
 export const ERROR_REPORT_INTERVAL_MS = 3_600_000;
+
+function behindLine(now: Date, pinned: Date, newest: Date | null, held: number): string {
+  const behind = newest ? Math.round((pinned.getTime() - newest.getTime()) / 60_000) : null;
+  return JSON.stringify({
+    "@t": now.toISOString(),
+    "@l": "Warning",
+    "@m": newest
+      ? `Alerts held: Basin is ${behind} minute(s) behind the evaluation window (${held} due)`
+      : `Alerts held: Basin returned no recent rows or failed the freshness check (${held} due)`,
+    "@mt": "Alerts held: Basin behind the evaluation window",
+    BasinNewest: newest?.toISOString() ?? null,
+    EvaluateAsOf: pinned.toISOString(),
+    BehindMinutes: behind,
+    HeldAlerts: held,
+  });
+}
 
 /**
  * The CLEF lines one evaluation contributes, in v1's `[id] …` message shape so

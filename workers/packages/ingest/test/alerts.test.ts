@@ -111,6 +111,7 @@ describe("isDue", () => {
 describe("runAlerts against D1", () => {
   let basinRows: Record<string, unknown>[];
   let basinStatus: number;
+  let basinNewestAt: string | null;
   let basinQueries: string[];
   let sent: { url: string; body: string }[];
   let deliveryStatus: number;
@@ -134,6 +135,8 @@ describe("runAlerts against D1", () => {
   beforeEach(async () => {
     basinRows = [{ cnt: 3 }];
     basinStatus = 200;
+    // Fresh: newest row after the pinned instant (NOW - 180 s).
+    basinNewestAt = "2026-10-23T14:59:00.000";
     basinQueries = [];
     sent = [];
     deliveryStatus = 200;
@@ -144,7 +147,11 @@ describe("runAlerts against D1", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.startsWith("https://api.sql.cloudflarestorage.com/")) {
-        basinQueries.push(JSON.parse(String(init?.body)).query);
+        const query = JSON.parse(String(init?.body)).query as string;
+        if (query.includes("max(received_at)")) {
+          return new Response(JSON.stringify({ success: true, result: { rows: [{ newest: basinNewestAt }], metrics: { bytes_scanned: 1 } } }));
+        }
+        basinQueries.push(query);
         return basinStatus === 200
           ? new Response(JSON.stringify({ success: true, result: { rows: basinRows, metrics: { bytes_scanned: 1 } } }))
           : new Response(JSON.stringify({ success: false, errors: [{ code: 40003, message: "Invalid function 'countif'" }] }), { status: basinStatus });
@@ -328,6 +335,28 @@ describe("runAlerts against D1", () => {
     const t = await tick(baseEnv({ ALERTS_MODE: "shadow" }));
     expect(t.skipped).toBeUndefined();
     expect(basinQueries).toHaveLength(1);
+  });
+
+  it("holds every alert while Basin is behind the pinned instant, and says so", async () => {
+    const id = await addAlert();
+    basinNewestAt = "2026-10-23T14:50:00.000"; // 7.5 min behind 14:57:30
+    const t = await tick(baseEnv({ ALERTS_MODE: "live" }), new Date("2026-10-23T15:00:30Z"));
+    expect(t).toMatchObject({ skipped: "basin-behind", due: 1, evaluated: [], basinNewest: "2026-10-23T14:50:00.000Z" });
+    expect(basinQueries).toHaveLength(0);
+    expect(sent).toHaveLength(0);
+    expect(JSON.parse(emitted[0])).toMatchObject({ "@l": "Warning", BehindMinutes: 8, HeldAlerts: 1 });
+    expect((await getAlert(env.KEYS_DB, id))?.last_run_at).toBeNull();
+    basinNewestAt = "2026-10-23T15:00:00.000";
+    const t2 = await tick(baseEnv({ ALERTS_MODE: "live" }), new Date("2026-10-23T15:01:30Z"));
+    expect(t2.evaluated).toHaveLength(1);
+  });
+
+  it("holds when the freshness check itself fails", async () => {
+    await addAlert();
+    basinNewestAt = null;
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow" }));
+    expect(t.skipped).toBe("basin-behind");
+    expect(emitted).toHaveLength(1);
   });
 
   it("skips the tick while another holds the lease", async () => {
