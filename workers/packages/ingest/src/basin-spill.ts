@@ -35,9 +35,11 @@ export interface ReplayLimits {
   listLimit: number;
 }
 
-/** A spilled copy is at most one 32 MB request, so 20 is a few hundred MB of
- * NDJSON in the worst case and a few dozen sends in the usual one. */
-export const DEFAULT_REPLAY_LIMITS: ReplayLimits = { maxObjects: 20, listLimit: 1000 };
+/** One object is one spilled request: tens of rows and tens of KB at today's
+ * traffic (a 20-minute outage at peak is ~3,500 of them). 200 a tick drains
+ * that in under 20 minutes; objects are read one at a time, so memory is one
+ * object's rows, and the tick deadline bounds an unusually large backlog. */
+export const DEFAULT_REPLAY_LIMITS: ReplayLimits = { maxObjects: 200, listLimit: 1000 };
 
 const LEASE_NAME = "basin-spill-replay";
 export const LEASE_TTL_MS = 5 * 60_000;
