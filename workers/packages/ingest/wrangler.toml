@@ -67,6 +67,17 @@ SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # queue's ack tail is the thing hurting senders — see workers/packages/ingest/
 # src/enqueue.ts.
 QUEUE_ACK_DEADLINE_MS = "0"
+# Alert evaluator (refs #165): "off", "shadow" (evaluate and record, send
+# nothing) or "live". Alerts run on the once-a-minute cron below against Basin
+# SQL, with every now() in an alert query pinned ALERT_LAG_SECONDS back so a
+# window never ends in data Basin hasn't received yet. Live email also needs
+# SAASMAIL_API_URL and ALERT_FROM_EMAIL here and the SAASMAIL_API_KEY secret.
+ALERTS_MODE = "off"
+ALERT_LAG_SECONDS = "180"
+ALERTS_SOURCE = "log-cannon-alerts"
+
+[triggers]
+crons = ["* * * * *"]
 
 [[queues.producers]]
 queue = "log-cannon-ingest"
@@ -135,6 +146,14 @@ BASIN_WRITE = "true"
 # v2 read API (refs #163). BASIN_SQL_TOKEN is a secret (Basin SQL read only).
 BASIN_SQL_ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
 BASIN_SQL_BUCKET = "log-cannon-events"
+# Alerts on D1 + Basin (refs #165). Off until the alerts are imported, then
+# shadow alongside alert-worker, then live at cutover.
+ALERTS_MODE = "off"
+ALERT_LAG_SECONDS = "180"
+ALERTS_SOURCE = "log-cannon-alerts"
+
+[env.production.triggers]
+crons = ["* * * * *"]
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"

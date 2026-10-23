@@ -50,6 +50,7 @@ describe("dialectHints", () => {
 
   it("says nothing about SQL that is already DataFusion", () => {
     expect(dialectHints("SELECT count(*) FILTER (WHERE level = 'Error') FROM logs.events WHERE ts > now() - INTERVAL '1 hour'")).toEqual([]);
+    expect(dialectHints("SELECT count(*) FROM logs.events WHERE ts > TIMESTAMP '2026-10-23T14:00:00Z' - INTERVAL '5 minutes'")).toEqual([]);
   });
 });
 

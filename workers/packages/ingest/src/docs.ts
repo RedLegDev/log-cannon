@@ -287,7 +287,9 @@ FROM logs.events WHERE source = 'MyApp' AND ts > now() - INTERVAL '1 hour'
 GROUP BY 1 ORDER BY n DESC LIMIT 20
 \`\`\`
 
-Alerts have not moved to v2 yet; use the v1 endpoint for alert tools.
+## Alerts
+
+Alerts run on Basin from a once-a-minute cron. An alert is a SELECT that returns one row of numbers, plus a condition over that row's columns (\`cnt > 50\`, \`errors >= 10 && total > 100\`; \`&&\` binds before \`||\`, no parentheses). \`now()\` in an alert query is the evaluation time minus about 3 minutes, so a "last 5 minutes" window never ends in data Basin hasn't received yet. Test a query with \`POST /api/v1/alerts/:id/test\` before saving it. See the api section.
 `;
 
 export const API_DOCS = `# Log Cannon API (v2, Basin)
@@ -317,6 +319,18 @@ Property filters on rows whose properties exceed 2000 bytes match top-level keys
 Body \`{"sql": "SELECT ..."}\`. SELECT or WITH only. A query with no LIMIT gets LIMIT 10000.
 
 Response: \`{"data": [...], "meta": {rows, elapsed_ms, bytes_scanned}}\`
+
+## Alerts
+
+Same shapes as v1. GET needs \`read\`; POST, PATCH and DELETE need \`write\`.
+
+- \`GET /api/v1/alerts\` → \`{"data": [{id, name, description, query, condition, interval_seconds, cooldown_seconds, recipients, destination_ids, subject, enabled, last_triggered_at, last_run_at, last_status, last_value, last_error}]}\`. \`last_status\` is ok, triggered, cooldown or error.
+- \`POST /api/v1/alerts\` with \`{name, query, condition, subject, destination_ids or recipients, description?, interval_seconds? (>= 30, default 60), cooldown_seconds? (default 300), enabled?, id?}\` → 201 \`{success, id}\`.
+- \`PATCH /api/v1/alerts\` with \`{id, ...fields}\` changes only the named fields. \`DELETE /api/v1/alerts\` with \`{id}\`.
+- \`POST /api/v1/alerts/:id/test\` with \`{query?, condition?}\` (defaults to the stored alert's) runs the query exactly as the evaluator would, with now() pinned to evaluation time minus the lag, and returns \`{"data": rows, "meta": {evaluated_as_of, condition, would_fire, condition_error?}}\`.
+- \`/api/v1/alert-destinations\`: GET, POST \`{name, type: email|webhook, config: {email} | {url, method?, headers?, timeout_seconds?}}\`, PATCH \`{id, ...}\`, DELETE \`{id}\`.
+
+Alert queries are Basin SQL. The query runs every interval (evaluated at most once a minute) and the condition is checked against its first row. A missing column, a non-number, or no rows is an evaluation error, which never fires the alert and is reported on source log-cannon-alerts.
 
 ## Errors
 

@@ -23,6 +23,8 @@ import {
 import { BasinQueryError, queryBasin } from "./basin-sql";
 import { CLEF_FIELDS } from "./parse/clef";
 import { handleMcp, type CreateLogArgs } from "./mcp";
+import { handleAlerts, handleDestinations } from "./alerts/api";
+import { runAlerts } from "./alerts/evaluate";
 import {
   QueryRejected,
   dialectHints,
@@ -69,6 +71,19 @@ interface Env {
   BASIN_SQL_TOKEN?: string;
   BASIN_SQL_ACCOUNT?: string;
   BASIN_SQL_BUCKET?: string;
+  /**
+   * Alert evaluator (refs #165): `off` (default), `shadow` (evaluate and
+   * record, send nothing) or `live`. See `src/alerts/evaluate.ts`.
+   */
+  ALERTS_MODE?: string;
+  /** Seconds every alert's `now()` is pinned behind evaluation time. Default 180. */
+  ALERT_LAG_SECONDS?: string | number;
+  /** Source the evaluator's events (errors, sends) are written to. */
+  ALERTS_SOURCE?: string;
+  /** Alert email: SaaSMail key (secret), API origin and default sender. */
+  SAASMAIL_API_KEY?: string;
+  SAASMAIL_API_URL?: string;
+  ALERT_FROM_EMAIL?: string;
 }
 
 interface QueuePayload {
@@ -582,6 +597,32 @@ export interface IngestRequest {
   receivedAt: Date;
 }
 
+/** `key_id` on rows the Worker writes about itself; no API key sent them. */
+export const TELEMETRY_KEY_ID = "log-cannon-ingest";
+
+/**
+ * Write the Worker's own CLEF events (slow requests, losses, alert evaluator
+ * events) to `source`: the queue first, as every ingest is, then Basin when the
+ * dual-write is on, so v2 readers and alerts see them too. Throws only if the
+ * queue send does; a failed Basin copy is logged and dropped, never reported
+ * through this same path.
+ */
+export async function sendTelemetry(env: Env, source: string, lines: string[]): Promise<void> {
+  if (!lines.length) return;
+  const bytes = new TextEncoder().encode(`${lines.join("\n")}\n`);
+  const contentType = "application/vnd.serilog.clef";
+  await env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType });
+  if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
+  try {
+    // Off the response path, as copyToBasin is: the slow-request report runs
+    // inside the request it describes.
+    await scheduler.wait(0);
+    await writeCopy(env.LOGS, { format: "clef", bodies: [bytes], contentType, source, keyId: TELEMETRY_KEY_ID, receivedAt: new Date() });
+  } catch (e) {
+    console.error(JSON.stringify({ event: "telemetry-basin-copy-failed", source, error: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
 /**
  * Copy an accepted request into Basin, in `waitUntil` so it is off the response
  * path. Call only after the queue accepted the payload: a request the queue
@@ -637,14 +678,7 @@ async function reportBasinFailure(
     const telemetrySource = ingest.env.SLOW_REQUEST_SOURCE?.trim() ?? "";
     if (!telemetrySource) return;
     if (!shouldEmitTelemetry(Date.now(), "basin-failure")) return;
-    await ingest.env.INGEST_QUEUE.send({
-      format: "clef",
-      source: telemetrySource,
-      body: encodeBody(
-        new TextEncoder().encode(basinFailureCLEF(failure, new Date().toISOString())),
-      ),
-      contentType: "application/vnd.serilog.clef",
-    });
+    await sendTelemetry(ingest.env, telemetrySource, [basinFailureCLEF(failure, new Date().toISOString())]);
   } catch (e) {
     warnReportFailed(e);
   }
@@ -725,13 +759,7 @@ export async function reportEnqueueFailure(
     if (!telemetrySource) return;
     if (!shouldEmitTelemetry(Date.now(), "enqueue-failure")) return;
 
-    const line = enqueueFailureCLEF(failure, new Date().toISOString());
-    await env.INGEST_QUEUE.send({
-      format: "clef",
-      source: telemetrySource,
-      body: encodeBody(new TextEncoder().encode(line)),
-      contentType: "application/vnd.serilog.clef",
-    });
+    await sendTelemetry(env, telemetrySource, [enqueueFailureCLEF(failure, new Date().toISOString())]);
   } catch (e) {
     // The queue is the thing that just failed, so its report failing too is
     // the expected case, not a surprise. The console line above has already
@@ -941,14 +969,7 @@ export function reportIfSlow(
     if (!shouldEmitTelemetry()) return;
 
     const line = slowRequestCLEF(report, new Date().toISOString());
-    ctx.waitUntil(
-      env.INGEST_QUEUE.send({
-        format: "clef",
-        source: telemetrySource,
-        body: encodeBody(new TextEncoder().encode(line)),
-        contentType: "application/vnd.serilog.clef",
-      }).catch(warnReportFailed),
-    );
+    ctx.waitUntil(sendTelemetry(env, telemetrySource, [line]).catch(warnReportFailed));
   } catch (e) {
     // The outer catch covers the synchronous path, including a `send` that
     // throws before it returns a promise; the inner `.catch` covers the
@@ -965,12 +986,14 @@ export function reportIfSlow(
  * the unprefixed routes move here too. Only these paths take the prefix.
  */
 const READ_PREFIX = "/v2";
-const READ_PATHS = new Set(["/api/v1/query", "/api/v1/logs", "/api/mcp"]);
+const READ_PATHS = new Set(["/api/v1/query", "/api/v1/logs", "/api/mcp", "/api/v1/alerts", "/api/v1/alert-destinations"]);
 
 export function readPath(path: string): string | null {
   if (!path.startsWith(`${READ_PREFIX}/`)) return null;
   const rest = path.slice(READ_PREFIX.length);
-  return READ_PATHS.has(rest) ? rest : null;
+  if (READ_PATHS.has(rest)) return rest;
+  // The one sub-route: POST /api/v1/alerts/:id/test.
+  return /^\/api\/v1\/alerts\/[^/]+\/test$/.test(rest) ? rest : null;
 }
 
 function apiError(error: string, message: string, status: number, extra?: Record<string, unknown>): Response {
@@ -1077,6 +1100,18 @@ async function handleRead(
     return apiError("forbidden", "This key lacks the required 'read' scope", 403);
   }
 
+  if (route === "/api/v1/alerts" || route.startsWith("/api/v1/alerts/") || route === "/api/v1/alert-destinations") {
+    const api = { env, canWrite: hasScope(key, "write"), json: jsonResponse, error: apiError, now: () => new Date() };
+    try {
+      return route === "/api/v1/alert-destinations"
+        ? await handleDestinations(request, api)
+        : await handleAlerts(request, route.slice("/api/v1/alerts".length), api);
+    } catch (e) {
+      console.error(JSON.stringify({ event: "alerts-api-error", route, error: e instanceof Error ? e.message : String(e) }));
+      return apiError("internal_error", "Alert request failed", 500);
+    }
+  }
+
   if (route === "/api/v1/logs") {
     if (request.method === "DELETE") {
       return apiError("not_supported", "Basin is read-only; logs are removed by per-key retention", 405);
@@ -1110,9 +1145,36 @@ async function handleRead(
   }
 }
 
+// --- Cron ---
+
+/**
+ * The once-a-minute cron. Alerts are the only job so far; the Supabase pull
+ * (#164) joins here.
+ */
+export async function scheduled(env: Env): Promise<void> {
+  const source = env.ALERTS_SOURCE?.trim() || "log-cannon-alerts";
+  try {
+    const tick = await runAlerts(env, {
+      now: () => new Date(),
+      emit: (lines) => sendTelemetry(env, source, lines).catch(warnReportFailed),
+    });
+    if (tick.skipped !== "off") {
+      const errors = tick.evaluated.filter((e) => e.status === "error").length;
+      const fired = tick.evaluated.filter((e) => e.wouldSend).length;
+      console.log(JSON.stringify({ event: "alerts-tick", mode: tick.mode, skipped: tick.skipped, due: tick.due, errors, fired }));
+    }
+  } catch (e) {
+    console.error(JSON.stringify({ event: "alerts-tick-failed", error: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
 // --- Router ---
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(scheduled(env));
+  },
+
   async fetch(
     request: Request,
     env: Env,

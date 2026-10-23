@@ -3,8 +3,8 @@
 // Hand-rolled instead of pulling the MCP SDK into the ingest Worker: the
 // server only exposes tools, holds no session, and never streams, so the
 // protocol surface is initialize / ping / tools/list / tools/call. Tools are
-// registered by key scope, as in v1. Alert tools stay on v1 until alerts move
-// to D1 (step 4 of docs/v2/PLAN.md).
+// registered by key scope, as in v1. The alert tools read and write the D1
+// alerts that the cron evaluator runs (refs #165).
 
 import type { BasinSqlEnv } from "./basin-sql";
 import { BasinQueryError } from "./basin-sql";
@@ -22,6 +22,8 @@ import {
 } from "./query";
 import { queryBasin } from "./basin-sql";
 import type { Scope } from "./keys";
+import { normalizeAlert } from "./alerts/api";
+import { insertAlert, listAlerts, type AlertRow, type NormalizedAlert } from "./alerts/store";
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -29,9 +31,27 @@ const LEVELS = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"] 
 
 /** What a tool call needs from the Worker. `createLog` sends through the ingest path. */
 export interface McpContext {
-  env: BasinSqlEnv;
+  env: BasinSqlEnv & { KEYS_DB: D1Database };
   scopes: Scope[];
   createLog: (entry: CreateLogArgs) => Promise<void>;
+  now?: () => Date;
+}
+
+/**
+ * Alerts triggered within their cooldown, newest first: v1's definition of
+ * firing, for the live cooldown and (while v2 runs in shadow) the shadow one.
+ */
+export function firingAlerts(alerts: AlertRow[], now: Date, column: "last_triggered_at" | "shadow_last_triggered_at") {
+  return alerts
+    .filter((a) => a.enabled && a[column] && now.getTime() - Date.parse(a[column]!) < a.cooldown_seconds * 1000)
+    .sort((a, b) => Date.parse(b[column]!) - Date.parse(a[column]!))
+    .map((a) => ({
+      id: a.id,
+      name: a.name,
+      description: a.description,
+      last_triggered_at: a[column],
+      minutes_ago: Math.floor((now.getTime() - Date.parse(a[column]!)) / 60_000),
+    }));
 }
 
 export interface CreateLogArgs {
@@ -225,6 +245,58 @@ export const TOOLS: Tool[] = [
         return json(await getOverview(ctx.env));
       } catch (e) {
         return queryFailure("Failed to get overview", e);
+      }
+    },
+  },
+  {
+    name: "get_firing_alerts",
+    title: "Get Firing Alerts",
+    description:
+      "Alert rules triggered within their cooldown period: a quick way to see active incidents. shadow_firing lists what the v2 evaluator would have sent while it runs in shadow mode.",
+    scope: "read",
+    inputSchema: { type: "object", properties: {} },
+    run: async (_args, ctx) => {
+      try {
+        const now = (ctx.now ?? (() => new Date()))();
+        const alerts = await listAlerts(ctx.env.KEYS_DB);
+        const data = firingAlerts(alerts, now, "last_triggered_at");
+        return json({ data, firing_count: data.length, shadow_firing: firingAlerts(alerts, now, "shadow_last_triggered_at") });
+      } catch (e) {
+        return fail(`Failed to get firing alerts: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+  {
+    name: "create_alert",
+    title: "Create Alert",
+    description:
+      "Create a threshold alert rule, evaluated every interval against Basin. The query is Basin SQL (DataFusion) and must return one row of numbers; now() in it is the evaluation time minus about 3 minutes of ingest lag. The condition compares columns of that first row (e.g. \"cnt > 50\", \"errors >= 100 && total > 1000\"). Use destination_ids to assign reusable notification targets.",
+    scope: "write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Alert name" },
+        description: { type: "string", description: "Alert description" },
+        query: { type: "string", description: "SELECT returning one row of values for the condition" },
+        condition: { type: "string", description: 'Condition expression, e.g. "cnt > 50"' },
+        interval_seconds: { type: "integer", minimum: 30, description: "Check interval in seconds (min 30, default 60; evaluated at most once a minute)" },
+        cooldown_seconds: { type: "integer", minimum: 0, description: "Min seconds between repeated alerts (default 300)" },
+        destination_ids: { type: "array", items: { type: "string" }, description: "Alert destination ids to notify (preferred over recipients)" },
+        recipients: { type: "array", items: { type: "string" }, description: "Email addresses to notify (legacy; use destination_ids)" },
+        subject: { type: "string", description: "Email subject line" },
+      },
+      required: ["name", "query", "condition", "subject"],
+    },
+    run: async (args, ctx) => {
+      const { alert, fields } = normalizeAlert(args, false);
+      if (Object.keys(fields).length) {
+        throw new InvalidParams(Object.entries(fields).map(([k, v]) => `${k}: ${v}`).join("; "));
+      }
+      try {
+        const id = await insertAlert(ctx.env.KEYS_DB, alert as Required<NormalizedAlert>, (ctx.now ?? (() => new Date()))());
+        return json({ success: true, id });
+      } catch (e) {
+        return fail(`Failed to create alert: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
   },

@@ -3,7 +3,7 @@
 // Removing the scheduler.wait(0) in copyToBasin fails the first two cases.
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import worker from "../src/index";
+import worker, { sendTelemetry } from "../src/index";
 import { __resetKeyCache } from "../src/keys";
 import { __resetTelemetryThrottle } from "../src/timing";
 
@@ -32,7 +32,9 @@ describe("Basin dual-write through the fetch handler", () => {
     const LOGS = { send: async (r: any[]) => { order.push("send"); await scheduler.wait(1); sent.push(r); } };
     const queue = { send: async () => {}, sendBatch: async () => {} };
     const ctx = createExecutionContext();
-    const p = worker.fetch(req(body(n)), { ...env, INGEST_QUEUE: queue, LOGS, BASIN_WRITE: "true", QUEUE_ACK_DEADLINE_MS: "0" } as never, ctx);
+    // SLOW_REQUEST_SOURCE off: the test config reports every request as slow,
+    // and that report's own one-line Basin copy is not the request's copy.
+    const p = worker.fetch(req(body(n)), { ...env, INGEST_QUEUE: queue, LOGS, BASIN_WRITE: "true", QUEUE_ACK_DEADLINE_MS: "0", SLOW_REQUEST_SOURCE: "" } as never, ctx);
     const res = await p;
     order.push("response");
     expect(res.status).toBe(201);
@@ -41,6 +43,20 @@ describe("Basin dual-write through the fetch handler", () => {
     expect(order[0]).toBe("response");
     const ns = sent.flat().map((r) => r.properties.N);
     expect(ns).toEqual(Array.from({ length: n }, (_, i) => i));
+  });
+
+  it("the Worker's own telemetry reaches Basin too, as key log-cannon-ingest", async () => {
+    const rows: any[] = [];
+    const queued: any[] = [];
+    const LOGS = { send: async (r: any[]) => void rows.push(...r) };
+    const queue = { send: async (m: any) => void queued.push(m), sendBatch: async () => {} };
+    const line = JSON.stringify({ "@t": "2026-10-23T15:00:00Z", "@l": "Warning", "@mt": "slow {Route}", Route: "/ingest/clef" });
+    await sendTelemetry({ ...env, INGEST_QUEUE: queue, LOGS, BASIN_WRITE: "true" } as never, "log-cannon-ingest", [line]);
+    expect(queued).toEqual([expect.objectContaining({ format: "clef", source: "log-cannon-ingest" })]);
+    expect(rows).toEqual([expect.objectContaining({ source: "log-cannon-ingest", key_id: "log-cannon-ingest", level: "Warning" })]);
+    rows.length = 0;
+    await sendTelemetry({ ...env, INGEST_QUEUE: queue, LOGS, BASIN_WRITE: "false" } as never, "log-cannon-ingest", [line]);
+    expect(rows).toHaveLength(0);
   });
 
   it("flag off: LOGS untouched", async () => {

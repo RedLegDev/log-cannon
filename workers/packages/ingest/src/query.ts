@@ -57,7 +57,7 @@ const CLICKHOUSE_HINTS: [RegExp, string][] = [
   [/\bINTERVAL\s+\d+\s+(SECOND|MINUTE|HOUR|DAY)S?\b/i, "INTERVAL 1 HOUR → INTERVAL '1 hour'"],
   [/\bany\s*\(/i, "any(x) → min(x) or first_value(x)"],
   [/\bFORMAT\s+\w+\s*$/i, "drop FORMAT …; the API always returns JSON"],
-  [/\btimestamp\b/i, "the event time column is ts (received_at is when it was accepted)"],
+  [/\btimestamp\b(?!\s*')/i, "the event time column is ts (received_at is when it was accepted)"],
 ];
 
 export function dialectHints(sql: string): string[] {

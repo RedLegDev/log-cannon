@@ -76,7 +76,11 @@ describe("readPath", () => {
     expect(readPath("/v2/api/mcp")).toBe("/api/mcp");
     expect(readPath("/api/v1/query")).toBeNull();
     expect(readPath("/v2/ingest/clef")).toBeNull();
-    expect(readPath("/v2/api/v1/alerts")).toBeNull();
+    expect(readPath("/v2/api/v1/alerts")).toBe("/api/v1/alerts");
+    expect(readPath("/v2/api/v1/alerts/abc/test")).toBe("/api/v1/alerts/abc/test");
+    expect(readPath("/v2/api/v1/alerts/abc")).toBeNull();
+    expect(readPath("/v2/api/v1/alert-destinations")).toBe("/api/v1/alert-destinations");
+    expect(readPath("/v2/api/v1/keys")).toBeNull();
   });
 });
 
@@ -162,7 +166,9 @@ describe("/v2/api/mcp", () => {
         (t) => t.name,
       );
     expect(await list("k-ingest")).toEqual(["create_log"]);
-    expect(await list("k-read")).toEqual(["create_log", "search_logs", "execute_query", "get_overview", "get_docs"]);
+    expect(await list("k-read")).toEqual(["create_log", "search_logs", "execute_query", "get_overview", "get_firing_alerts", "get_docs"]);
+    expect(await list("k-write")).toContain("create_alert");
+    expect(await list("k-read")).not.toContain("create_alert");
   });
 
   it("won't run a tool the key can't see", async () => {
