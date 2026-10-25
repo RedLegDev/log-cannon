@@ -37,7 +37,7 @@ function slowWarnings(spy: ReturnType<typeof vi.spyOn>) {
     .filter((e) => e?.event === "slow-ingest-request");
 }
 
-// The threshold comes from vitest.config.ts (SLOW_REQUEST_MS = "1"): the worker
+// The threshold comes from vitest.config.mts (SLOW_REQUEST_MS = "1"): the worker
 // reads its vars from wrangler.toml and does not observe a test-side mutation
 // of `env`. Threshold parsing, the disabled case and the throttle are covered
 // as units in test/timing.test.ts.
