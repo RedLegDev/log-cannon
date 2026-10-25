@@ -644,11 +644,19 @@ export async function sendTelemetry(env: Env, source: string, lines: string[]): 
   }
 }
 
+/** What a route hands `enqueue` for its Basin copy; the request supplies the rest. */
+export type IngestCopy = Omit<BasinCopy, "source" | "keyId" | "receivedAt">;
+
 /**
- * Copy an accepted request into Basin, in `waitUntil` so it is off the response
- * path. Call only after the queue accepted the payload: a request the queue
- * refused becomes a 5xx the client retries, and copying it first would put the
- * retry's rows into Basin twice.
+ * Copy a request into Basin once `accepted` (its enqueue) resolves, in
+ * `waitUntil` so it is off the response path. A request the queue refused
+ * becomes a 5xx the client retries, and copying it as well would put the
+ * retry's rows into Basin twice, so a rejected `accepted` copies nothing.
+ *
+ * Call it before awaiting the enqueue, not after. A client that disconnects
+ * mid-enqueue ends the invocation there: the queue send still completes, but
+ * code after the `await` never runs, so a copy registered there is lost
+ * without a trace (refs #175). `enqueue` does this for every route.
  *
  * Never throws. A failure is reported on both channels, the way a lost enqueue
  * is, on its own throttle budget; a copy that lost rows (its spill failed too)
@@ -656,13 +664,19 @@ export async function sendTelemetry(env: Env, source: string, lines: string[]): 
  */
 export function copyToBasin(
   ingest: IngestRequest,
-  copy: Omit<BasinCopy, "source" | "keyId" | "receivedAt">,
+  copy: IngestCopy,
+  accepted: Promise<unknown>,
 ): void {
   const { env, ctx } = ingest;
   if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
   const stream = env.LOGS;
   ctx.waitUntil(
     (async () => {
+      try {
+        await accepted;
+      } catch {
+        return; // the client got the failure and resends
+      }
       // Yield a macrotask first. Without it the async body runs synchronously
       // up to its first await, so the whole parse would happen before this
       // function returns and the handler sends its response.
@@ -715,21 +729,26 @@ async function reportBasinFailure(
  * Every queue write on the request path goes through here so the deadline, the
  * span and the loss report cannot drift apart per route. `send` is a thunk over
  * the whole enqueue — one `send`, or the full `sendChunksBatched` sequence — so
- * a handoff mid-sequence hands off the remaining batches with it.
+ * a handoff mid-sequence hands off the remaining batches with it. `copy` is the
+ * request's Basin copy, made once the enqueue succeeds.
  */
 async function enqueue(
   ingest: IngestRequest,
   format: QueuePayload["format"],
   messages: number,
   send: () => Promise<unknown>,
+  copy: IngestCopy,
 ): Promise<void> {
-  const { handedOff } = await sendWithDeadline(
+  const enqueued = sendWithDeadline(
     send,
     resolveQueueAckDeadlineMs(ingest.env.QUEUE_ACK_DEADLINE_MS),
     ingest.ctx,
     (error, attempts) =>
       reportEnqueueFailure(ingest, format, messages, error, attempts),
   );
+  // Before the await, so a client disconnect can't skip it (see copyToBasin).
+  copyToBasin(ingest, copy, enqueued);
+  const { handedOff } = await enqueued;
   ingest.trace.enqueued(messages, handedOff);
 }
 
@@ -811,8 +830,8 @@ async function handleCLEF(ingest: IngestRequest): Promise<Response> {
         contentType,
         enrich,
       }),
+      { format: "clef", bodies: [bodyBytes], contentType, enrich },
     );
-    copyToBasin(ingest, { format: "clef", bodies: [bodyBytes], contentType, enrich });
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
@@ -835,8 +854,8 @@ async function handleCLEF(ingest: IngestRequest): Promise<Response> {
       contentType,
       enrich,
     }),
+    { format: "clef", bodies: chunks, contentType, enrich },
   );
-  copyToBasin(ingest, { format: "clef", bodies: chunks, contentType, enrich });
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
@@ -868,13 +887,8 @@ async function handleWebhook(ingest: IngestRequest): Promise<Response> {
       contentType,
       preset: preset || undefined,
     }),
+    { format: "webhook", bodies: [bodyBytes], contentType, preset: preset || undefined },
   );
-  copyToBasin(ingest, {
-    format: "webhook",
-    bodies: [bodyBytes],
-    contentType,
-    preset: preset || undefined,
-  });
 
   return jsonResponse({ accepted: true });
 }
@@ -898,8 +912,8 @@ async function handleOTLP(
         body: encodeBody(bodyBytes),
         contentType,
       }),
+      { format, bodies: [bodyBytes], contentType },
     );
-    copyToBasin(ingest, { format, bodies: [bodyBytes], contentType });
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
@@ -930,8 +944,8 @@ async function handleOTLP(
       source,
       contentType,
     }),
+    { format, bodies: chunks, contentType },
   );
-  copyToBasin(ingest, { format, bodies: chunks, contentType });
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
@@ -1092,8 +1106,8 @@ async function createLog(
   };
   await enqueue(ingest, "clef", 1, () =>
     env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType }),
+    { format: "clef", bodies: [bytes], contentType },
   );
-  copyToBasin(ingest, { format: "clef", bodies: [bytes], contentType });
 }
 
 async function handleRead(

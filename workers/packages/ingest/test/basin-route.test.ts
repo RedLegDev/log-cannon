@@ -59,6 +59,40 @@ describe("Basin dual-write through the fetch handler", () => {
     expect(rows).toHaveLength(0);
   });
 
+  // refs #175: a client that disconnects mid-enqueue ends the invocation at the
+  // handler's await, so the copy has to be registered before it.
+  it("registers the copy before the enqueue settles, and copies once it does", async () => {
+    const rows: any[] = [];
+    const LOGS = { send: async (r: any[]) => void rows.push(...r) };
+    let release!: () => void;
+    let started!: () => void;
+    const queueCalled = new Promise<void>((r) => (started = r));
+    const queue = { send: () => { started(); return new Promise<void>((r) => (release = r)); }, sendBatch: async () => {} };
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} };
+    const res = worker.fetch(req(body(3)), { ...env, INGEST_QUEUE: queue, LOGS, BASIN_WRITE: "true", QUEUE_ACK_DEADLINE_MS: "0", SLOW_REQUEST_SOURCE: "" } as never, ctx as never);
+    await queueCalled;
+    expect(pending).toHaveLength(1);
+    expect(rows).toHaveLength(0);
+    release();
+    await Promise.all(pending);
+    expect(rows.map((r) => r.properties.N)).toEqual([0, 1, 2]);
+    expect((await res).status).toBe(201);
+  });
+
+  it("copies nothing when the queue refuses the request", async () => {
+    let calls = 0;
+    const LOGS = { send: async () => { calls++; } };
+    const queue = { send: async () => { throw new Error("queue unavailable"); }, sendBatch: async () => {} };
+    const ctx = createExecutionContext();
+    // The handler rethrows, and the runtime answers 500 for the client to retry.
+    await expect(
+      worker.fetch(req(body(3)), { ...env, INGEST_QUEUE: queue, LOGS, BASIN_WRITE: "true", QUEUE_ACK_DEADLINE_MS: "0", SLOW_REQUEST_SOURCE: "" } as never, ctx),
+    ).rejects.toThrow("queue unavailable");
+    await waitOnExecutionContext(ctx);
+    expect(calls).toBe(0);
+  });
+
   it("flag off: LOGS untouched", async () => {
     let calls = 0;
     const LOGS = { send: async () => { calls++; } };

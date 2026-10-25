@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BasinCopyError,
   MAX_SEND_CHARS,
+  COPY_DEADLINE_MS,
   SEND_RETRY_DELAYS_MS,
+  SEND_TIMEOUT_MS,
   SPILL_PREFIX,
   gunzipRows,
   sendRetry,
@@ -31,6 +33,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   sendRetry.sleep = realSleep;
+  sendRetry.timeoutMs = SEND_TIMEOUT_MS;
   vi.restoreAllMocks();
 });
 
@@ -259,7 +262,7 @@ describe("copyToBasin", () => {
     } as unknown as IngestRequest;
     const { format, bodies, contentType } = copy();
     return {
-      run: () => copyToBasin(ingest, { format, bodies, contentType }),
+      run: (accepted: Promise<unknown> = Promise.resolve()) => copyToBasin(ingest, { format, bodies, contentType }, accepted),
       pending,
       queued,
     };
@@ -287,6 +290,23 @@ describe("copyToBasin", () => {
     await Promise.all(h.pending);
     expect(batches.flat()).toHaveLength(2);
     expect(h.queued).toHaveLength(0);
+  });
+
+  it("waits for the enqueue, and copies nothing if it was refused", async () => {
+    const { stream, batches } = fakeStream();
+    const h = harness({ BASIN_WRITE: "true" }, stream);
+    let resolve!: () => void;
+    h.run(new Promise<void>((r) => (resolve = r)));
+    await scheduler.wait(1);
+    expect(batches).toHaveLength(0);
+    resolve();
+    await Promise.all(h.pending);
+    expect(batches.flat()).toHaveLength(2);
+
+    const refused = harness({ BASIN_WRITE: "true" }, stream);
+    refused.run(Promise.reject(new Error("queue unavailable")));
+    await Promise.all(refused.pending);
+    expect(batches.flat()).toHaveLength(2);
   });
 
   it("reports a failed send on both channels and never throws", async () => {
@@ -383,11 +403,66 @@ describe("writeCopy retry and spill", () => {
   it("stops retrying when a retry couldn't start inside the budget", async () => {
     const { stream, attempts } = flakyStream(() => true);
     let t = 1_000_000;
-    vi.spyOn(Date, "now").mockImplementation(() => (t += 6_000));
+    vi.spyOn(Date, "now").mockImplementation(() => (t += 3_000));
     const err = await writeCopy(stream, copy(), { spill: env.BASIN_SPILL }).catch((e) => e);
-    // started, then +6 s: a 500 ms retry fits under 12 s; +12 s: 2 s doesn't.
+    // The clock reads before each attempt and after each failure. At +6 s a
+    // 500 ms retry fits under 12 s; at +12 s a 2 s one doesn't.
     expect(err.outcome).toMatchObject({ retries: 1, spilled: 2 });
     expect(attempts).toHaveLength(2);
+  });
+});
+
+// --- hung sends and the copy deadline (refs #175) ------------------------------
+
+describe("writeCopy time limits", () => {
+  const never = () => new Promise<void>(() => {});
+
+  it("a send that never settles times out, is retried, then spilled", async () => {
+    sendRetry.timeoutMs = 5;
+    const stream: LogStream = { send: never };
+    const err = await writeCopy(stream, copy(), { spill: env.BASIN_SPILL }).catch((e) => e);
+    expect(err).toBeInstanceOf(BasinCopyError);
+    expect(err.message).toBe("send timed out after 5 ms");
+    expect(err.outcome).toMatchObject({ sends: 0, retries: SEND_RETRY_DELAYS_MS.length, spilled: 2, lost: 0 });
+    expect(await spilledRows()).toHaveLength(2);
+  });
+
+  it("a hung attempt followed by a good one spills nothing", async () => {
+    sendRetry.timeoutMs = 5;
+    const { stream: ok, sent } = flakyStream(() => false);
+    let n = 0;
+    const stream: LogStream = { send: (r) => (n++ === 0 ? never() : ok.send(r)) };
+    const out = await writeCopy(stream, copy(), { spill: env.BASIN_SPILL });
+    expect(out).toMatchObject({ rows: 2, sends: 1, retries: 1 });
+    expect(sent.flat()).toHaveLength(2);
+    expect(await spilledRows()).toEqual([]);
+  });
+
+  it("sends nothing more once the copy deadline passes, and spills the rest", async () => {
+    const { stream, sent } = flakyStream(() => false);
+    const t0 = 1_000_000;
+    let reads = 0;
+    // started, then the first batch's check, then everything after it is late.
+    vi.spyOn(Date, "now").mockImplementation(() => (reads++ < 2 ? t0 : t0 + COPY_DEADLINE_MS));
+    const bodies = [utf8(`${big("A")}\n${big("B")}\n`), utf8(`${small("C")}\n`)];
+    const err = await writeCopy(stream, copy({ bodies }), { spill: env.BASIN_SPILL }).catch((e) => e);
+    expect(err.message).toBe(`copy deadline of ${COPY_DEADLINE_MS} ms reached`);
+    expect(err.outcome).toMatchObject({ rows: 1, sends: 1, retries: 0, spilled: 2 });
+    expect(sent.flat().map((r) => r.message)).toEqual(["A"]);
+    expect((await spilledRows()).map((r) => r.message)).toEqual(["B", "C"]);
+  });
+});
+
+describe("writeCopy partial parse skips", () => {
+  it("sends the good records and reports the skipped ones as a parse failure", async () => {
+    const { stream, batches } = fakeStream();
+    const body = utf8(`${small("a")}\nnot json\n${small("b")}\n`);
+    const err = await writeCopy(stream, copy({ bodies: [body] })).catch((e) => e);
+    expect(err).toBeInstanceOf(BasinCopyError);
+    expect(err.stage).toBe("parse");
+    expect(err.message).toBe("1 unparseable record(s) skipped");
+    expect(err.outcome).toMatchObject({ rows: 2, skipped: 1 });
+    expect(batches.flat().map((r) => r.message)).toEqual(["a", "b"]);
   });
 });
 
@@ -414,7 +489,7 @@ describe("copyToBasin spill reporting", () => {
       receivedAt: RECEIVED_AT,
     } as unknown as IngestRequest;
     const { format, bodies, contentType } = copy();
-    copyToBasin(ingest, { format, bodies, contentType });
+    copyToBasin(ingest, { format, bodies, contentType }, Promise.resolve());
     await Promise.all(pending);
     const logged = JSON.parse(error.mock.calls.find((c) => String(c[0]).includes("basin-copy-failed"))![0] as string);
     const event = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(queued[0].body), (c) => c.charCodeAt(0))));

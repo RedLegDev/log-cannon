@@ -119,8 +119,8 @@ export interface BasinOutcome {
   lost: number;
 }
 
-/** A copy that didn't send every row. `stage` says whether a body failed to
- * parse (its siblings were still sent) or a send failed (the rows after it
+/** A copy that didn't send every row. `stage` says whether a body or some of
+ * its records failed to parse (the rest were still sent) or a send failed (the rows after it
  * were spilled, or lost if the spill failed too). */
 export class BasinCopyError extends Error {
   override name = "BasinCopyError";
@@ -150,12 +150,47 @@ export const SEND_RETRY_DELAYS_MS: readonly number[] = [500, 2_000, 5_000];
  */
 export const SEND_RETRY_BUDGET_MS = 12_000;
 
-/** Retry delays and sleep. Mutable so tests can run the retries without
- * waiting seconds of real time; nothing else should touch it. */
+/**
+ * Longest one send attempt may take before it counts as failed. A Pipelines
+ * send can stall rather than fail, and without a bound the copy waits until
+ * the runtime cancels `waitUntil`, with nothing spilled or reported (refs
+ * #175). A timed-out attempt goes through the same retry and spill as a
+ * rejected one. The abandoned send may still land, so a row can reach Basin
+ * twice: the same at-least-once caveat as a retry.
+ */
+export const SEND_TIMEOUT_MS = 5_000;
+
+/**
+ * Latest a send attempt may start, in milliseconds after the copy began, and
+ * the cap on how long it may run. Rows not sent by then are spilled. The rest
+ * of `waitUntil`'s ~30 s covers the spill put and an enqueue still in flight
+ * when a client disconnected (the copy starts only once it finishes).
+ */
+export const COPY_DEADLINE_MS = 20_000;
+
+/** Retry delays, sleep and the send timeout. Mutable so tests can run the
+ * retries and time-outs without waiting seconds of real time; nothing else
+ * should touch it. */
 export const sendRetry = {
   delaysMs: SEND_RETRY_DELAYS_MS,
   sleep: (ms: number): Promise<void> => scheduler.wait(ms),
+  timeoutMs: SEND_TIMEOUT_MS,
 };
+
+/** `stream.send(batch)`, rejected if it hasn't settled within `ms`. */
+async function sendWithin(stream: LogStream, batch: LogRow[], ms: number): Promise<void> {
+  let id: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    id = setTimeout(() => reject(new Error(`send timed out after ${ms} ms`)), ms);
+  });
+  try {
+    // The race keeps a handler on the abandoned send, so its late rejection
+    // isn't an unhandled one.
+    await Promise.race([stream.send(batch), timeout]);
+  } finally {
+    if (id !== undefined) clearTimeout(id);
+  }
+}
 
 /** The part of the `BASIN_SPILL` R2 binding a copy writes with. */
 export interface SpillBucket {
@@ -226,8 +261,9 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
  * parse is skipped and the rest still go out, the way the consumer fails one
  * queue message and not its siblings.
  *
- * A failed send is retried from the copy's budget (`SEND_RETRY_DELAYS_MS`).
- * Once that is spent the stream is taken to be down: nothing more is sent, and
+ * A failed or timed-out send (`SEND_TIMEOUT_MS`) is retried from the copy's
+ * budget (`SEND_RETRY_DELAYS_MS`). Once that is spent, or the copy reaches
+ * `COPY_DEADLINE_MS`, the stream is taken to be down: nothing more is sent, and
  * every row not yet sent (the failing batch, the batches behind it and the
  * bodies not yet parsed) goes to one spill object for the cron to replay. A
  * row is sent or spilled, never both. Whatever happened is reported through a
@@ -249,8 +285,13 @@ export async function writeCopy(
 
   const send = async (batch: LogRow[]): Promise<boolean> => {
     for (;;) {
+      const elapsed = Date.now() - started;
+      if (elapsed >= COPY_DEADLINE_MS) {
+        sendError = `copy deadline of ${COPY_DEADLINE_MS} ms reached`;
+        return false;
+      }
       try {
-        await stream.send(batch);
+        await sendWithin(stream, batch, Math.min(sendRetry.timeoutMs, COPY_DEADLINE_MS - elapsed));
         return true;
       } catch (e) {
         const delay = sendRetry.delaysMs[out.retries];
@@ -321,7 +362,11 @@ export async function writeCopy(
     }
     throw new BasinCopyError("send", sendError, out, spillError);
   }
-  if (parseError !== undefined) throw new BasinCopyError("parse", parseError, out);
+  // A body that failed outright, or records a parser dropped from a body whose
+  // siblings went out: either way rows are missing from the copy.
+  if (parseError !== undefined || out.skipped > 0) {
+    throw new BasinCopyError("parse", parseError ?? `${out.skipped} unparseable record(s) skipped`, out);
+  }
   return out;
 }
 
