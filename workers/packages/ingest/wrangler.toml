@@ -159,7 +159,7 @@ BASIN_SQL_ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
 BASIN_SQL_BUCKET = "log-cannon-events"
 # Alerts on D1 + Basin (refs #165). Off until the alerts are imported, then
 # shadow alongside alert-worker, then live at cutover.
-ALERTS_MODE = "off"
+ALERTS_MODE = "shadow"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
 # Supabase pull (refs #164). SUPABASE_PULL_PROJECTS is deliberately not set
