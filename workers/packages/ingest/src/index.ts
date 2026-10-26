@@ -17,8 +17,12 @@ import {
   basinFailureCLEF,
   basinWriteEnabled,
   classifyFailure,
+  copyTiming,
+  isBasinLoss,
+  within,
   writeCopy,
   type BasinCopy,
+  type CopyOptions,
   type LogStream,
 } from "./basin";
 import { BasinQueryError, queryBasin } from "./basin-sql";
@@ -623,7 +627,12 @@ export const TELEMETRY_KEY_ID = "log-cannon-ingest";
  * queue send does. The Basin copy retries and spills like any other; one that
  * still fails is logged, never reported through this same path.
  */
-export async function sendTelemetry(env: Env, source: string, lines: string[]): Promise<void> {
+export async function sendTelemetry(
+  env: Env,
+  source: string,
+  lines: string[],
+  opts: Pick<CopyOptions, "spillOnly"> = {},
+): Promise<void> {
   if (!lines.length) return;
   const bytes = new TextEncoder().encode(`${lines.join("\n")}\n`);
   const contentType = "application/vnd.serilog.clef";
@@ -636,7 +645,7 @@ export async function sendTelemetry(env: Env, source: string, lines: string[]): 
     await writeCopy(
       env.LOGS,
       { format: "clef", bodies: [bytes], contentType, source, keyId: TELEMETRY_KEY_ID, receivedAt: new Date() },
-      { spill: env.BASIN_SPILL },
+      { spill: env.BASIN_SPILL, ...opts },
     );
   } catch (e) {
     const spill = e instanceof BasinCopyError ? { spilledRows: e.outcome.spilled, lostRows: e.outcome.lost, spillError: e.spillError } : {};
@@ -682,10 +691,14 @@ export function copyToBasin(
       // function returns and the handler sends its response.
       await scheduler.wait(0);
       try {
-        await writeCopy(
-          stream,
-          { ...copy, source: ingest.source, keyId: ingest.keyId, receivedAt: ingest.receivedAt },
-          { spill: env.BASIN_SPILL },
+        await within(
+          writeCopy(
+            stream,
+            { ...copy, source: ingest.source, keyId: ingest.keyId, receivedAt: ingest.receivedAt },
+            { spill: env.BASIN_SPILL },
+          ),
+          copyTiming.watchdogMs,
+          "copy",
         );
       } catch (e) {
         await reportBasinFailure(ingest, copy, e);
@@ -715,8 +728,12 @@ async function reportBasinFailure(
 
     const telemetrySource = ingest.env.SLOW_REQUEST_SOURCE?.trim() ?? "";
     if (!telemetrySource) return;
-    if (!shouldEmitTelemetry(Date.now(), failure.lostRows ? "basin-loss" : "basin-failure")) return;
-    await sendTelemetry(ingest.env, telemetrySource, [basinFailureCLEF(failure, new Date().toISOString())]);
+    if (!shouldEmitTelemetry(Date.now(), isBasinLoss(failure) ? "basin-loss" : "basin-failure")) return;
+    // A failed send means the stream is the problem, so the report's own Basin
+    // copy goes straight to the spill instead of hanging on it.
+    await sendTelemetry(ingest.env, telemetrySource, [basinFailureCLEF(failure, new Date().toISOString())], {
+      spillOnly: failure.stage === "send",
+    });
   } catch (e) {
     warnReportFailed(e);
   }

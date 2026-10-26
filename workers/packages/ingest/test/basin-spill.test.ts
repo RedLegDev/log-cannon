@@ -4,7 +4,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { acquireLease } from "../src/alerts/store";
-import { SPILL_PREFIX, gunzipRows, gzipRows, sendRetry, writeCopy, type LogStream } from "../src/basin";
+import { SPILL_PREFIX, gunzipRows, gzipRows, copyTiming, writeCopy, type LogStream } from "../src/basin";
 import { TICK_DEADLINE_MS, replaySummaryCLEF, runBasinSpillReplay, type ReplayDeps } from "../src/basin-spill";
 import type { LogRow } from "../src/parse/row";
 import { scheduled } from "../src/index";
@@ -193,9 +193,9 @@ describe("runBasinSpillReplay", () => {
 });
 
 describe("spill then replay", () => {
-  const realSleep = sendRetry.sleep;
-  beforeEach(() => void (sendRetry.sleep = async () => {}));
-  afterEach(() => void (sendRetry.sleep = realSleep));
+  const realSleep = copyTiming.sleep;
+  beforeEach(() => void (copyTiming.sleep = async () => {}));
+  afterEach(() => void (copyTiming.sleep = realSleep));
 
   it("a spilled-and-replayed row keeps its id", async () => {
     const down = stream(() => true);

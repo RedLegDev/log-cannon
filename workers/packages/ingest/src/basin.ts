@@ -168,25 +168,45 @@ export const SEND_TIMEOUT_MS = 5_000;
  */
 export const COPY_DEADLINE_MS = 20_000;
 
-/** Retry delays, sleep and the send timeout. Mutable so tests can run the
+/**
+ * Longest the spill (gzip finish and R2 put) may take. Without it, an R2 put
+ * that stalls holds the copy until the runtime cancels `waitUntil`, and its
+ * rows go with nothing reported (seen 2026-10-26 01:59, refs #175). A timed-out
+ * spill reports its rows as lost.
+ */
+export const SPILL_TIMEOUT_MS = 3_000;
+
+/**
+ * Longest a whole request copy may run before `copyToBasin` reports it lost:
+ * the copy deadline and the spill (23 s) plus the parse. It counts from when
+ * the copy starts, which can be up to `QUEUE_ACK_DEADLINE_MS` (4 s) after a
+ * client disconnect starts `waitUntil`'s ~30 s, so 4 + 24 leaves ~2 s for the
+ * report. Anything that
+ * still hangs is at least reported rather than cancelled silently.
+ */
+export const COPY_WATCHDOG_MS = 24_000;
+
+/** Retry delays, sleep and the time limits. Mutable so tests can run the
  * retries and time-outs without waiting seconds of real time; nothing else
  * should touch it. */
-export const sendRetry = {
+export const copyTiming = {
   delaysMs: SEND_RETRY_DELAYS_MS,
   sleep: (ms: number): Promise<void> => scheduler.wait(ms),
   timeoutMs: SEND_TIMEOUT_MS,
+  spillTimeoutMs: SPILL_TIMEOUT_MS,
+  watchdogMs: COPY_WATCHDOG_MS,
 };
 
-/** `stream.send(batch)`, rejected if it hasn't settled within `ms`. */
-async function sendWithin(stream: LogStream, batch: LogRow[], ms: number): Promise<void> {
+/** `work`, rejected with "`what` timed out after `ms` ms" if it hasn't settled by then. */
+export async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let id: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    id = setTimeout(() => reject(new Error(`send timed out after ${ms} ms`)), ms);
+    id = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
   });
   try {
-    // The race keeps a handler on the abandoned send, so its late rejection
+    // The race keeps a handler on the abandoned work, so its late rejection
     // isn't an unhandled one.
-    await Promise.race([stream.send(batch), timeout]);
+    return await Promise.race([work, timeout]);
   } finally {
     if (id !== undefined) clearTimeout(id);
   }
@@ -252,6 +272,13 @@ export async function gunzipRows(body: ReadableStream<Uint8Array>): Promise<LogR
 export interface CopyOptions {
   /** Where rows go when the stream stays down. Absent loses them, reported. */
   spill?: SpillBucket;
+  /**
+   * Spill every row without trying the stream, and return normally once they
+   * are spilled. For a report about the stream failing: sending it there would
+   * hang the same way, past what is left of `waitUntil`. The replay delivers it
+   * late.
+   */
+  spillOnly?: boolean;
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -284,6 +311,10 @@ export async function writeCopy(
   let unspilled = 0;
 
   const send = async (batch: LogRow[]): Promise<boolean> => {
+    if (opts.spillOnly) {
+      sendError = "spill only";
+      return false;
+    }
     for (;;) {
       const elapsed = Date.now() - started;
       if (elapsed >= COPY_DEADLINE_MS) {
@@ -291,16 +322,16 @@ export async function writeCopy(
         return false;
       }
       try {
-        await sendWithin(stream, batch, Math.min(sendRetry.timeoutMs, COPY_DEADLINE_MS - elapsed));
+        await within(stream.send(batch), Math.min(copyTiming.timeoutMs, COPY_DEADLINE_MS - elapsed), "send");
         return true;
       } catch (e) {
-        const delay = sendRetry.delaysMs[out.retries];
+        const delay = copyTiming.delaysMs[out.retries];
         if (delay === undefined || Date.now() - started + delay > SEND_RETRY_BUDGET_MS) {
           sendError = message(e);
           return false;
         }
         out.retries++;
-        await sendRetry.sleep(delay);
+        await copyTiming.sleep(delay);
       }
     }
   };
@@ -349,17 +380,25 @@ export async function writeCopy(
       out.lost = unspilled;
     } else if (spill) {
       try {
-        const blob = await spill.finish();
-        await opts.spill.put(spillKey(copy.receivedAt), blob, {
-          httpMetadata: { contentType: "application/x-ndjson" },
-          customMetadata: { rows: String(spill.rows) },
-        });
+        const bucket = opts.spill;
+        const writer = spill;
+        await within(
+          (async () => {
+            await bucket.put(spillKey(copy.receivedAt), await writer.finish(), {
+              httpMetadata: { contentType: "application/x-ndjson" },
+              customMetadata: { rows: String(writer.rows) },
+            });
+          })(),
+          copyTiming.spillTimeoutMs,
+          "spill",
+        );
         out.spilled = spill.rows;
       } catch (e) {
         spillError = message(e);
         out.lost = spill.rows;
       }
     }
+    if (opts.spillOnly && spillError === undefined) return out;
     throw new BasinCopyError("send", sendError, out, spillError);
   }
   // A body that failed outright, or records a parser dropped from a body whose
@@ -389,15 +428,19 @@ export function classifyFailure(e: unknown): BasinFailure["stage"] {
   return e instanceof BasinCopyError ? e.stage : "send";
 }
 
+/** Rows are gone: a send failure whose rows didn't all reach the spill bucket. */
+export function isBasinLoss(f: BasinFailure): boolean {
+  return f.stage === "send" && !(f.spilledRows !== undefined && !f.lostRows);
+}
+
 /**
  * Error only when rows are gone. A send failure whose rows all reached the
  * spill bucket is a Warning, like an unparseable body: the replay sends them.
  */
 export function basinFailureCLEF(f: BasinFailure, at: string): string {
-  const safe = f.stage === "parse" || (f.spilledRows !== undefined && !f.lostRows);
   return `${JSON.stringify({
     "@t": at,
-    "@l": safe ? "Warning" : "Error",
+    "@l": isBasinLoss(f) ? "Error" : "Warning",
     "@mt":
       "Basin copy failed at {Stage}: {Route} for {IngestSource}: {Error}",
     Stage: f.stage,
