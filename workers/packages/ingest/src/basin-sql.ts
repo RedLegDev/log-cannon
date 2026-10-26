@@ -85,6 +85,13 @@ interface BasinResponse {
   result?: { rows?: unknown[]; metrics?: { bytes_scanned?: number } };
 }
 
+/** A Basin SQL timestamp cast to VARCHAR, which may or may not carry a zone (UTC either way). */
+export function parseBasinTimestamp(v: string | null | undefined): Date | null {
+  if (!v) return null;
+  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(v) ? v : `${v}Z`);
+  return Number.isNaN(t) ? null : new Date(t);
+}
+
 export async function queryBasin<T = Record<string, unknown>>(
   env: BasinSqlEnv,
   sql: string,

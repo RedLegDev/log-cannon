@@ -11,7 +11,7 @@
 // it would send, on its own cooldown, and sends nothing; `live` delivers as
 // v1's alert-worker does and starts the cooldown only on an accepted delivery.
 
-import { BasinQueryError, queryBasin, type BasinSqlEnv } from "../basin-sql";
+import { BasinQueryError, parseBasinTimestamp, queryBasin, type BasinSqlEnv } from "../basin-sql";
 import { ConditionError, evaluateCondition } from "./condition";
 import { deliverAlert, type DeliveryEnv } from "./deliver";
 import {
@@ -81,10 +81,7 @@ export async function basinNewest(env: BasinSqlEnv, pinned: Date): Promise<Date 
     `SELECT CAST(max(received_at) AS VARCHAR) AS newest FROM logs.events WHERE received_at > ${timestampLiteral(new Date(pinned.getTime() - 3_600_000))}`,
     ALERT_QUERY_TIMEOUT_MS,
   );
-  const v = rows[0]?.newest;
-  if (!v) return null;
-  const t = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(v) ? v : `${v}Z`);
-  return Number.isNaN(t) ? null : new Date(t);
+  return parseBasinTimestamp(rows[0]?.newest);
 }
 
 /**

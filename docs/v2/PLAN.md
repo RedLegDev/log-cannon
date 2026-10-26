@@ -20,7 +20,7 @@ retention workers, backups, the Next.js dashboard) and the Cloudflare Queue that
 
 | Keep (same URLs, same API keys) | Drop | Defer |
 |---|---|---|
-| Ingest: `/ingest/clef`, `/api/events/raw`, `/v1/logs`, `/v1/traces`, `/ingest/otlp/*`, `/ingest/webhook`, `/health` | Dashboard UI, OTP login, live tail | Per-key retention (Iceberg row deletes; tracked separately) |
+| Ingest: `/ingest/clef`, `/api/events/raw`, `/v1/logs`, `/v1/traces`, `/ingest/otlp/*`, `/ingest/webhook`, `/health` | Dashboard UI, OTP login, live tail | Per-key row-precise retention (v2 drops whole day partitions past the longest window; #167) |
 | Key admin API `/v1/keys` (D1, unchanged) | Dashboards, endpoints, saved queries | Tenant-scoped query keys (#47/#48) |
 | `/api/v1/query` (SQL), `/api/v1/logs` (search) | Backups, system/storage panel | |
 | `/api/mcp`: `search_logs`, `execute_query`, `get_overview`, `get_firing_alerts`, `get_docs`, `create_alert`, `create_log` | Queue, DLQ, Go consumer | |
@@ -51,8 +51,9 @@ ClickHouse table.
   it, so ingest lag is `received_at - ts`. Basin also adds `__ingest_ts`, which it uses as
   the day partition.
 - `source` is the resolved source (the key name, or the OTLP `service.name` / webhook
-  preset override). `key_id` is the key that actually sent the event. Retention and any
-  future tenant scoping key on `key_id`, which fixes #82.
+  preset override). `key_id` is the key that actually sent the event. Retention windows and
+  any future tenant scoping key on `key_id`, which fixes #82. Basin retention (#167) can only
+  drop whole `__ingest_ts` day partitions, so every key keeps the longest window.
 - `format` is `clef | otlp | webhook | api`. `kind` is `log | span`.
 - Span fields (`trace_id`, `span_id`, `parent_span_id`, `duration_ms`) are real columns
   instead of entries in `properties`.

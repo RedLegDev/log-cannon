@@ -32,6 +32,7 @@ import { handleAlerts, handleDestinations } from "./alerts/api";
 import { runAlerts } from "./alerts/evaluate";
 import { runSupabasePull } from "./supabase/pull";
 import { runBasinSpillReplay } from "./basin-spill";
+import { RETENTION_CRON, runBasinRetention } from "./basin-retention";
 import {
   QueryRejected,
   dialectHints,
@@ -94,6 +95,16 @@ interface Env {
    * record, send nothing) or `live`. See `src/alerts/evaluate.ts`.
    */
   ALERTS_MODE?: string;
+  /**
+   * Basin retention (refs #167), on its own daily cron: `off` (default),
+   * `dry-run` or `delete`. `BASIN_EVENTS` is the catalog's bucket (manifests
+   * are read and written there); `BASIN_CATALOG_TOKEN` is the catalog-write
+   * secret delete mode needs. See `src/basin-retention.ts`.
+   */
+  BASIN_RETENTION_MODE?: string;
+  BASIN_RETENTION_DEFAULT_DAYS?: string;
+  BASIN_EVENTS?: R2Bucket;
+  BASIN_CATALOG_TOKEN?: string;
   /** Seconds every alert's `now()` is pinned behind evaluation time. Default 180. */
   ALERT_LAG_SECONDS?: string | number;
   /** Source the evaluator's events (errors, sends) are written to. */
@@ -1244,6 +1255,19 @@ async function basinSpillReplayTick(env: Env): Promise<void> {
   }
 }
 
+async function basinRetentionTick(env: Env): Promise<void> {
+  const source = env.SLOW_REQUEST_SOURCE?.trim() || TELEMETRY_KEY_ID;
+  try {
+    const run = await runBasinRetention(env, {
+      now: () => new Date(),
+      emit: (lines) => sendTelemetry(env, source, lines).catch(warnReportFailed),
+    });
+    if (run.skipped !== "off") console.log(JSON.stringify({ event: "basin-retention-run", ...run }));
+  } catch (e) {
+    console.error(JSON.stringify({ event: "basin-retention-run-failed", error: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
 async function alertsTick(env: Env): Promise<void> {
   const source = env.ALERTS_SOURCE?.trim() || "log-cannon-alerts";
   try {
@@ -1276,8 +1300,8 @@ async function supabasePullTick(env: Env): Promise<void> {
 // --- Router ---
 
 export default {
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(scheduled(env));
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(controller.cron === RETENTION_CRON ? basinRetentionTick(env) : scheduled(env));
   },
 
   async fetch(

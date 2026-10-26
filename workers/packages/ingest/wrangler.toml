@@ -83,6 +83,12 @@ QUEUE_WRITE = "true"
 ALERTS_MODE = "off"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
+# Basin retention (refs #167), on the second cron: "off", "dry-run" (report
+# what it would drop, change nothing) or "delete" (also needs the
+# BASIN_CATALOG_TOKEN secret, R2 Data Catalog write, and a BASIN_EVENTS bucket
+# binding). Keys with retention_days = 0 get the default window.
+BASIN_RETENTION_MODE = "off"
+BASIN_RETENTION_DEFAULT_DAYS = "30"
 # Supabase platform-log pull (refs #164), on the same cron: "ref=source,…"
 # for each project, written to the Basin stream as format = 'supabase'. Empty
 # is a no-op. Needs BASIN_WRITE on and the SUPABASE_ACCESS_TOKEN secret.
@@ -91,8 +97,9 @@ ALERTS_SOURCE = "log-cannon-alerts"
 SUPABASE_PULL_PROJECTS = ""
 SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs"
 
+# The second cron is Basin retention (src/basin-retention.ts, RETENTION_CRON).
 [triggers]
-crons = ["* * * * *"]
+crons = ["* * * * *", "17 20 * * *"]
 
 [[queues.producers]]
 queue = "log-cannon-ingest"
@@ -174,6 +181,10 @@ ALERTS_SOURCE = "log-cannon-alerts"
 # SAASMAIL_API_KEY secret is set on the Worker, not here.
 SAASMAIL_API_URL = "https://mail.redleg.dev"
 ALERT_FROM_EMAIL = "alerts@redleg.dev"
+# Basin retention (refs #167). Ships as dry-run: turning on "delete" (and
+# setting BASIN_CATALOG_TOKEN) is a deliberate decision.
+BASIN_RETENTION_MODE = "dry-run"
+BASIN_RETENTION_DEFAULT_DAYS = "30"
 # Supabase pull (refs #164). SUPABASE_PULL_PROJECTS is deliberately not set
 # here: its "ref=source" pairs name projects and this repo is public. It is a
 # var set on the deployed Worker, kept across deploys by keep_vars below. The
@@ -181,7 +192,7 @@ ALERT_FROM_EMAIL = "alerts@redleg.dev"
 SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs"
 
 [env.production.triggers]
-crons = ["* * * * *"]
+crons = ["* * * * *", "17 20 * * *"]
 
 [[env.production.queues.producers]]
 queue = "log-cannon-ingest"
@@ -197,6 +208,12 @@ binding = "LOGS"
 [[env.production.r2_buckets]]
 binding = "BASIN_SPILL"
 bucket_name = "log-cannon-basin-spill"
+
+# The Basin Catalog bucket itself (refs #167): retention reads and rewrites
+# Iceberg manifests here. It never touches data files directly.
+[[env.production.r2_buckets]]
+binding = "BASIN_EVENTS"
+bucket_name = "log-cannon-events"
 
 [[env.production.d1_databases]]
 binding = "KEYS_DB"
