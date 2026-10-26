@@ -216,9 +216,10 @@ which is Apache DataFusion SQL, not ClickHouse. Ingest is unchanged.
 
 ## Access
 
-- **Search:** \`GET /v2/api/v1/logs?source=MyApp&level=Error\` with \`X-Api-Key\` (read scope)
-- **SQL:** \`POST /v2/api/v1/query\` with \`{"sql": "SELECT ..."}\` (read scope)
-- **MCP:** \`POST /v2/api/mcp\`
+- **Search:** \`GET /api/v1/logs?source=MyApp&level=Error\` with \`X-Api-Key\` (read scope)
+- **SQL:** \`POST /api/v1/query\` with \`{"sql": "SELECT ..."}\` (read scope)
+- **MCP:** \`POST /api/mcp\`
+- Every read path also answers under \`/v2\` (\`/v2/api/v1/query\`), an alias for callers that moved before cutover
 - **Ingest:** \`/ingest/clef\`, \`/api/events/raw\`, \`/ingest/webhook\`, \`/ingest/otlp/*\`, \`/v1/logs\`, \`/v1/traces\`
 
 ## Table logs.events
@@ -312,7 +313,7 @@ Alerts run on Basin from a once-a-minute cron. An alert is a SELECT that returns
 
 export const API_DOCS = `# Log Cannon API (v2, Basin)
 
-Base: \`https://logs.redleg.dev/v2\`. Auth: \`X-Api-Key: <key>\` or \`Authorization: Bearer <key>\`.
+Base: \`https://logs.redleg.dev\` (\`https://logs.redleg.dev/v2\` is an alias). Auth: \`X-Api-Key: <key>\` or \`Authorization: Bearer <key>\`.
 Scopes: ingest < read < write < admin. Reads need \`read\`.
 
 ## GET /api/v1/logs
@@ -328,7 +329,9 @@ Structured search, newest first.
 | limit | Default 100, max 1000 |
 | prop.<key>=<value> | Property filter. Dot paths for nesting. Prefix the value with >, >=, <, <=, != for comparisons |
 
-Response: \`{"data": [{id, ts, level, message, message_template, source, exception?, trace_id?, ..., properties}], "meta": {count, limit, bytes_scanned}}\`
+Response: \`{"data": [{id, ts, timestamp, level, message, message_template, source, exception?, trace_id?, ..., properties}], "meta": {count, limit, bytes_scanned}}\`
+
+\`timestamp\` repeats \`ts\` for v1 callers; use \`ts\`. The \`/v2\` alias leaves it out.
 
 Property filters on rows whose properties exceed 2000 bytes match top-level keys only.
 

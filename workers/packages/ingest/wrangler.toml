@@ -138,6 +138,16 @@ routes = [
   # v2 read API on Basin (refs #163): /v2/api/v1/query, /v2/api/v1/logs,
   # /v2/api/mcp, side by side with the dashboard's v1 until cutover.
   { pattern = "logs.redleg.dev/v2/*", zone_name = "redleg.dev" },
+  # Cutover (refs #168): the unprefixed read paths. Kept commented on purpose.
+  # A route takes its path from the host's v1 dashboard the moment it deploys,
+  # and every push to main deploys, so these go live by uncommenting them in
+  # their own commit at the cutover window (runbook §5 step 3). Rollback is
+  # reverting that commit.
+  # { pattern = "logs.redleg.dev/api/v1/query*", zone_name = "redleg.dev" },
+  # { pattern = "logs.redleg.dev/api/v1/logs*", zone_name = "redleg.dev" },
+  # { pattern = "logs.redleg.dev/api/mcp*", zone_name = "redleg.dev" },
+  # { pattern = "logs.redleg.dev/api/v1/alerts*", zone_name = "redleg.dev" },
+  # { pattern = "logs.redleg.dev/api/v1/alert-destinations*", zone_name = "redleg.dev" },
 ]
 
 [env.production.observability]

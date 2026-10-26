@@ -1066,15 +1066,16 @@ export function reportIfSlow(
 // --- v2 read API (refs #163) ---
 
 /**
- * The read surface runs side by side with v1 under `/v2` until cutover, when
- * the unprefixed routes move here too. Only these paths take the prefix.
+ * The read surface answers at the unprefixed v1 paths and, as an alias for
+ * callers that moved before cutover, under `/v2`. Which one reaches this
+ * Worker in production is the routes' call: until the cutover commit adds the
+ * unprefixed routes (refs #168), those paths still go to the v1 dashboard.
  */
 const READ_PREFIX = "/v2";
 const READ_PATHS = new Set(["/api/v1/query", "/api/v1/logs", "/api/mcp", "/api/v1/alerts", "/api/v1/alert-destinations"]);
 
 export function readPath(path: string): string | null {
-  if (!path.startsWith(`${READ_PREFIX}/`)) return null;
-  const rest = path.slice(READ_PREFIX.length);
+  const rest = path.startsWith(`${READ_PREFIX}/`) ? path.slice(READ_PREFIX.length) : path;
   if (READ_PATHS.has(rest)) return rest;
   // The one sub-route: POST /api/v1/alerts/:id/test.
   return /^\/api\/v1\/alerts\/[^/]+\/test$/.test(rest) ? rest : null;
@@ -1161,6 +1162,7 @@ async function handleRead(
   env: Env,
   ctx: ExecutionContext,
   route: string,
+  unprefixed: boolean,
 ): Promise<Response> {
   let key: APIKeyRecord;
   try {
@@ -1202,7 +1204,10 @@ async function handleRead(
     }
     if (request.method !== "GET") return apiError("method_not_allowed", "Use GET", 405);
     try {
-      return jsonResponse(await searchLogs(env, searchParamsFromUrl(new URL(request.url))));
+      const result = await searchLogs(env, searchParamsFromUrl(new URL(request.url)));
+      // v1 rows carried `timestamp`; callers still on the unprefixed path read it.
+      if (unprefixed) result.data = result.data.map((row) => ({ ...row, timestamp: row.ts }));
+      return jsonResponse(result);
     } catch (e) {
       return basinError(e);
     }
@@ -1339,7 +1344,7 @@ export default {
     }
 
     const read = readPath(path);
-    if (read) return await handleRead(request, env, ctx, read);
+    if (read) return await handleRead(request, env, ctx, read, read === path);
 
     if (request.method !== "POST") {
       return errorResponse(405, "Method not allowed");

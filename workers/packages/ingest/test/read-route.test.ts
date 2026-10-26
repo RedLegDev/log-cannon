@@ -72,17 +72,54 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("readPath", () => {
-  it("serves only the read routes, and only under /v2", () => {
+  it("serves only the read routes, unprefixed and under /v2", () => {
     expect(readPath("/v2/api/v1/query")).toBe("/api/v1/query");
     expect(readPath("/v2/api/mcp")).toBe("/api/mcp");
-    expect(readPath("/api/v1/query")).toBeNull();
     expect(readPath("/v2/ingest/clef")).toBeNull();
+    expect(readPath("/ingest/clef")).toBeNull();
+    expect(readPath("/v1/logs")).toBeNull();
+    expect(readPath("/v2/v2/api/v1/query")).toBeNull();
+    for (const p of ["/api/v1/query", "/api/v1/logs", "/api/mcp", "/api/v1/alerts", "/api/v1/alert-destinations", "/api/v1/alerts/abc/test"]) {
+      expect(readPath(p)).toBe(p);
+      expect(readPath(`/v2${p}`)).toBe(p);
+    }
+    expect(readPath("/api/v1/keys")).toBeNull();
+    expect(readPath("/api/v1/alerts/abc")).toBeNull();
     expect(readPath("/v2/api/v1/alerts")).toBe("/api/v1/alerts");
     expect(readPath("/v2/api/v1/alerts/abc/test")).toBe("/api/v1/alerts/abc/test");
     expect(readPath("/v2/api/v1/alerts/abc")).toBeNull();
     expect(readPath("/v2/api/v1/alert-destinations")).toBe("/api/v1/alert-destinations");
     expect(readPath("/v2/api/v1/keys")).toBeNull();
   });
+});
+
+describe("unprefixed read paths", () => {
+  // Each pair goes through the fetch handler; the same handler answers both.
+  const cases: [string, RequestInit & { key?: string }][] = [
+    ["/api/v1/query", { method: "POST", body: JSON.stringify({ sql: "SELECT 1" }), key: "k-read" }],
+    ["/api/v1/query", { method: "POST", body: JSON.stringify({ sql: "SELECT 1" }), key: "k-ingest" }],
+    ["/api/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), key: "k-read" }],
+    ["/api/v1/alerts", { key: "k-read" }],
+    ["/api/v1/alert-destinations", { key: "k-read" }],
+    ["/api/v1/alerts", { key: "k-ingest" }],
+  ];
+  for (const [path, init] of cases) {
+    it(`${init.method ?? "GET"} ${path} (${init.key}) answers as /v2${path} does`, async () => {
+      const h = harness();
+      const bare = await h.call(path, init);
+      const aliased = await h.call(`/v2${path}`, init);
+      expect(bare.status).toBe(aliased.status);
+      // elapsed_ms is wall time, so it's the one field the two may not share.
+      const body = async (r: Response) => {
+        const b = (await r.json()) as { meta?: Record<string, unknown> };
+        delete b.meta?.elapsed_ms;
+        return b;
+      };
+      expect(await body(bare)).toEqual(await body(aliased));
+      // Both sent the same SQL, or neither sent any.
+      expect(h.sent.basin.slice(0, 1)).toEqual(h.sent.basin.slice(1));
+    });
+  }
 });
 
 describe("/v2/api/v1/query", () => {
@@ -136,6 +173,23 @@ describe("/v2/api/v1/logs", () => {
     expect(body.data[0].properties).toEqual({ k: "v" });
     expect(body.meta).toMatchObject({ count: 1, limit: 5, bytes_scanned: 7 });
     expect(h.sent.basin[0]).toMatch(/source = 'A' AND level = 'Error' AND CASE WHEN octet_length/);
+  });
+
+  it("adds v1's timestamp beside ts on the unprefixed path only", async () => {
+    const h = harness();
+    const v1 = (await (await h.call("/api/v1/logs?source=A&level=Error&prop.k=v&limit=5", { key: "k-read" })).json()) as {
+      data: Record<string, unknown>[];
+    };
+    const v2 = (await (await h.call("/v2/api/v1/logs?source=A&level=Error&prop.k=v&limit=5", { key: "k-read" })).json()) as {
+      data: Record<string, unknown>[];
+    };
+    expect(v1.data[0]).toMatchObject({ ts: "2026-10-23T12:00:00Z", timestamp: "2026-10-23T12:00:00Z" });
+    expect(v2.data[0].ts).toBe("2026-10-23T12:00:00Z");
+    expect(v2.data[0]).not.toHaveProperty("timestamp");
+    // Same handler: identical SQL, and identical rows apart from the alias.
+    expect(h.sent.basin[0]).toBe(h.sent.basin[1]);
+    const { timestamp: _, ...rest } = v1.data[0];
+    expect(rest).toEqual(v2.data[0]);
   });
 
   it("refuses DELETE: Basin is read-only", async () => {
