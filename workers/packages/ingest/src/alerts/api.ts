@@ -4,10 +4,12 @@
 
 import { BasinQueryError, queryBasin, type BasinSqlEnv } from "../basin-sql";
 import { ConditionError, evaluateCondition } from "./condition";
+import { deliverAlert, type DeliveryEnv } from "./deliver";
 import { alertLagSeconds, pinNow } from "./evaluate";
 import {
   deleteAlert,
   deleteDestination,
+  destinationsByIds,
   getAlert,
   insertAlert,
   insertDestination,
@@ -20,7 +22,7 @@ import {
   type NormalizedAlert,
 } from "./store";
 
-export interface AlertsApiEnv extends BasinSqlEnv {
+export interface AlertsApiEnv extends BasinSqlEnv, DeliveryEnv {
   KEYS_DB: D1Database;
   ALERT_LAG_SECONDS?: string | number;
 }
@@ -180,11 +182,17 @@ export async function handleAlerts(request: Request, sub: string, ctx: ApiContex
 /**
  * Run a query the way the evaluator would: `now()` pinned to now minus the
  * alert lag. With a condition (from the body, else the stored alert's), also
- * report whether it would fire on the first row.
+ * report whether it would fire on the first row. `deliver: true` (write scope,
+ * stored alert) then sends the first row to the alert's real destinations,
+ * whether or not it would fire, with "[Test] " on the email subject. It never
+ * touches the cooldown, so it proves delivery without silencing the alert.
  */
 async function testAlert(request: Request, id: string, ctx: ApiContext): Promise<Response> {
   const body = await readJson(request);
   const stored = await getAlert(ctx.env.KEYS_DB, id);
+  const deliver = body?.deliver === true;
+  if (deliver && !ctx.canWrite) return ctx.error("forbidden", "deliver needs a key with the 'write' scope", 403);
+  if (deliver && !stored) return ctx.error("not_found", `No alert ${id}`, 404);
   const query = typeof body?.query === "string" ? body.query : stored?.query;
   if (!query) return ctx.error("validation_error", "query is required", 400);
   if (!isRead(query)) return ctx.error("validation_error", "Only SELECT statements are allowed", 400);
@@ -211,6 +219,10 @@ async function testAlert(request: Request, id: string, ctx: ApiContext): Promise
       meta.would_fire = null;
       meta.condition_error = e instanceof ConditionError ? e.message : String(e);
     }
+  }
+  if (deliver && stored) {
+    const destinations = await destinationsByIds(ctx.env.KEYS_DB, parseJsonArray(stored.destination_ids));
+    meta.delivery = await deliverAlert(ctx.env, { ...stored, subject: `[Test] ${stored.subject}` }, destinations, rows[0] ?? {}, ctx.now());
   }
   return ctx.json({ data: rows, meta });
 }

@@ -170,6 +170,10 @@ BASIN_SQL_BUCKET = "log-cannon-events"
 ALERTS_MODE = "shadow"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
+# Alert email (refs #170), the same sender and API as alert-worker. The
+# SAASMAIL_API_KEY secret is set on the Worker, not here.
+SAASMAIL_API_URL = "https://mail.redleg.dev"
+ALERT_FROM_EMAIL = "alerts@redleg.dev"
 # Supabase pull (refs #164). SUPABASE_PULL_PROJECTS is deliberately not set
 # here: its "ref=source" pairs name projects and this repo is public. It is a
 # var set on the deployed Worker, kept across deploys by keep_vars below. The

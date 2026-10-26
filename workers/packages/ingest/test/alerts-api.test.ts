@@ -134,6 +134,66 @@ describe("/v2/api/v1/alerts", () => {
   });
 });
 
+describe("/v2/api/v1/alerts/:id/test deliver", () => {
+  const sent: { url: string; body: string }[] = [];
+  const deliverEnv = () => ({ ...testEnv(), SAASMAIL_API_KEY: "mailkey", SAASMAIL_API_URL: "https://mail.example.com", ALERT_FROM_EMAIL: "alerts@example.com" });
+  const deliverCall = async (id: string, key: string, body: unknown) => {
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      new Request(`https://logs.example.com/v2/api/v1/alerts/${id}/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Api-Key": key },
+        body: JSON.stringify(body),
+      }),
+      deliverEnv() as never,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return res;
+  };
+
+  beforeEach(() => {
+    sent.length = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("cloudflarestorage.com")) {
+        basinQueries.push(JSON.parse(String(init?.body)).query);
+        return new Response(JSON.stringify({ success: true, result: { rows: [{ cnt: 0 }], metrics: { bytes_scanned: 1 } } }));
+      }
+      sent.push({ url, body: init?.body instanceof FormData ? String(init.body.get("payload")) : String(init?.body) });
+      return new Response("ok");
+    });
+  });
+
+  it("sends to the alert's destinations even when it would not fire, and leaves the cooldown alone", async () => {
+    const hook = (await (
+      await call("/v2/api/v1/alert-destinations", "k-write", "POST", { name: "Hook", type: "webhook", config: { url: "https://hook.example.com/x", headers: { "X-Token": "s3cret" } } })
+    ).json()) as { id: string };
+    const { id } = (await (await call("/v2/api/v1/alerts", "k-write", "POST", { ...ALERT, destination_ids: [hook.id] })).json()) as { id: string };
+
+    expect((await deliverCall(id, "k-read", { deliver: true })).status).toBe(403);
+    expect(sent).toEqual([]);
+
+    const res = await deliverCall(id, "k-write", { deliver: true });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { meta: Record<string, unknown> };
+    expect(body.meta).toMatchObject({ would_fire: false, delivery: { delivered: 1, attempts: [{ target: "webhook:Hook", ok: true }] } });
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(sent[0].body)).toMatchObject({ alert_id: id, query_result: { cnt: 0 } });
+    const row = await env.KEYS_DB.prepare("SELECT last_triggered_at, shadow_last_triggered_at FROM alerts WHERE id = ?").bind(id).first();
+    expect(row).toEqual({ last_triggered_at: null, shadow_last_triggered_at: null });
+  });
+
+  it("emails the recipients with a [Test] subject, and needs a stored alert", async () => {
+    const { id } = (await (await call("/v2/api/v1/alerts", "k-write", "POST", ALERT)).json()) as { id: string };
+    const res = await deliverCall(id, "k-write", { deliver: true });
+    expect(((await res.json()) as { meta: { delivery: unknown } }).meta.delivery).toMatchObject({ delivered: 1 });
+    expect(sent[0].url).toBe("https://mail.example.com/api/send");
+    expect(JSON.parse(sent[0].body)).toMatchObject({ to: "ops@example.com", fromAddress: "alerts@example.com", subject: "[Test] Example errors" });
+    expect((await deliverCall("00000000-0000-0000-0000-000000000000", "k-write", { deliver: true, query: "SELECT 1 AS cnt" })).status).toBe(404);
+  });
+});
+
 describe("/v2/api/v1/alert-destinations", () => {
   it("creates, lists with parsed config, patches and deletes", async () => {
     const bad = await call("/v2/api/v1/alert-destinations", "k-write", "POST", { name: "Mail", type: "email", config: {} });
