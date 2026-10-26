@@ -126,6 +126,8 @@ PATCH /api/v1/alert-destinations            # Update (pass id in body)
 DELETE /api/v1/alert-destinations           # Delete (pass id in body)
 \`\`\`
 
+GET shows webhook \`headers\` values only to a \`write\` key; a \`read\` key sees each header name with the value \`********\`.
+
 **Create Email Destination:**
 \`\`\`json
 {
