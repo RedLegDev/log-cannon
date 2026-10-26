@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { authenticateApiKey, apiError } from '@/lib/api-auth';
+import { authenticateApiKey, apiError, hasScope } from '@/lib/api-auth';
 import {
   getAlertDestinations,
   createAlertDestination,
   updateAlertDestination,
   deleteAlertDestination,
 } from '@/lib/clickhouse';
+
+function maskHeaders(config: Record<string, unknown>): Record<string, unknown> {
+  const h = config.headers;
+  if (!h || typeof h !== 'object' || Array.isArray(h)) return config;
+  return { ...config, headers: Object.fromEntries(Object.keys(h).map(k => [k, '********'])) };
+}
 
 export async function GET(request: NextRequest) {
   const auth = await authenticateApiKey(request, 'read');
@@ -14,11 +20,14 @@ export async function GET(request: NextRequest) {
   try {
     const destinations = await getAlertDestinations();
 
+    // Webhook headers can carry the receiver's token (refs #178): read keys
+    // see the header names only.
+    const canWrite = hasScope(auth.scopes, 'write');
     const data = destinations.map(d => ({
       id: d.id,
       name: d.name,
       type: d.type,
-      config: JSON.parse(d.config || '{}'),
+      config: canWrite ? JSON.parse(d.config || '{}') : maskHeaders(JSON.parse(d.config || '{}')),
       enabled: Boolean(d.enabled),
       created_at: d.created_at,
     }));

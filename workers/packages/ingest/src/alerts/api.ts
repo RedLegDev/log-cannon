@@ -227,6 +227,19 @@ async function testAlert(request: Request, id: string, ctx: ApiContext): Promise
   return ctx.json({ data: rows, meta });
 }
 
+export const MASKED = "********";
+
+/**
+ * A webhook's `headers` can carry the receiver's token (refs #178), and read
+ * keys go to apps and MCP configs. Keep the names, hide the values; a `write`
+ * key still gets them, since PATCH replaces `config` whole.
+ */
+export function maskHeaders(config: Record<string, unknown>): Record<string, unknown> {
+  const h = config.headers;
+  if (!h || typeof h !== "object" || Array.isArray(h)) return config;
+  return { ...config, headers: Object.fromEntries(Object.keys(h).map((k) => [k, MASKED])) };
+}
+
 export async function handleDestinations(request: Request, ctx: ApiContext): Promise<Response> {
   const { env, json, error } = ctx;
   const db = env.KEYS_DB;
@@ -235,7 +248,7 @@ export async function handleDestinations(request: Request, ctx: ApiContext): Pro
       id: d.id,
       name: d.name,
       type: d.type,
-      config: JSON.parse(d.config || "{}"),
+      config: ctx.canWrite ? JSON.parse(d.config || "{}") : maskHeaders(JSON.parse(d.config || "{}")),
       enabled: Boolean(d.enabled),
       created_at: d.created_at,
     }));

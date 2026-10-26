@@ -22,7 +22,7 @@ function parseScopes(scopesStr: string): ApiScope[] {
   return scopesStr.split(',').map(s => s.trim()) as ApiScope[];
 }
 
-function hasScope(keyScopes: ApiScope[], requiredScope: ApiScope): boolean {
+export function hasScope(keyScopes: ApiScope[], requiredScope: ApiScope): boolean {
   for (const scope of keyScopes) {
     if (SCOPE_HIERARCHY[scope]?.includes(requiredScope)) {
       return true;

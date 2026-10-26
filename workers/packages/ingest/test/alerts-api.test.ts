@@ -208,6 +208,20 @@ describe("/v2/api/v1/alert-destinations", () => {
     expect((await call("/v2/api/v1/alert-destinations", "k-write", "PATCH", { id, enabled: false })).status).toBe(200);
     expect((await call("/v2/api/v1/alert-destinations", "k-write", "DELETE", { id })).status).toBe(200);
   });
+
+  it("hides webhook header values from read keys and shows them to write keys", async () => {
+    const config = { url: "https://hook.example.com/x", headers: { "X-Token": "s3cret", "X-Env": "prod" } };
+    const res = await call("/v2/api/v1/alert-destinations", "k-write", "POST", { name: "Hook", type: "webhook", config });
+    const { id } = (await res.json()) as { id: string };
+    const configFor = async (key: string) =>
+      ((await (await call("/v2/api/v1/alert-destinations", key)).json()) as { data: { id: string; config: unknown }[] }).data.find((d) => d.id === id)?.config;
+
+    const read = await configFor("k-read");
+    expect(read).toEqual({ url: "https://hook.example.com/x", headers: { "X-Token": "********", "X-Env": "********" } });
+    expect(JSON.stringify(read)).not.toContain("s3cret");
+    expect(await configFor("k-write")).toEqual(config);
+    await call("/v2/api/v1/alert-destinations", "k-write", "DELETE", { id });
+  });
 });
 
 describe("MCP alert tools", () => {
