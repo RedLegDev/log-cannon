@@ -27,6 +27,17 @@
  * no race, no timer, and a failure still surfaces to the caller.
  */
 
+/**
+ * Whether the request path writes to the queue at all (`QUEUE_WRITE`, refs
+ * #169). Only exactly "false" turns it off, and only while the Basin copy is
+ * writing: with both off a request would be answered 201 and stored nowhere,
+ * so the queue stays on. Unset, a typo, or anything else keeps the queue on,
+ * the behaviour that predates the var. Off, the Basin copy is the only write.
+ */
+export function queueWriteEnabled(flag: string | undefined, basinWriting: boolean): boolean {
+  return flag?.trim() !== "false" || !basinWriting;
+}
+
 /** Resolved when the deadline fires rather than when the send finishes. */
 const DEADLINE_REACHED = Symbol("queue-ack-deadline");
 

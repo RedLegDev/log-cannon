@@ -11,7 +11,7 @@ import {
   slowRequestCLEF,
   type EnqueueFailure,
 } from "./timing";
-import { resolveQueueAckDeadlineMs, sendWithDeadline } from "./enqueue";
+import { queueWriteEnabled, resolveQueueAckDeadlineMs, sendWithDeadline } from "./enqueue";
 import {
   BasinCopyError,
   basinFailureCLEF,
@@ -71,6 +71,12 @@ interface Env {
    * has taken it. Anything else is off. See `src/basin.ts`.
    */
   BASIN_WRITE?: string;
+  /**
+   * Exactly "false" stops every queue write (requests and the Worker's own
+   * telemetry) while BASIN_WRITE is on, leaving Basin the only store (refs
+   * #169). Anything else, unset included, keeps writing the queue.
+   */
+  QUEUE_WRITE?: string;
   /**
    * R2 bucket for Basin copies the stream wouldn't take after retries (refs
    * #166). The cron replays it. Absent, such rows are lost and reported.
@@ -623,8 +629,9 @@ export const TELEMETRY_KEY_ID = "log-cannon-ingest";
 /**
  * Write the Worker's own CLEF events (slow requests, losses, alert evaluator
  * events) to `source`: the queue first, as every ingest is, then Basin when the
- * dual-write is on, so v2 readers and alerts see them too. Throws only if the
- * queue send does. The Basin copy retries and spills like any other; one that
+ * dual-write is on, so v2 readers and alerts see them too. The queue leg
+ * follows `QUEUE_WRITE` like the request path. Throws only if the queue send
+ * does. The Basin copy retries and spills like any other; one that
  * still fails is logged, never reported through this same path.
  */
 export async function sendTelemetry(
@@ -636,7 +643,9 @@ export async function sendTelemetry(
   if (!lines.length) return;
   const bytes = new TextEncoder().encode(`${lines.join("\n")}\n`);
   const contentType = "application/vnd.serilog.clef";
-  await env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType });
+  if (queueWriteEnabled(env.QUEUE_WRITE, basinWriteEnabled(env.BASIN_WRITE, env.LOGS))) {
+    await env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType });
+  }
   if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
   try {
     // Off the response path, as copyToBasin is: the slow-request report runs
@@ -748,6 +757,10 @@ async function reportBasinFailure(
  * the whole enqueue — one `send`, or the full `sendChunksBatched` sequence — so
  * a handoff mid-sequence hands off the remaining batches with it. `copy` is the
  * request's Basin copy, made once the enqueue succeeds.
+ *
+ * With `QUEUE_WRITE` off `send` never runs: the copy is the only write, still
+ * in `waitUntil` behind its macrotask yield, so the response is not held for
+ * it, and there is no send to lose or report (refs #169).
  */
 async function enqueue(
   ingest: IngestRequest,
@@ -756,6 +769,11 @@ async function enqueue(
   send: () => Promise<unknown>,
   copy: IngestCopy,
 ): Promise<void> {
+  const { env } = ingest;
+  if (!queueWriteEnabled(env.QUEUE_WRITE, basinWriteEnabled(env.BASIN_WRITE, env.LOGS))) {
+    copyToBasin(ingest, copy, Promise.resolve());
+    return;
+  }
   const enqueued = sendWithDeadline(
     send,
     resolveQueueAckDeadlineMs(ingest.env.QUEUE_ACK_DEADLINE_MS),

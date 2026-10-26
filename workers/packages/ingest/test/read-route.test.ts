@@ -18,7 +18,7 @@ interface Sent {
   basin: string[];
 }
 
-function harness() {
+function harness(extra: Record<string, string> = {}) {
   const sent: Sent = { queue: [], logs: [], basin: [] };
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const query = JSON.parse(String(init?.body)).query as string;
@@ -42,6 +42,7 @@ function harness() {
     BASIN_SQL_TOKEN: "t",
     BASIN_SQL_ACCOUNT: "acct",
     BASIN_SQL_BUCKET: "bucket",
+    ...extra,
   };
   const call = async (path: string, init: RequestInit & { key?: string } = {}) => {
     const headers = new Headers(init.headers);
@@ -204,6 +205,19 @@ describe("/v2/api/mcp", () => {
     expect(h.sent.queue[0].source).toBe("my-agent");
     expect(h.sent.logs).toHaveLength(1);
     expect(h.sent.logs[0]).toMatchObject({ source: "my-agent", key_id: "id-k-ingest", level: "Warning", message: "hi there", properties: { Task: "x" } });
+  });
+
+  it("create_log with QUEUE_WRITE=false: Basin only", async () => {
+    const h = harness({ QUEUE_WRITE: "false" });
+    const res = await h.rpc("k-ingest", {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: { name: "create_log", arguments: { level: "Information", message: "basin only", source: "my-agent" } },
+    });
+    expect(((await res.json()) as { result: { isError?: boolean } }).result.isError).toBeUndefined();
+    expect(h.sent.queue).toHaveLength(0);
+    expect(h.sent.logs).toEqual([expect.objectContaining({ source: "my-agent", key_id: "id-k-ingest", message: "basin only" })]);
   });
 
   it("escapes properties named like CLEF fields, so they stay data", async () => {

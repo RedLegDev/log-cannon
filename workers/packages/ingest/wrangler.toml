@@ -71,6 +71,10 @@ SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # queue's ack tail is the thing hurting senders — see workers/packages/ingest/
 # src/enqueue.ts.
 QUEUE_ACK_DEADLINE_MS = "0"
+# v2 cutover (refs #169): "false" stops every queue write while BASIN_WRITE is
+# on, so the Basin copy is the only store. Anything else writes the queue. With
+# BASIN_WRITE off the queue stays on whatever this says.
+QUEUE_WRITE = "true"
 # Alert evaluator (refs #165): "off", "shadow" (evaluate and record, send
 # nothing) or "live". Alerts run on the once-a-minute cron below against Basin
 # SQL, with every now() in an alert query pinned ALERT_LAG_SECONDS back so a
@@ -154,6 +158,10 @@ SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # their own senders and their own queue tail, and this number is neither.
 QUEUE_ACK_DEADLINE_MS = "4000"
 BASIN_WRITE = "true"
+# QUEUE_WRITE (refs #169) is deliberately not set here: unset is on. The cutover
+# sets it to "false" on the deployed Worker (`wrangler deploy --var` or the
+# dashboard) and keep_vars holds it across pushes; rollback is setting it back
+# to "true". Declaring it here would reset it on every push to main.
 # v2 read API (refs #163). BASIN_SQL_TOKEN is a secret (Basin SQL read only).
 BASIN_SQL_ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
 BASIN_SQL_BUCKET = "log-cannon-events"
