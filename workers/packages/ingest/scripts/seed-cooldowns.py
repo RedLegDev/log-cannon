@@ -11,6 +11,10 @@ ever moves backwards. `shadow_last_triggered_at` is never touched.
 Dry run by default: prints one line per alert (id, v1 time, D1 time, action)
 and the counts. Pass --apply to write, then it re-reads D1 and reports.
 
+v1 keeps sending until alert-worker stops, so run --apply again right after
+it does: a send in between is otherwise not copied, and a rerun is a no-op
+for everything already seeded.
+
 Env:
   LOG_CANNON_URL         default https://logs.redleg.dev (v1 /api/v1/alerts)
   LOG_CANNON_API_KEY     v1 key with read scope

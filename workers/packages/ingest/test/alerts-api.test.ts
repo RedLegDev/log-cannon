@@ -135,7 +135,7 @@ describe("/v2/api/v1/alerts", () => {
 });
 
 describe("/v2/api/v1/alerts/:id/test deliver", () => {
-  const sent: { url: string; body: string }[] = [];
+  const sent: { url: string; body: string; headers: Headers }[] = [];
   const deliverEnv = () => ({ ...testEnv(), SAASMAIL_API_KEY: "mailkey", SAASMAIL_API_URL: "https://mail.example.com", ALERT_FROM_EMAIL: "alerts@example.com" });
   const deliverCall = async (id: string, key: string, body: unknown) => {
     const ctx = createExecutionContext();
@@ -160,7 +160,7 @@ describe("/v2/api/v1/alerts/:id/test deliver", () => {
         basinQueries.push(JSON.parse(String(init?.body)).query);
         return new Response(JSON.stringify({ success: true, result: { rows: [{ cnt: 0 }], metrics: { bytes_scanned: 1 } } }));
       }
-      sent.push({ url, body: init?.body instanceof FormData ? String(init.body.get("payload")) : String(init?.body) });
+      sent.push({ url, body: init?.body instanceof FormData ? String(init.body.get("payload")) : String(init?.body), headers: new Headers(init?.headers) });
       return new Response("ok");
     });
   });
@@ -180,6 +180,7 @@ describe("/v2/api/v1/alerts/:id/test deliver", () => {
     expect(body.meta).toMatchObject({ would_fire: false, delivery: { delivered: 1, attempts: [{ target: "webhook:Hook", ok: true }] } });
     expect(sent).toHaveLength(1);
     expect(JSON.parse(sent[0].body)).toMatchObject({ alert_id: id, query_result: { cnt: 0 } });
+    expect(sent[0].headers.get("X-Token")).toBe("s3cret");
     const row = await env.KEYS_DB.prepare("SELECT last_triggered_at, shadow_last_triggered_at FROM alerts WHERE id = ?").bind(id).first();
     expect(row).toEqual({ last_triggered_at: null, shadow_last_triggered_at: null });
   });
