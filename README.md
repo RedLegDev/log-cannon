@@ -453,7 +453,7 @@ line in Workers Logs and a matching CLEF `Error` on `SLOW_REQUEST_SOURCE`,
 carrying the route, the source, and how many messages were lost. Alert on it
 separately from the latency alert above. Match the message, not just the level:
 a Basin copy that fails both its send and its spill is also an `Error` on that
-source, and it is a different loss (see the Basin section), so give it its own
+source, and it is a different loss, so give it its own
 alert on `message LIKE 'Basin copy failed%'`:
 
 ```json
