@@ -101,6 +101,39 @@ describe("QUEUE_WRITE=false through the fetch handler", () => {
       for (const o of listed.objects) await env.BASIN_SPILL.delete(o.key);
       expect(spilled.map((r) => r.properties.N)).toEqual([0, 1, 2]);
     });
+
+    // An R2 put slower than the queue-on spill limit but inside the queue-off
+    // one (refs #166): the 4 s the enqueue no longer takes go to the spill.
+    const slowSpillTimes = { spill: copyTiming.spillTimeoutMs, off: copyTiming.queueOffSpillTimeoutMs };
+    afterEach(() => {
+      copyTiming.spillTimeoutMs = slowSpillTimes.spill;
+      copyTiming.queueOffSpillTimeoutMs = slowSpillTimes.off;
+    });
+    for (const [flag, saved] of [["false", 3], ["true", 0]] as const) it(`QUEUE_WRITE=${flag}: a slow spill put ${saved ? "still saves the rows" : "is cut at the queue-on limit"}`, async () => {
+      copyTiming.spillTimeoutMs = 10;
+      copyTiming.queueOffSpillTimeoutMs = 2_000;
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { queue } = recordingQueue();
+      const LOGS = { send: async () => { throw new Error("stream unavailable"); } };
+      const slow = {
+        put: async (k: string, v: Blob, o?: R2PutOptions) => {
+          await new Promise((r) => setTimeout(r, 100));
+          return env.BASIN_SPILL.put(k, v, o);
+        },
+      };
+      const ctx = createExecutionContext();
+      const res = await worker.fetch(req(body(3)), { ...env, ...base, INGEST_QUEUE: queue, LOGS, BASIN_SPILL: slow, QUEUE_WRITE: flag } as never, ctx);
+      expect(res.status).toBe(201);
+      await waitOnExecutionContext(ctx);
+      // Let a put abandoned by the 10 ms limit finish before reading the bucket.
+      await new Promise((r) => setTimeout(r, 150));
+      const listed = await env.BASIN_SPILL.list({ prefix: SPILL_PREFIX });
+      for (const o of listed.objects) await env.BASIN_SPILL.delete(o.key);
+      const errors = logged.mock.calls.map((c) => String(c[0]));
+      const failed = JSON.parse(errors.find((e) => e.includes("basin-copy-failed"))!);
+      expect(failed.spilledRows ?? 0).toBe(saved);
+      if (!saved) expect(failed.spillError).toBe("spill timed out after 10 ms");
+    });
   });
 
   it("reports no enqueue loss, even with the ack deadline on and a failing queue", async () => {

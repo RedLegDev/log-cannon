@@ -699,6 +699,9 @@ export function copyToBasin(
   const { env, ctx } = ingest;
   if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
   const stream = env.LOGS;
+  // With the queue off the copy is the only write and starts at once, so the
+  // enqueue's share of `waitUntil` goes to the spill (see QUEUE_OFF_SPILL_TIMEOUT_MS).
+  const queueOff = !queueWriteEnabled(env.QUEUE_WRITE, true);
   ctx.waitUntil(
     (async () => {
       try {
@@ -715,9 +718,12 @@ export function copyToBasin(
           writeCopy(
             stream,
             { ...copy, source: ingest.source, keyId: ingest.keyId, receivedAt: ingest.receivedAt },
-            { spill: env.BASIN_SPILL },
+            {
+              spill: env.BASIN_SPILL,
+              ...(queueOff ? { spillTimeoutMs: copyTiming.queueOffSpillTimeoutMs } : {}),
+            },
           ),
-          copyTiming.watchdogMs,
+          queueOff ? copyTiming.queueOffWatchdogMs : copyTiming.watchdogMs,
           "copy",
         );
       } catch (e) {

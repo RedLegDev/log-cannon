@@ -6,6 +6,8 @@ import {
   COPY_DEADLINE_MS,
   COPY_WATCHDOG_MS,
   SPILL_TIMEOUT_MS,
+  QUEUE_OFF_SPILL_TIMEOUT_MS,
+  QUEUE_OFF_WATCHDOG_MS,
   isBasinLoss,
   SEND_RETRY_DELAYS_MS,
   SEND_TIMEOUT_MS,
@@ -39,6 +41,8 @@ afterEach(() => {
   copyTiming.timeoutMs = SEND_TIMEOUT_MS;
   copyTiming.spillTimeoutMs = SPILL_TIMEOUT_MS;
   copyTiming.watchdogMs = COPY_WATCHDOG_MS;
+  copyTiming.queueOffSpillTimeoutMs = QUEUE_OFF_SPILL_TIMEOUT_MS;
+  copyTiming.queueOffWatchdogMs = QUEUE_OFF_WATCHDOG_MS;
   vi.restoreAllMocks();
 });
 
@@ -405,6 +409,22 @@ describe("writeCopy retry and spill", () => {
     expect(err.spillError).toBe("r2 unavailable");
   });
 
+  it("tries a failed R2 put once more, and spills everything when that one lands", async () => {
+    const { stream } = flakyStream(() => true);
+    let puts = 0;
+    const flaky = {
+      put: async (k: string, v: Blob, o?: R2PutOptions) => {
+        if (puts++ === 0) throw new Error("r2 hiccup");
+        return env.BASIN_SPILL.put(k, v, o);
+      },
+    };
+    const err = await writeCopy(stream, copy(), { spill: flaky }).catch((e) => e);
+    expect(puts).toBe(2);
+    expect(err.outcome).toMatchObject({ spilled: 2, lost: 0 });
+    expect(err.spillError).toBeUndefined();
+    expect(await spilledRows()).toHaveLength(2);
+  });
+
   it("stops retrying when a retry couldn't start inside the budget", async () => {
     const { stream, attempts } = flakyStream(() => true);
     let t = 1_000_000;
@@ -468,6 +488,38 @@ describe("spill and copy time limits", () => {
     expect(err).toBeInstanceOf(BasinCopyError);
     expect(err.spillError).toBe("spill timed out after 5 ms");
     expect(err.outcome).toMatchObject({ spilled: 0, lost: 2 });
+  });
+
+  it("a spillTimeoutMs option overrides the default limit", async () => {
+    copyTiming.spillTimeoutMs = 60_000;
+    const { stream } = flakyStream(() => true);
+    const err = await writeCopy(stream, copy(), { spill: { put: never }, spillTimeoutMs: 5 }).catch((e) => e);
+    expect(err.spillError).toBe("spill timed out after 5 ms");
+  });
+
+  it("copyToBasin uses the queue-off watchdog when QUEUE_WRITE is off", async () => {
+    copyTiming.timeoutMs = 60_000;
+    copyTiming.watchdogMs = 60_000;
+    copyTiming.queueOffWatchdogMs = 20;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const pending: Promise<unknown>[] = [];
+    let release!: () => void;
+    const hung = new Promise<void>((r) => (release = r));
+    const ingest = {
+      request: new Request("https://logs.example.com/ingest/clef", { method: "POST" }),
+      env: { SLOW_REQUEST_SOURCE: "", LOGS: { send: () => hung }, BASIN_WRITE: "true", QUEUE_WRITE: "false", BASIN_SPILL: env.BASIN_SPILL },
+      ctx: { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} },
+      route: "/ingest/clef",
+      source: "example-app",
+      keyId: "key-1",
+      receivedAt: RECEIVED_AT,
+    } as unknown as IngestRequest;
+    const { format, bodies, contentType } = copy();
+    copyToBasin(ingest, { format, bodies, contentType }, Promise.resolve());
+    await Promise.all(pending);
+    const logged = JSON.parse(error.mock.calls.find((c) => String(c[0]).includes("basin-copy-failed"))![0] as string);
+    expect(logged).toMatchObject({ error: "copy timed out after 20 ms" });
+    release();
   });
 
   it("copyToBasin reports a copy that outlives the watchdog as a loss", async () => {

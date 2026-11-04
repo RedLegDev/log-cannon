@@ -186,6 +186,18 @@ export const SPILL_TIMEOUT_MS = 3_000;
  */
 export const COPY_WATCHDOG_MS = 24_000;
 
+/**
+ * The spill limit and watchdog when `QUEUE_WRITE` is off (refs #166, #169).
+ * The copy then starts straight away instead of after an enqueue of up to
+ * `QUEUE_ACK_DEADLINE_MS` (4 s), so those 4 s go to the spill, the only step
+ * that saves the rows once the queue is gone. 20 s of sends + 7 s of spill
+ * still fits `waitUntil`'s ~30 s, and the watchdog at 28 s leaves ~2 s for
+ * the report. On 2026-10-28 one row was lost to a 3 s spill limit during a
+ * Pipelines slowdown, with the queue still on.
+ */
+export const QUEUE_OFF_SPILL_TIMEOUT_MS = 7_000;
+export const QUEUE_OFF_WATCHDOG_MS = 28_000;
+
 /** Retry delays, sleep and the time limits. Mutable so tests can run the
  * retries and time-outs without waiting seconds of real time; nothing else
  * should touch it. */
@@ -195,6 +207,8 @@ export const copyTiming = {
   timeoutMs: SEND_TIMEOUT_MS,
   spillTimeoutMs: SPILL_TIMEOUT_MS,
   watchdogMs: COPY_WATCHDOG_MS,
+  queueOffSpillTimeoutMs: QUEUE_OFF_SPILL_TIMEOUT_MS,
+  queueOffWatchdogMs: QUEUE_OFF_WATCHDOG_MS,
 };
 
 /** `work`, rejected with "`what` timed out after `ms` ms" if it hasn't settled by then. */
@@ -279,6 +293,8 @@ export interface CopyOptions {
    * late.
    */
   spillOnly?: boolean;
+  /** The spill's time limit; `copyTiming.spillTimeoutMs` when absent. */
+  spillTimeoutMs?: number;
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -384,12 +400,22 @@ export async function writeCopy(
         const writer = spill;
         await within(
           (async () => {
-            await bucket.put(spillKey(copy.receivedAt), await writer.finish(), {
-              httpMetadata: { contentType: "application/x-ndjson" },
-              customMetadata: { rows: String(writer.rows) },
-            });
+            const blob = await writer.finish();
+            const put = () =>
+              bucket.put(spillKey(copy.receivedAt), blob, {
+                httpMetadata: { contentType: "application/x-ndjson" },
+                customMetadata: { rows: String(writer.rows) },
+              });
+            // A put that fails outright gets one more try inside the limit; one
+            // that stalls runs into the limit. Each try has its own key, so a
+            // first put that did land shows up as duplicate ids, not a loss.
+            try {
+              await put();
+            } catch {
+              await put();
+            }
           })(),
-          copyTiming.spillTimeoutMs,
+          opts.spillTimeoutMs ?? copyTiming.spillTimeoutMs,
           "spill",
         );
         out.spilled = spill.rows;
