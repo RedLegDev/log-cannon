@@ -23,6 +23,7 @@ import {
   parseJsonArray,
   pruneEvaluations,
   recordEvaluation,
+  previousEvaluation,
   releaseLease,
   type AlertRow,
   type Evaluation,
@@ -91,6 +92,24 @@ export async function basinNewest(env: BasinSqlEnv, pinned: Date): Promise<Date 
  */
 const DUE_SLACK_MS = 10_000;
 
+/**
+ * A Basin SQL timeout on one tick (`Query exceeded 30 seconds`). Seen on whole
+ * ticks at once, 12 of ~170k evaluations from 10-26 to 11-04, and each alert
+ * evaluated `ok` on its next tick. So the first timeout in a row isn't
+ * reported, and the alert runs again on the next tick instead of losing its
+ * interval's look. A second one in a row is reported and the alert goes back
+ * to its interval, so a query that always times out doesn't run every minute.
+ */
+export function isQueryTimeout(error: string | null | undefined): boolean {
+  return error === `Query error: Query exceeded ${ALERT_QUERY_TIMEOUT_MS / 1000} seconds`;
+}
+
+/** The last run was a first timeout in a row, so the alert runs again now. */
+export function retriesTimeout(alert: AlertRow, previous: Pick<AlertRow, "last_status" | "last_error"> | null): boolean {
+  if (!(alert.last_status === "error" && isQueryTimeout(alert.last_error))) return false;
+  return !(previous?.last_status === "error" && isQueryTimeout(previous.last_error));
+}
+
 export function isDue(alert: AlertRow, now: Date): boolean {
   if (!alert.last_run_at) return true;
   const elapsed = now.getTime() - Date.parse(alert.last_run_at);
@@ -138,7 +157,12 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
     return { mode, skipped: "lease-held", due: 0, evaluated: [] };
   }
   try {
-    const due = (await enabledAlerts(env.KEYS_DB)).filter((a) => isDue(a, now));
+    const due: AlertRow[] = [];
+    for (const a of await enabledAlerts(env.KEYS_DB)) {
+      if (isDue(a, now)) due.push(a);
+      // Only an alert whose last run timed out pays for the extra read.
+      else if (isQueryTimeout(a.last_error) && retriesTimeout(a, await previousEvaluation(env.KEYS_DB, a.id))) due.push(a);
+    }
     const lag = alertLagSeconds(env.ALERT_LAG_SECONDS);
     if (due.length) {
       // Hold the whole tick while Basin hasn't caught up to the pinned
@@ -288,6 +312,7 @@ export function telemetryFor(alert: AlertRow, e: Evaluation, now: Date): string[
   const t = now.toISOString();
   const base = { "@t": t, AlertId: alert.id, AlertName: alert.name, Mode: e.mode };
   if (e.status === "error") {
+    if (isQueryTimeout(e.error) && !(alert.last_status === "error" && isQueryTimeout(alert.last_error))) return [];
     const last = alert.last_error_reported_at ? Date.parse(alert.last_error_reported_at) : NaN;
     const fresh = alert.last_status !== "error" || !(now.getTime() - last < ERROR_REPORT_INTERVAL_MS);
     if (!fresh) return [];

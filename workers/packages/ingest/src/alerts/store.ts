@@ -242,6 +242,19 @@ export async function recordEvaluation(db: D1Database, e: Evaluation): Promise<v
   await db.batch(stmts);
 }
 
+/** The evaluation before the alert's latest one, as `last_status`/`last_error`. */
+export async function previousEvaluation(
+  db: D1Database,
+  alertId: string,
+): Promise<Pick<AlertRow, "last_status" | "last_error"> | null> {
+  return db
+    .prepare(
+      "SELECT status AS last_status, error AS last_error FROM alert_evaluations WHERE alert_id = ? ORDER BY evaluated_at DESC LIMIT 1 OFFSET 1",
+    )
+    .bind(alertId)
+    .first();
+}
+
 export const EVALUATION_RETENTION_DAYS = 14;
 
 export async function pruneEvaluations(db: D1Database, now: Date): Promise<void> {

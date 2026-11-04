@@ -4,8 +4,8 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConditionError, evaluateCondition } from "../src/alerts/condition";
 import { deriveService } from "../src/alerts/deliver";
-import { LEASE_TTL_MS, TICK_DEADLINE_MS, isDue, pinNow, runAlerts, telemetryFor, type AlertsEnv } from "../src/alerts/evaluate";
-import { acquireLease, getAlert, insertAlert, insertDestination, type AlertRow } from "../src/alerts/store";
+import { LEASE_TTL_MS, TICK_DEADLINE_MS, isDue, isQueryTimeout, retriesTimeout, pinNow, runAlerts, telemetryFor, type AlertsEnv } from "../src/alerts/evaluate";
+import { acquireLease, getAlert, insertAlert, insertDestination, recordEvaluation, type AlertRow } from "../src/alerts/store";
 
 describe("evaluateCondition (alert-worker's grammar)", () => {
   const row = { cnt: 51, zero: 0, big: "9007199254740993", ws_cnt: 2, label: "x", flag: true };
@@ -105,6 +105,30 @@ describe("isDue", () => {
     expect(isDue(alertRow({ last_run_at: new Date(NOW.getTime() - 58_000).toISOString() }), NOW)).toBe(true);
     expect(isDue(alertRow({ last_run_at: new Date(NOW.getTime() - 49_000).toISOString() }), NOW)).toBe(false);
     expect(isDue(alertRow({ interval_seconds: 300, last_run_at: new Date(NOW.getTime() - 120_000).toISOString() }), NOW)).toBe(false);
+  });
+});
+
+describe("retriesTimeout", () => {
+  const timeout = "Query error: Query exceeded 30 seconds";
+  const timedOut = alertRow({ interval_seconds: 300, last_status: "error", last_error: timeout });
+  it("re-runs after a first timeout in a row, and only after a timeout", () => {
+    expect(retriesTimeout(timedOut, { last_status: "ok", last_error: null })).toBe(true);
+    expect(retriesTimeout(timedOut, null)).toBe(true);
+    expect(retriesTimeout(timedOut, { last_status: "error", last_error: "Query error: x" })).toBe(true);
+    expect(retriesTimeout(alertRow({ last_status: "error", last_error: "Query error: syntax error at or near FROM" }), null)).toBe(false);
+    expect(retriesTimeout(alertRow({ last_status: "ok" }), null)).toBe(false);
+  });
+  it("goes back to the interval after a second timeout in a row", () => {
+    expect(retriesTimeout(timedOut, { last_status: "error", last_error: timeout })).toBe(false);
+  });
+});
+
+describe("isQueryTimeout", () => {
+  it("matches the Basin SQL timeout message and nothing else", () => {
+    expect(isQueryTimeout("Query error: Query exceeded 30 seconds")).toBe(true);
+    expect(isQueryTimeout("Query error: query returned no rows")).toBe(false);
+    expect(isQueryTimeout("Query error: Query exceeded memory limit")).toBe(false);
+    expect(isQueryTimeout(null)).toBe(false);
   });
 });
 
@@ -292,6 +316,20 @@ describe("runAlerts against D1", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it("runs a 5-min alert on the next tick after a first timeout, not after a second", async () => {
+    await addAlert({ interval_seconds: 300 });
+    const id = "11111111-1111-4111-8111-111111111111";
+    const ev = (minsAgo: number, status: "ok" | "error", error: string | null) =>
+      recordEvaluation(env.KEYS_DB, { alertId: id, evaluatedAt: new Date(NOW.getTime() - minsAgo * 60_000), mode: "shadow", status, wouldSend: false, sent: false, value: null, error, durationMs: 1 });
+    await ev(6, "ok", null);
+    await ev(1, "error", "Query error: Query exceeded 30 seconds");
+    expect((await tick(baseEnv({ ALERTS_MODE: "shadow" }))).due).toBe(1);
+    await env.KEYS_DB.prepare("DELETE FROM alert_evaluations").run();
+    await ev(6, "error", "Query error: Query exceeded 30 seconds");
+    await ev(1, "error", "Query error: Query exceeded 30 seconds");
+    expect((await tick(baseEnv({ ALERTS_MODE: "shadow" }))).due).toBe(0);
+  });
+
   it("skips alerts that aren't due and disabled ones", async () => {
     await addAlert({ interval_seconds: 300 });
     await addAlert({ id: "33333333-3333-4333-8333-333333333333", enabled: false });
@@ -376,5 +414,13 @@ describe("telemetryFor", () => {
     expect(telemetryFor(alertRow({ last_status: "error", last_error_reported_at: "2026-10-23T14:20:00Z" }), e, at)).toHaveLength(0);
     expect(telemetryFor(alertRow({ last_status: "error", last_error_reported_at: "2026-10-23T14:05:00Z" }), e, at)).toHaveLength(1);
     expect(telemetryFor(alertRow({ last_status: "error", last_error_reported_at: null }), e, at)).toHaveLength(1);
+  });
+
+  it("holds back a first query timeout and reports the second in a row", () => {
+    const timeout = "Query error: Query exceeded 30 seconds";
+    const e = { alertId: "a1", evaluatedAt: NOW, mode: "live" as const, status: "error" as const, wouldSend: false, sent: false, value: null, error: timeout, durationMs: 30_000 };
+    expect(telemetryFor(alertRow({ last_status: "ok" }), e, NOW)).toHaveLength(0);
+    expect(telemetryFor(alertRow({ last_status: "error", last_error: "Query error: x" }), e, NOW)).toHaveLength(0);
+    expect(telemetryFor(alertRow({ last_status: "error", last_error: timeout }), e, NOW)).toHaveLength(1);
   });
 });
