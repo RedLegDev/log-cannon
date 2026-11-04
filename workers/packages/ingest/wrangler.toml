@@ -180,9 +180,9 @@ BASIN_WRITE = "true"
 # v2 read API (refs #163). BASIN_SQL_TOKEN is a secret (Basin SQL read only).
 BASIN_SQL_ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
 BASIN_SQL_BUCKET = "log-cannon-events"
-# Alerts on D1 + Basin (refs #165). Off until the alerts are imported, then
-# shadow alongside alert-worker, then live at cutover.
-ALERTS_MODE = "shadow"
+# Alerts on D1 + Basin (refs #165). Live since the 2026-11-04 cutover, when
+# alert-worker stopped; rollback is "off" and starting alert-worker.
+ALERTS_MODE = "live"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
 # Alert email (refs #170), the same sender and API as alert-worker. The

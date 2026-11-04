@@ -71,6 +71,7 @@ services:
     restart: unless-stopped
 
   alert-worker:
+    profiles: ["v1-retired"]                # replaced by the Worker at the 2026-11-04 cutover (#163); Portainer must not restart it
     build:
       context: .
       dockerfile: alert-worker/Dockerfile
@@ -110,6 +111,7 @@ services:
     restart: unless-stopped
 
   supabase-pull:
+    profiles: ["v1-retired"]                # replaced by the Worker at the 2026-11-04 cutover (#163); Portainer must not restart it
     build:
       context: .
       dockerfile: supabase-pull/Dockerfile
