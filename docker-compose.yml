@@ -71,9 +71,10 @@ services:
     restart: unless-stopped
 
   # alert-worker and supabase-pull were removed at the 2026-11-04 v2 cutover (#163):
-  # the Worker sends alerts and pulls Supabase logs now. Removed rather than put
-  # under a profile because Portainer's GitOps redeploy starts profiled services
-  # anyway. Rollback: revert this removal (their code is still in the repo).
+  # the Worker sends alerts and pulls Supabase logs now. Portainer's GitOps
+  # redeploy starts every container in the project, including profiled services
+  # and orphans, so their containers were also `docker rm`'d on the host.
+  # Rollback: add the services back (their code is still in the repo).
 
   retention-worker:
     build:
