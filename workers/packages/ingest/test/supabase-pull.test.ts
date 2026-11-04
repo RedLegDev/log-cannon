@@ -580,6 +580,40 @@ describe("runSupabasePull", () => {
     expectEachIdOnce(h.stream, 80);
   });
 
+  it("gets past a burst of sent rows bigger than a tick's pages inside the overlap once it falls behind", async () => {
+    const h = harness();
+    // 1,500 rows in the last 4 minutes, all sent on the first run.
+    h.api.add("auth_logs", ...rowsEvery("burst", T0 - 4 * MIN, 150_000, 1500));
+    await h.run(T0);
+    // Then 10 new rows, and only two pages a tick, as when the rate limit
+    // cuts a tick short.
+    h.api.add("auth_logs", ...rowsEvery("new", T0 + S, S, 10));
+    const limits = { maxPages: 2 };
+
+    // Not yet behind: the overlap re-read eats the tick.
+    expect((await h.run(T0 + MIN, limits)).results[0].inserted).toBe(0);
+    // Ten minutes on, the table is behind, so it skips to the newest row sent.
+    const next = await h.run(T0 + 11 * MIN, limits);
+    expect(next.results[0].error).toBeUndefined();
+    expect(next.results[0].inserted).toBe(10);
+    expectEachIdOnce(h.stream, 1510);
+  });
+
+  it("a busy table keeping pace still re-reads its whole overlap for a late row", async () => {
+    const h = harness();
+    // 600 rows in the last 4 minutes: more than a page of overlap.
+    h.api.add("auth_logs", ...rowsEvery("busy", T0 - 4 * MIN, 400_000, 600));
+    await h.run(T0);
+    // A late row stamped 10 s before the newest row sent.
+    const newest = T0 - 4 * MIN + 599 * 400_000;
+    h.api.add("auth_logs", { id: "late", tsUs: newest - 10 * S, message: "late", severity: "", attributes: {} });
+
+    const next = await h.run(T0 + MIN);
+
+    expect(next.results[0].inserted).toBe(1);
+    expectEachIdOnce(h.stream, 601);
+  });
+
   it("ends a table on a 429 without moving its cursor, and the other tables still run", async () => {
     const h = harness("auth_logs,function_logs");
     h.api.add("auth_logs", ...rowsEvery("a", T0 - MIN, S, 5));

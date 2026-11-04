@@ -220,6 +220,9 @@ async function pullTable(ctx: TableCtx, proj: Project, table: string): Promise<T
     return fail("state", e);
   }
 
+  // More than two overlaps behind now: the table is catching up or stuck,
+  // not keeping pace (a healthy table reads to within seconds of now).
+  const catchingUp = nowUs - Math.max(state.cursorTs ?? 0, state.readTo ?? 0) > 2 * overlapUs;
   let cur: Cursor = { tsUs: start, id: "" };
   let windowStart = start;
   while (res.pages < limits.maxPages) {
@@ -266,7 +269,24 @@ async function pullTable(ctx: TableCtx, proj: Project, table: string): Promise<T
       markRead(last.tsUs);
     }
     let done = false;
-    if (rows.length >= limits.pageSize) {
+    const committed = state.cursorTs;
+    if (
+      catchingUp &&
+      rows.length >= limits.pageSize &&
+      fresh.length === 0 &&
+      committed !== null &&
+      (cur.tsUs < committed || (cur.tsUs === committed && cur.id < (state.cursorId ?? "")))
+    ) {
+      // Behind, and a full page of rows already sent that is still short of
+      // the newest row sent: the overlap re-read is walking a burst. Skip to
+      // the newest row sent. Without this, a burst of more than a tick's
+      // pages inside the overlap is re-read every tick until the 429 and the
+      // table never reaches new rows (10-31 18:45 to 11-03 18:48: 72 h, then
+      // the lookback floor passed it and 1,807 rows were skipped). Only while
+      // behind, so a busy table that keeps pace still re-reads its whole
+      // overlap for late rows; a stuck one is ~10 min late, not 72 h.
+      cur = { tsUs: committed, id: state.cursorId ?? "" };
+    } else if (rows.length >= limits.pageSize) {
       // A full page: there may be more in this window.
     } else if (to < nowUs) {
       windowStart = to;
