@@ -1,9 +1,9 @@
-"""Repair bad manifest bounds (refs #187): managed compaction can write an `exception`
-(field 13) lower and upper bound of ''/'' for a file that holds real exceptions, and Basin
-SQL then reads the column as '' for every row in it. This swaps the named data files'
-manifest entries for entries rebuilt from their own Parquet footers, in one overwrite
-snapshot. Same files, same rows. Dry run by default; the undo is rolling the table back
-to the snapshot it prints first.
+"""Repair bad manifest bounds (refs #187): Basin's writers can record a string column's
+upper bound from one row group instead of the whole file (check-manifest-bounds.py finds
+them), and Basin SQL then prunes real rows; an `exception` bound of ''/'' makes it read the
+column as '' for every row. This swaps the named data files' manifest entries for entries
+rebuilt from their own Parquet footers, in one overwrite snapshot. Same files, same rows.
+Dry run by default; the undo is rolling the table back to the snapshot it prints first.
 
   LOG_CANNON_BASIN_TOKEN=... (R2 Admin R&W)
   uv run --no-project --with "pyiceberg[pyarrow]" python -I repair-manifest-bounds.py \
@@ -20,7 +20,6 @@ from pyiceberg.io.pyarrow import parquet_file_to_data_file
 
 ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
 TARGETS = [a for a in sys.argv[1:] if not a.startswith("--")]
-EXC = 13
 
 apply = "--apply" in sys.argv
 if not TARGETS:
@@ -46,16 +45,15 @@ for name in TARGETS:
         new.record_count == old.record_count
         and new.file_path == old.file_path
         and new.partition == old.partition
-        and (new.upper_bounds or {}).get(EXC, b"") != b""
     )
     print(f"{name}\n  rows {old.record_count} -> {new.record_count}  partition {old.partition} -> {new.partition}")
-    print(f"  exception bounds  old [{(old.lower_bounds or {}).get(EXC)!r}, {(old.upper_bounds or {}).get(EXC)!r}]")
-    print(f"                    new [{(new.lower_bounds or {}).get(EXC)!r}, {(new.upper_bounds or {}).get(EXC)!r}]")
-    for fid in sorted(set(old.upper_bounds or {}) | set(new.upper_bounds or {})):
-        if fid != EXC and (old.upper_bounds or {}).get(fid) != (new.upper_bounds or {}).get(fid):
-            print(f"  note: field {fid} upper bound differs: {(old.upper_bounds or {}).get(fid)!r} -> {(new.upper_bounds or {}).get(fid)!r}")
+    for kind in ("lower_bounds", "upper_bounds"):
+        o, n = getattr(old, kind) or {}, getattr(new, kind) or {}
+        for fid in sorted(set(o) | set(n)):
+            if o.get(fid) != n.get(fid):
+                print(f"  field {fid} {kind[:5]}: {o.get(fid)!r} -> {n.get(fid)!r}")
     if not ok:
-        sys.exit("ABORT: rebuilt entry doesn't match (rows, path, partition) or still has an empty exception bound")
+        sys.exit("ABORT: rebuilt entry doesn't match the old one on rows, path or partition")
     pairs.append((old, new))
 
 if not apply:
