@@ -3,11 +3,20 @@ upper bound from one row group instead of the whole file (check-manifest-bounds.
 them), and Basin SQL then prunes real rows; an `exception` bound of ''/'' makes it read the
 column as '' for every row. This swaps the named data files' manifest entries for entries
 rebuilt from their own Parquet footers, in one overwrite snapshot. Same files, same rows.
-Dry run by default; the undo is rolling the table back to the snapshot it prints first.
+Dry run by default. The rebuilt entries are correct by construction, so there is rarely
+anything to undo; rolling the table back to the snapshot it prints first is the undo only
+while nothing has been appended since (Pipelines appends every minute, and a rollback
+drops those appends from the table).
 
   LOG_CANNON_BASIN_TOKEN=... (R2 Admin R&W)
   uv run --no-project --with "pyiceberg[pyarrow]" python -I repair-manifest-bounds.py \
-      compacted-00000-....parquet [...] [--apply]
+      compacted-00000-....parquet [...] [--apply] [--skip-missing]
+
+--skip-missing leaves out named files that are no longer live (compaction replaced them
+since they were checked) instead of aborting. The footers are read first and the table is
+reloaded just before the commit, because Pipelines appends about once a minute and an
+overwrite fails validation if an append lands between its load and its commit; a lost race
+is retried 4 times. Exit 3 means every attempt lost; nothing was changed.
 
 First used 2026-11-04 on the 10-26 and 11-03 files (vault: 2026-11-04 compaction bound repair).
 """
@@ -16,6 +25,7 @@ import os
 import sys
 
 from pyiceberg.catalog.rest import RestCatalog
+from pyiceberg.exceptions import CommitFailedException, ValidationException
 from pyiceberg.io.pyarrow import parquet_file_to_data_file
 
 ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
@@ -39,6 +49,9 @@ pairs = []
 for name in TARGETS:
     old = live.get(name)
     if old is None:
+        if "--skip-missing" in sys.argv:
+            print(f"skip: {name} is no longer a live data file")
+            continue
         sys.exit(f"ABORT: {name} is not a live data file (already repaired or recompacted?)")
     new = parquet_file_to_data_file(table.io, table.metadata, old.file_path)
     ok = (
@@ -56,15 +69,36 @@ for name in TARGETS:
         sys.exit("ABORT: rebuilt entry doesn't match the old one on rows, path or partition")
     pairs.append((old, new))
 
+if not pairs:
+    print("nothing to repair")
+    sys.exit(0)
 if not apply:
     print("dry run: rerun with --apply to commit one overwrite snapshot")
     sys.exit(0)
 
-with table.transaction() as tx:
-    with tx.update_snapshot().overwrite() as ow:
-        for old, new in pairs:
-            ow.delete_data_file(old)
-            ow.append_data_file(new)
+for attempt in range(5):
+    # Fresh table and entries right before committing: the footer reads above take long
+    # enough that a Pipelines append usually lands in between.
+    table = cat.load_table("logs.events")
+    snap = table.current_snapshot()
+    live = {t.file.file_path: t.file for t in table.scan().plan_files()}
+    fresh = [(live[old.file_path], new) for old, new in pairs if old.file_path in live]
+    if not fresh:
+        print("nothing to repair: every file was replaced since it was read")
+        sys.exit(0)
+    try:
+        with table.transaction() as tx:
+            with tx.update_snapshot().overwrite() as ow:
+                for old, new in fresh:
+                    ow.delete_data_file(old)
+                    ow.append_data_file(new)
+        break
+    except (CommitFailedException, ValidationException) as e:
+        print(f"attempt {attempt + 1}: lost a race with another writer, nothing changed: {str(e)[:160]}")
+else:
+    sys.exit(3)
+if len(fresh) < len(pairs):
+    print(f"replaced meanwhile, not repaired: {len(pairs) - len(fresh)} file(s)")
 table = cat.load_table("logs.events")
 s = table.current_snapshot()
 print("committed snapshot", s.snapshot_id, "parent", s.parent_snapshot_id, s.summary)
