@@ -451,13 +451,16 @@ payload, so a send that then fails is a loss the client already believes
 succeeded. That case is reported, never silent: an `ingest-enqueue-failed-after-response`
 line in Workers Logs and a matching CLEF `Error` on `SLOW_REQUEST_SOURCE`,
 carrying the route, the source, and how many messages were lost. Alert on it
-separately from the latency alert above:
+separately from the latency alert above. Match the message, not just the level:
+a Basin copy that fails both its send and its spill is also an `Error` on that
+source, and it is a different loss (see the Basin section), so give it its own
+alert on `message LIKE 'Basin copy failed%'`:
 
 ```json
 {
   "id": "ingest-enqueue-loss",
   "name": "Ingest Enqueue Loss",
-  "query": "SELECT count() as cnt FROM logs.events WHERE source = 'log-cannon-ingest' AND level = 'Error' AND timestamp > now() - INTERVAL 5 MINUTE",
+  "query": "SELECT count() as cnt FROM logs.events WHERE source = 'log-cannon-ingest' AND level = 'Error' AND message LIKE 'Ingest enqueue failed%' AND timestamp > now() - INTERVAL 5 MINUTE",
   "condition": "cnt > 0",
   "interval_seconds": 60,
   "cooldown_seconds": 900
