@@ -245,7 +245,11 @@ export async function evaluateAlert(
   if (!triggered) return done({ status: "ok", value: row });
 
   const last = mode === "live" ? alert.last_triggered_at : alert.shadow_last_triggered_at;
-  if (last && now.getTime() - Date.parse(last) < alert.cooldown_seconds * 1000) {
+  // The same tick slack as isDue: a 30-min cooldown on a 5-min alert ends on
+  // a tick that lands a few hundred ms early, and without the slack that tick
+  // reads as cooldown and the send waits a whole interval (seen 11-03 00:37
+  // and 20:08, 0.35 s and 0.09 s short).
+  if (last && now.getTime() - Date.parse(last) < alert.cooldown_seconds * 1000 - DUE_SLACK_MS) {
     return done({ status: "cooldown", value: row });
   }
   if (mode === "shadow") {

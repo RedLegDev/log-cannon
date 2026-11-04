@@ -238,6 +238,16 @@ describe("runAlerts against D1", () => {
     ]);
   });
 
+  it("a tick that lands just short of the cooldown's end still sends", async () => {
+    await addAlert({ interval_seconds: 300, cooldown_seconds: 1800 });
+    await tick(baseEnv({ ALERTS_MODE: "shadow" }));
+    basinNewestAt = "2026-10-23T16:00:00.000"; // fresh for the later ticks
+    const early = await tick(baseEnv({ ALERTS_MODE: "shadow" }), new Date(NOW.getTime() + 1_799_650));
+    expect(early.evaluated[0]).toMatchObject({ status: "triggered", wouldSend: true });
+    const inside = await tick(baseEnv({ ALERTS_MODE: "shadow" }), new Date(NOW.getTime() + 1_799_650 + 1_500_000));
+    expect(inside.evaluated[0]).toMatchObject({ status: "cooldown" });
+  });
+
   it("live: delivers to the legacy recipient and starts the cooldown", async () => {
     const id = await addAlert();
     const t = await tick(baseEnv({ ALERTS_MODE: "live" }));
