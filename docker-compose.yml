@@ -70,6 +70,10 @@ services:
       - "${INBUCKET_SMTP_PORT:-2500}:2500"  # SMTP intake
     restart: unless-stopped
 
+  # queue-consumer was removed on 2026-11-10 once QUEUE_WRITE=false made Basin
+  # the only write path (#163 #169); its container was `docker rm`'d too, for
+  # the reason below. Rollback: add it back and set QUEUE_WRITE=true.
+  #
   # alert-worker and supabase-pull were removed at the 2026-11-04 v2 cutover (#163):
   # the Worker sends alerts and pulls Supabase logs now. Portainer's GitOps
   # redeploy starts every container in the project, including profiled services
@@ -108,39 +112,6 @@ services:
       - R2_BUCKET=${R2_BUCKET:-log-cannon-backups}
     volumes:
       - clickhouse-backups:/backups
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-    restart: unless-stopped
-
-  queue-consumer:
-    build:
-      context: .
-      dockerfile: queue-consumer/Dockerfile
-    # Docker's default stop grace is 10s, which is shorter than the consumer's
-    # own ack drain (~50s with ASYNC_ACK_DEPTH on). Without this, SIGKILL lands
-    # mid-drain and acks for events already written to ClickHouse are abandoned
-    # — those messages are then redelivered and inserted a second time. Must
-    # stay >= ackTotalBudget + ackDrainGrace() in queue-consumer/main.go
-    # (15s + 50s): a poll may still be acking inline (the synchronous default,
-    # or a full ack queue) when SIGTERM lands, and run() waits for it before
-    # the drain starts.
-    stop_grace_period: 75s
-    environment:
-      - CF_ACCOUNT_ID=${CF_ACCOUNT_ID}
-      - CF_QUEUE_ID=${CF_QUEUE_ID}
-      - CF_API_TOKEN=${CF_API_TOKEN}
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=9000
-      - CLICKHOUSE_DATABASE=logs
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
-      - LOG_CANNON_INGEST_URL=${LOG_CANNON_INGEST_URL:-}
-      - LOG_CANNON_API_KEY=${LOG_CANNON_QUEUE_CONSUMER_API_KEY:-}
-      - POLL_SLOW_MS=${POLL_SLOW_MS:-1000}
-      - POLL_TELEMETRY_MIN_INTERVAL_MS=${POLL_TELEMETRY_MIN_INTERVAL_MS:-10000}
-      - ASYNC_ACK_DEPTH=${ASYNC_ACK_DEPTH:-0}
-      - QUEUE_CONSUMER_WORKERS=${QUEUE_CONSUMER_WORKERS:-1}
     depends_on:
       clickhouse:
         condition: service_healthy

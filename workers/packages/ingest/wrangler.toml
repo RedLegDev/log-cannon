@@ -189,9 +189,10 @@ ALERTS_SOURCE = "log-cannon-alerts"
 # SAASMAIL_API_KEY secret is set on the Worker, not here.
 SAASMAIL_API_URL = "https://mail.redleg.dev"
 ALERT_FROM_EMAIL = "alerts@redleg.dev"
-# Basin retention (refs #167). Ships as dry-run: turning on "delete" (and
-# setting BASIN_CATALOG_TOKEN) is a deliberate decision.
-BASIN_RETENTION_MODE = "dry-run"
+# Basin retention (refs #167). Off since 2026-11-10 (Matt, 10-26: storage is
+# cheap). The dry run would warn daily once data passes 30 days. Turning on
+# "delete" (and setting BASIN_CATALOG_TOKEN) is a deliberate decision.
+BASIN_RETENTION_MODE = "off"
 BASIN_RETENTION_DEFAULT_DAYS = "30"
 # Supabase pull (refs #164). SUPABASE_PULL_PROJECTS is deliberately not set
 # here: its "ref=source" pairs name projects and this repo is public. It is a
