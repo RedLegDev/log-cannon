@@ -31,10 +31,7 @@ npm-debug.log*
 coverage/
 
 # Go binaries
-alert-worker/alert-worker
-queue-consumer/queue-consumer
 retention-worker/retention-worker
-supabase-pull/supabase-pull
 
 # Docker volumes
 clickhouse-data/

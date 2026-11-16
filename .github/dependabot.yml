@@ -78,52 +78,6 @@ updates:
 
   # ── Go ───────────────────────────────────────────────────────────────────
   - package-ecosystem: "gomod"
-    directory: "/alert-worker"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      timezone: "America/New_York"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "go"
-    commit-message:
-      prefix: "chore(alert-worker)"
-    groups:
-      alert-worker-minor-patch:
-        applies-to: version-updates
-        update-types:
-          - "minor"
-          - "patch"
-      alert-worker-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
-    directory: "/queue-consumer"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      timezone: "America/New_York"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "go"
-    commit-message:
-      prefix: "chore(queue-consumer)"
-    groups:
-      queue-consumer-minor-patch:
-        applies-to: version-updates
-        update-types:
-          - "minor"
-          - "patch"
-      queue-consumer-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
-  - package-ecosystem: "gomod"
     directory: "/retention-worker"
     schedule:
       interval: "weekly"
@@ -146,40 +100,14 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "gomod"
-    directory: "/supabase-pull"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      timezone: "America/New_York"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "go"
-    commit-message:
-      prefix: "chore(supabase-pull)"
-    groups:
-      supabase-pull-minor-patch:
-        applies-to: version-updates
-        update-types:
-          - "minor"
-          - "patch"
-      supabase-pull-security:
-        applies-to: security-updates
-        patterns:
-          - "*"
-
   # ── Docker base images ─────────────────────────────────────────────────────
   # Only pinned tags are updated; floating tags (e.g. :latest) are ignored by Dependabot.
   - package-ecosystem: "docker"
     directories:
-      - "/alert-worker"
       - "/backup"
       - "/clickhouse"
       - "/dashboard"
-      - "/queue-consumer"
       - "/retention-worker"
-      - "/supabase-pull"
     schedule:
       interval: "weekly"
       day: "monday"
