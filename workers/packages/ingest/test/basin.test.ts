@@ -6,8 +6,7 @@ import {
   COPY_DEADLINE_MS,
   COPY_WATCHDOG_MS,
   SPILL_TIMEOUT_MS,
-  QUEUE_OFF_SPILL_TIMEOUT_MS,
-  QUEUE_OFF_WATCHDOG_MS,
+  TELEMETRY_SPILL_TIMEOUT_MS,
   isBasinLoss,
   SEND_RETRY_DELAYS_MS,
   SEND_TIMEOUT_MS,
@@ -41,8 +40,7 @@ afterEach(() => {
   copyTiming.timeoutMs = SEND_TIMEOUT_MS;
   copyTiming.spillTimeoutMs = SPILL_TIMEOUT_MS;
   copyTiming.watchdogMs = COPY_WATCHDOG_MS;
-  copyTiming.queueOffSpillTimeoutMs = QUEUE_OFF_SPILL_TIMEOUT_MS;
-  copyTiming.queueOffWatchdogMs = QUEUE_OFF_WATCHDOG_MS;
+  copyTiming.telemetrySpillTimeoutMs = TELEMETRY_SPILL_TIMEOUT_MS;
   vi.restoreAllMocks();
 });
 
@@ -254,13 +252,12 @@ describe("copyToBasin", () => {
 
   function harness(vars: Record<string, unknown>, stream?: LogStream) {
     const pending: Promise<unknown>[] = [];
-    const queued: unknown[] = [];
     const ingest = {
       request: new Request("https://logs.example.com/ingest/clef", { method: "POST" }),
       env: {
-        INGEST_QUEUE: { send: async (m: unknown) => void queued.push(m) },
         SLOW_REQUEST_SOURCE: "log-cannon-ingest",
         LOGS: stream,
+        BASIN_SPILL: env.BASIN_SPILL,
         ...vars,
       },
       ctx: { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} },
@@ -271,9 +268,8 @@ describe("copyToBasin", () => {
     } as unknown as IngestRequest;
     const { format, bodies, contentType } = copy();
     return {
-      run: (accepted: Promise<unknown> = Promise.resolve()) => copyToBasin(ingest, { format, bodies, contentType }, accepted),
+      run: () => copyToBasin(ingest, { format, bodies, contentType }),
       pending,
-      queued,
     };
   }
 
@@ -298,24 +294,7 @@ describe("copyToBasin", () => {
     expect(h.pending).toHaveLength(1);
     await Promise.all(h.pending);
     expect(batches.flat()).toHaveLength(2);
-    expect(h.queued).toHaveLength(0);
-  });
-
-  it("waits for the enqueue, and copies nothing if it was refused", async () => {
-    const { stream, batches } = fakeStream();
-    const h = harness({ BASIN_WRITE: "true" }, stream);
-    let resolve!: () => void;
-    h.run(new Promise<void>((r) => (resolve = r)));
-    await scheduler.wait(1);
-    expect(batches).toHaveLength(0);
-    resolve();
-    await Promise.all(h.pending);
-    expect(batches.flat()).toHaveLength(2);
-
-    const refused = harness({ BASIN_WRITE: "true" }, stream);
-    refused.run(Promise.reject(new Error("queue unavailable")));
-    await Promise.all(refused.pending);
-    expect(batches.flat()).toHaveLength(2);
+    expect(await spilledRows()).toEqual([]);
   });
 
   it("reports a failed send on both channels and never throws", async () => {
@@ -326,8 +305,9 @@ describe("copyToBasin", () => {
     await expect(Promise.all(h.pending)).resolves.toBeDefined();
     const logged = JSON.parse(error.mock.calls[0][0] as string);
     expect(logged).toMatchObject({ event: "basin-copy-failed", stage: "send", ingestSource: "example-app" });
-    expect(h.queued).toHaveLength(1);
-    expect((h.queued[0] as { source: string }).source).toBe("log-cannon-ingest");
+    // The CLEF report's own copy goes straight to the spill, beside the rows.
+    const reports = (await spilledRows()).filter((r) => r.source === "log-cannon-ingest");
+    expect(reports).toHaveLength(1);
     error.mockRestore();
   });
 });
@@ -497,17 +477,16 @@ describe("spill and copy time limits", () => {
     expect(err.spillError).toBe("spill timed out after 5 ms");
   });
 
-  it("copyToBasin uses the queue-off watchdog when QUEUE_WRITE is off", async () => {
+  it("copyToBasin cuts a copy off at the watchdog", async () => {
     copyTiming.timeoutMs = 60_000;
-    copyTiming.watchdogMs = 60_000;
-    copyTiming.queueOffWatchdogMs = 20;
+    copyTiming.watchdogMs = 20;
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const pending: Promise<unknown>[] = [];
     let release!: () => void;
     const hung = new Promise<void>((r) => (release = r));
     const ingest = {
       request: new Request("https://logs.example.com/ingest/clef", { method: "POST" }),
-      env: { SLOW_REQUEST_SOURCE: "", LOGS: { send: () => hung }, BASIN_WRITE: "true", QUEUE_WRITE: "false", BASIN_SPILL: env.BASIN_SPILL },
+      env: { SLOW_REQUEST_SOURCE: "", LOGS: { send: () => hung }, BASIN_WRITE: "true", BASIN_SPILL: env.BASIN_SPILL },
       ctx: { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} },
       route: "/ingest/clef",
       source: "example-app",
@@ -515,7 +494,7 @@ describe("spill and copy time limits", () => {
       receivedAt: RECEIVED_AT,
     } as unknown as IngestRequest;
     const { format, bodies, contentType } = copy();
-    copyToBasin(ingest, { format, bodies, contentType }, Promise.resolve());
+    copyToBasin(ingest, { format, bodies, contentType });
     await Promise.all(pending);
     const logged = JSON.parse(error.mock.calls.find((c) => String(c[0]).includes("basin-copy-failed"))![0] as string);
     expect(logged).toMatchObject({ error: "copy timed out after 20 ms" });
@@ -528,14 +507,12 @@ describe("spill and copy time limits", () => {
     copyTiming.watchdogMs = 20;
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const pending: Promise<unknown>[] = [];
-    const queued: { body: string }[] = [];
     let sends = 0;
     let release!: () => void;
     const hung = new Promise<void>((r) => (release = r));
     const ingest = {
       request: new Request("https://logs.example.com/ingest/clef", { method: "POST" }),
       env: {
-        INGEST_QUEUE: { send: async (m: { body: string }) => void queued.push(m) },
         SLOW_REQUEST_SOURCE: "log-cannon-ingest",
         // Hangs until the test releases it, so nothing outlives the test.
         LOGS: { send: () => (sends++, hung) },
@@ -549,16 +526,16 @@ describe("spill and copy time limits", () => {
       receivedAt: RECEIVED_AT,
     } as unknown as IngestRequest;
     const { format, bodies, contentType } = copy();
-    copyToBasin(ingest, { format, bodies, contentType }, Promise.resolve());
+    copyToBasin(ingest, { format, bodies, contentType });
     await Promise.all(pending);
     const logged = JSON.parse(error.mock.calls.find((c) => String(c[0]).includes("basin-copy-failed"))![0] as string);
     expect(logged).toMatchObject({ stage: "send", error: "copy timed out after 20 ms" });
-    expect(queued).toHaveLength(1);
-    const event = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(queued[0].body), (c) => c.charCodeAt(0))));
-    expect(event).toMatchObject({ "@l": "Error", Error: "copy timed out after 20 ms" });
     // The report's Basin copy went to the spill without touching the stream.
     expect(sends).toBe(1);
-    expect((await spilledRows()).map((r) => r.source)).toEqual(["log-cannon-ingest"]);
+    const spilled = await spilledRows();
+    expect(spilled.map((r) => r.source)).toEqual(["log-cannon-ingest"]);
+    expect(spilled[0].level).toBe("Error");
+    expect(spilled[0].properties).toMatchObject({ Error: "copy timed out after 20 ms" });
     release();
   });
 
@@ -590,15 +567,23 @@ describe("copyToBasin spill reporting", () => {
   async function run(spill: unknown) {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const pending: Promise<unknown>[] = [];
-    const queued: { body: string }[] = [];
+    // Every spill put is recorded before it reaches `spill`, so the CLEF
+    // report's row can be read even when the put then fails.
+    const reports: LogRow[] = [];
+    const recording = {
+      put: async (k: string, v: Blob, o?: R2PutOptions) => {
+        const rows = await gunzipRows(v.stream());
+        reports.push(...rows.filter((r) => r.source === "log-cannon-ingest"));
+        return await (spill as R2Bucket).put(k, v, o);
+      },
+    };
     const ingest = {
       request: new Request("https://logs.example.com/ingest/clef", { method: "POST" }),
       env: {
-        INGEST_QUEUE: { send: async (m: { body: string }) => void queued.push(m) },
         SLOW_REQUEST_SOURCE: "log-cannon-ingest",
         LOGS: flakyStream(() => true).stream,
         BASIN_WRITE: "true",
-        BASIN_SPILL: spill,
+        BASIN_SPILL: recording,
       },
       ctx: { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} },
       route: "/ingest/clef",
@@ -607,10 +592,11 @@ describe("copyToBasin spill reporting", () => {
       receivedAt: RECEIVED_AT,
     } as unknown as IngestRequest;
     const { format, bodies, contentType } = copy();
-    copyToBasin(ingest, { format, bodies, contentType }, Promise.resolve());
+    copyToBasin(ingest, { format, bodies, contentType });
     await Promise.all(pending);
     const logged = JSON.parse(error.mock.calls.find((c) => String(c[0]).includes("basin-copy-failed"))![0] as string);
-    const event = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(queued[0].body), (c) => c.charCodeAt(0))));
+    const report = reports.at(-1)!;
+    const event = { "@l": report.level, ...report.properties };
     return { logged, event };
   }
 
@@ -641,7 +627,7 @@ describe("sendTelemetry spill", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const line = JSON.stringify({ "@t": "2026-10-23T15:30:00Z", "@mt": "Basin copy failed", Stage: "send" });
     await sendTelemetry(
-      { ...env, INGEST_QUEUE: { send: async () => {} }, LOGS: flakyStream(() => true).stream, BASIN_WRITE: "true", BASIN_SPILL: env.BASIN_SPILL } as never,
+      { ...env, LOGS: flakyStream(() => true).stream, BASIN_WRITE: "true", BASIN_SPILL: env.BASIN_SPILL } as never,
       "log-cannon-ingest",
       [line],
     );

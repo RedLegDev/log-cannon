@@ -75,7 +75,7 @@ describe("slow-request reporting through the router", () => {
     expect(report.ingestSource).toBe("example-app");
     expect(report.readMs).toBeGreaterThan(0);
     expect(report.totalMs).toBeGreaterThanOrEqual(report.readMs);
-    expect(report.queueMessages).toBe(1);
+    expect(report.queueMessages).toBe(0);
     expect(report.bodyBytes).toBe(CLEF_LINE.length);
   });
 

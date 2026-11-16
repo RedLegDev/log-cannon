@@ -239,12 +239,10 @@ describe("scheduled", () => {
   it("runs the replay alongside the other ticks and reports through telemetry", async () => {
     await putSpill("2026-10-23T15:30:00.000Z", [row("a")]);
     const { s, sent } = stream();
-    const queued: unknown[] = [];
-    await scheduled({ ...env, LOGS: s, BASIN_WRITE: "true", BASIN_SPILL: bucket(), INGEST_QUEUE: { send: async (m: unknown) => void queued.push(m) } } as never);
+    await scheduled({ ...env, LOGS: s, BASIN_WRITE: "true", BASIN_SPILL: bucket() } as never);
     // The replayed row, then the summary's own Basin copy.
     expect(sent.flat().map((r) => r.id)[0]).toBe("a");
     expect(sent.flat()[1].message_template).toMatch(/^Basin spill replay sent/);
     expect(await keys()).toEqual([]);
-    expect(queued).toHaveLength(1);
   });
 });

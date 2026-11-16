@@ -42,7 +42,7 @@ routes = [
 # this one it is a feedback loop: the destination delivers to `/ingest/webhook`
 # on the very Worker whose invocations it is reporting, and each delivery
 # generates fresh invocation logs to deliver. Read these in Workers Logs; the
-# slow-request events reach ClickHouse by the queue instead (SLOW_REQUEST_SOURCE).
+# slow-request events reach Basin through sendTelemetry instead (SLOW_REQUEST_SOURCE).
 [observability]
 enabled = true
 head_sampling_rate = 1
@@ -57,24 +57,14 @@ invocation_logs = true
 # notably not cold start or connection setup, both of which happen before the
 # Worker is invoked.
 SLOW_REQUEST_MS = "1000"
-# logs.events source that slow-request events are written to, through the same
-# queue as every other event. Empty leaves Workers Logs as the only channel.
+# logs.events source that slow-request events are written to, in Basin like
+# every other event. Empty leaves Workers Logs as the only channel.
 SLOW_REQUEST_SOURCE = "log-cannon-ingest"
-# Stop holding the caller after this long waiting for the queue to acknowledge a
-# send, and finish the send in waitUntil instead. "0" is off: await the ack in
-# full, which is the behaviour that predates this var.
-#
-# Off by default on purpose. Switching it on means the Worker can answer 201
-# before the queue has durably accepted the payload, so a send that fails after
-# that point is a loss the client already believes succeeded (reported as
-# ingest-enqueue-failed-after-response, never silent). Turn it on only when the
-# queue's ack tail is the thing hurting senders — see workers/packages/ingest/
-# src/enqueue.ts.
-QUEUE_ACK_DEADLINE_MS = "0"
-# v2 cutover (refs #169): "false" stops every queue write while BASIN_WRITE is
-# on, so the Basin copy is the only store. Anything else writes the queue. With
-# BASIN_WRITE off the queue stays on whatever this says.
-QUEUE_WRITE = "true"
+# Basin (refs #163, #171) is the only store. Ingest writes nothing unless
+# BASIN_WRITE is exactly "true" and a [[pipelines]] binding named LOGS points
+# at your stream (see [env.production] below); without both, a request is
+# answered 2xx and stored nowhere. Left unset here because this generic config
+# has no stream to bind.
 # Alert evaluator (refs #165): "off", "shadow" (evaluate and record, send
 # nothing) or "live". Alerts run on the once-a-minute cron below against Basin
 # SQL, with every now() in an alert query pinned ALERT_LAG_SECONDS back so a
@@ -100,10 +90,6 @@ SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs
 # The second cron is Basin retention (src/basin-retention.ts, RETENTION_CRON).
 [triggers]
 crons = ["* * * * *", "17 20 * * *"]
-
-[[queues.producers]]
-queue = "log-cannon-ingest"
-binding = "INGEST_QUEUE"
 
 [[d1_databases]]
 binding = "KEYS_DB"
@@ -159,33 +145,18 @@ invocation_logs = true
 [env.production.vars]
 SLOW_REQUEST_MS = "1000"
 SLOW_REQUEST_SOURCE = "log-cannon-ingest"
-# On, at 4 s, for this deployment only. Its senders bound their own fetch at
-# around 5 s, so a response that leaves at 4 s still reaches them: a request
-# that would have aborted gets a 201 instead, which is the whole of #107.
-#
-# Sized from measured `EnqueueMs` on this queue rather than picked round — p50
-# 1.4 s, p90 2.4 s, p99 3.7 s, worst 79 s. At 4 s only ~0.6% of already-slow
-# sends hand off, so the deadline takes the pathological tail and leaves every
-# send that would have acked in time exactly as it was. Lower it only if
-# `ingest-enqueue-failed-after-response` stays silent and senders still abort.
-#
-# The generic [vars] default above stays "0" on purpose. Self-hosters have
-# their own senders and their own queue tail, and this number is neither.
-QUEUE_ACK_DEADLINE_MS = "4000"
+# The only write path (refs #171). Off, ingest accepts requests and stores
+# nothing.
 BASIN_WRITE = "true"
-# QUEUE_WRITE (refs #169) is deliberately not set here: unset is on. The cutover
-# sets it to "false" on the deployed Worker (`wrangler deploy --var` or the
-# dashboard) and keep_vars holds it across pushes; rollback is setting it back
-# to "true". Declaring it here would reset it on every push to main.
 # v2 read API (refs #163). BASIN_SQL_TOKEN is a secret (Basin SQL read only).
 BASIN_SQL_ACCOUNT = "ab1da25c524f59bc61f776304bd88558"
 BASIN_SQL_BUCKET = "log-cannon-events"
-# Alerts on D1 + Basin (refs #165). Live since the 2026-11-04 cutover, when
-# alert-worker stopped; rollback is "off" and starting alert-worker.
+# Alerts on D1 + Basin (refs #165). Live since the 2026-11-04 cutover, which
+# retired the Go alert-worker.
 ALERTS_MODE = "live"
 ALERT_LAG_SECONDS = "180"
 ALERTS_SOURCE = "log-cannon-alerts"
-# Alert email (refs #170), the same sender and API as alert-worker. The
+# Alert email (refs #170), the same sender and API v1 used. The
 # SAASMAIL_API_KEY secret is set on the Worker, not here.
 SAASMAIL_API_URL = "https://mail.redleg.dev"
 ALERT_FROM_EMAIL = "alerts@redleg.dev"
@@ -203,11 +174,7 @@ SUPABASE_PULL_TABLES = "postgres_logs,auth_logs,function_logs,function_edge_logs
 [env.production.triggers]
 crons = ["* * * * *", "17 20 * * *"]
 
-[[env.production.queues.producers]]
-queue = "log-cannon-ingest"
-binding = "INGEST_QUEUE"
-
-# v2 dual-write (refs #163): Basin stream log_events_v1. BASIN_WRITE gates it.
+# Basin stream log_events_v1 (refs #163), the only store. BASIN_WRITE gates it.
 [[env.production.pipelines]]
 stream = "77f5efc2ffb5428e9a49c6cf1444cd67"
 binding = "LOGS"

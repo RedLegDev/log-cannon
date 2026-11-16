@@ -5,13 +5,10 @@ import { handleAdminKeys } from "./admin";
 import {
   RequestTrace,
   buildSlowRequest,
-  enqueueFailureCLEF,
   resolveSlowRequestMs,
   shouldEmitTelemetry,
   slowRequestCLEF,
-  type EnqueueFailure,
 } from "./timing";
-import { queueWriteEnabled, resolveQueueAckDeadlineMs, sendWithDeadline } from "./enqueue";
 import {
   BasinCopyError,
   basinFailureCLEF,
@@ -22,6 +19,7 @@ import {
   within,
   writeCopy,
   type BasinCopy,
+  type BasinFormat,
   type CopyOptions,
   type LogStream,
 } from "./basin";
@@ -42,7 +40,6 @@ import {
 } from "./query";
 
 interface Env {
-  INGEST_QUEUE: Queue<QueuePayload>;
   KEYS_DB: D1Database;
   /**
    * Report any ingest request whose in-Worker time reaches this many
@@ -56,28 +53,16 @@ interface Env {
    */
   SLOW_REQUEST_SOURCE?: string;
   /**
-   * Stop waiting for the queue ack after this many milliseconds and finish the
-   * send in `waitUntil` instead. `0` — the default, and what anything unset or
-   * unparseable falls back to — awaits the send fully, exactly as before this
-   * existed. See `src/enqueue.ts` for why it ships off.
-   */
-  QUEUE_ACK_DEADLINE_MS?: string | number;
-  /**
-   * v2 dual-write (refs #163). The Basin stream `log_events_v1`; absent until
-   * the `[[pipelines]]` binding is configured.
+   * The Basin stream `log_events_v1` (refs #163); absent until the
+   * `[[pipelines]]` binding is configured.
    */
   LOGS?: LogStream;
   /**
-   * Exactly "true" copies every accepted request into `LOGS` after the queue
-   * has taken it. Anything else is off. See `src/basin.ts`.
+   * Exactly "true" writes every accepted request into `LOGS`, the only store
+   * since the queue was retired (refs #171). Anything else is off, and an
+   * accepted request is then stored nowhere. See `src/basin.ts`.
    */
   BASIN_WRITE?: string;
-  /**
-   * Exactly "false" stops every queue write (requests and the Worker's own
-   * telemetry) while BASIN_WRITE is on, leaving Basin the only store (refs
-   * #169). Anything else, unset included, keeps writing the queue.
-   */
-  QUEUE_WRITE?: string;
   /**
    * R2 bucket for Basin copies the stream wouldn't take after retries (refs
    * #166). The cron replays it. Absent, such rows are lost and reported.
@@ -123,24 +108,6 @@ interface Env {
   SUPABASE_ACCESS_TOKEN?: string;
 }
 
-interface QueuePayload {
-  format: "clef" | "webhook" | "otlp-logs" | "otlp-traces";
-  source: string;
-  /** Raw request body, base64-encoded (queue messages are JSON). */
-  body: string;
-  contentType: string;
-  preset?: string;
-  /**
-   * Request-scoped Cloudflare geo/network context captured once at the edge
-   * (from `request.cf` + headers). The consumer applies these as event
-   * properties, filling only keys the event doesn't already carry — never
-   * overwriting a value the caller stamped itself. Keys here are the exact
-   * property names downstream analytics read (cf_asn, geo_*, cf_is_bot,
-   * user_agent). Currently attached on the CLEF path only.
-   */
-  enrich?: Record<string, string>;
-}
-
 /**
  * Ingest routes and the parser each dispatches to. The route list and the
  * format union already had to agree; keeping the mapping in one place stops
@@ -154,7 +121,7 @@ const ROUTE_FORMATS = {
   "/v1/logs": "otlp-logs",
   "/ingest/otlp/traces": "otlp-traces",
   "/v1/traces": "otlp-traces",
-} satisfies Record<string, QueuePayload["format"]>;
+} satisfies Record<string, BasinFormat>;
 
 /** Narrowed view of the `request.cf` fields we read (workers-types exposes
  * these under a broad generic). Every field is optional — Cloudflare omits
@@ -170,13 +137,15 @@ interface CfGeoContext {
 
 /**
  * Capture per-request geo/network context from the Cloudflare edge so the
- * consumer can enrich events that lack it (e.g. browser beacons, which carry
+ * parser can enrich events that lack it (e.g. browser beacons, which carry
  * a real user IP but can't self-report ASN/geo). Keys match the exact property
  * names downstream analytics already read. No raw client IP is captured (PII).
  *
- * Returns undefined only when nothing at all is available, keeping the queue
- * payload byte-identical to before on that path — so this is a pure no-op for
- * ingest when there's nothing to add and can't fail the request.
+ * The parser applies these as event properties, filling only keys the event
+ * doesn't already carry — never overwriting a value the caller stamped itself.
+ * Attached on the CLEF path only. Returns undefined only when nothing at all is
+ * available, so this is a pure no-op when there's nothing to add and can't fail
+ * the request.
  *
  * `cf_is_bot` mirrors Cloudflare's `verifiedBot`: true only for allow-listed
  * good crawlers (Googlebot, etc.), false/absent for everything else including
@@ -247,11 +216,13 @@ function errorResponse(status: number, message: string): Response {
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024; // 32 MB
 
-// Maximum raw bytes per Cloudflare Queue message after chunking. CF Queues
-// hard-cap each message at 128 KB. Base64 inflates payloads by ~33%, plus
-// the JSON wrapper around the QueuePayload (~100 bytes). 90 KB raw stays
-// safely under the cap: 90 KB * 4/3 + ~100 ≈ 123 KB encoded.
-const MAX_QUEUE_CHUNK_BYTES = 90 * 1024;
+// Maximum raw bytes per chunk of a large body. The number comes from the
+// retired queue's 128 KB message cap (90 KB raw, base64 and wrapped, fit under
+// it) and is kept as it was: the Basin copy parses and sends one chunk at a
+// time, which bounds its memory, and a single CLEF line or OTLP resource entry
+// over it is still a 413 the sender has to fix (the error text keeps its
+// original wording for the same reason).
+const MAX_CHUNK_BYTES = 90 * 1024;
 
 class BodyTooLargeError extends Error {
   constructor() {
@@ -323,64 +294,14 @@ async function readTracedBody(
   return bodyBytes;
 }
 
-function encodeBody(bytes: Uint8Array): string {
-  const CHUNK = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
-
-// CF Queues sendBatch caps at 256 KB total per call. Use 240 KB to leave
-// headroom for the JSON envelope CF wraps around the message array.
-const MAX_BATCH_BYTES = 240 * 1024;
-
-/**
- * Pack chunks into one or more sendBatch calls under the 256 KB-per-call
- * cap. Each batch is one HTTP round trip — for an 8-chunk OTLP request at
- * ~120 KB encoded each, this collapses 8 awaited sends into ~4 awaited
- * batches. Same duplicate-on-retry semantic as the previous per-chunk
- * loop: if a later batch fails after earlier batches enqueued, the
- * producer retries the whole request and downstream sees duplicates.
- */
-async function sendChunksBatched(
-  queue: Queue<QueuePayload>,
-  chunks: Uint8Array[],
-  base: Omit<QueuePayload, "body">,
-): Promise<void> {
-  const baseOverhead = JSON.stringify({ ...base, body: "" }).length;
-
-  let batch: MessageSendRequest<QueuePayload>[] = [];
-  let batchBytes = 0;
-
-  for (const chunk of chunks) {
-    const encoded = encodeBody(chunk);
-    const msgBytes = baseOverhead + encoded.length;
-
-    if (batch.length > 0 && batchBytes + msgBytes > MAX_BATCH_BYTES) {
-      await queue.sendBatch(batch);
-      batch = [];
-      batchBytes = 0;
-    }
-
-    batch.push({ body: { ...base, body: encoded } });
-    batchBytes += msgBytes;
-  }
-
-  if (batch.length > 0) {
-    await queue.sendBatch(batch);
-  }
-}
-
 /**
  * Split an OTLP protobuf body (ExportLogsServiceRequest or
  * ExportTraceServiceRequest) into chunks at the top-level repeated field
  * boundary. In both messages the repeated `resource_logs` / `resource_spans`
  * field uses field number 1, wire type 2 (length-delimited), so the tag byte
  * is 0x0a. Concatenating any subset of those length-delimited entries yields
- * a valid OTLP request containing only those resources — the consumer
- * processes each chunk as an independent batch.
+ * a valid OTLP request containing only those resources — the Basin copy
+ * parses each chunk as an independent batch.
  *
  * Returns null if a single resource entry already exceeds the chunk limit
  * (would require descending into scope_logs/log_records to split further),
@@ -413,7 +334,7 @@ function chunkOTLPBody(body: Uint8Array): Uint8Array[] | null {
     }
     if (i + length > body.length) return null;
     i += length;
-    if (i - entryStart > MAX_QUEUE_CHUNK_BYTES) return null;
+    if (i - entryStart > MAX_CHUNK_BYTES) return null;
     entries.push({ start: entryStart, end: i });
   }
 
@@ -425,7 +346,7 @@ function chunkOTLPBody(body: Uint8Array): Uint8Array[] | null {
   let chunkEnd = entries[0].end;
   for (let idx = 1; idx < entries.length; idx++) {
     const e = entries[idx];
-    if (e.end - chunkStart > MAX_QUEUE_CHUNK_BYTES) {
+    if (e.end - chunkStart > MAX_CHUNK_BYTES) {
       chunks.push(body.subarray(chunkStart, chunkEnd));
       chunkStart = e.start;
     }
@@ -439,7 +360,7 @@ function chunkOTLPBody(body: Uint8Array): Uint8Array[] | null {
  * Split a JSON OTLP body into chunks. The body is an
  * ExportLogsServiceRequest (key `resourceLogs`) or ExportTraceServiceRequest
  * (key `resourceSpans`); each chunk wraps a contiguous subset of that
- * top-level array as a fresh request, so the consumer parses it identically.
+ * top-level array as a fresh request, so the parser handles it identically.
  *
  * Same null-return contract as chunkOTLPBody: bail (caller surfaces 413) if
  * the body has unexpected top-level keys, isn't valid JSON, or contains a
@@ -474,7 +395,7 @@ function chunkJSONOTLPBody(
     encoder.encode(JSON.stringify(e)),
   );
   for (const s of serialized) {
-    if (s.byteLength + wrapperOverhead > MAX_QUEUE_CHUNK_BYTES) return null;
+    if (s.byteLength + wrapperOverhead > MAX_CHUNK_BYTES) return null;
   }
 
   const chunks: Uint8Array[] = [];
@@ -482,7 +403,7 @@ function chunkJSONOTLPBody(
   let groupBodySize = serialized[0].byteLength;
   for (let i = 1; i < serialized.length; i++) {
     const addedSize = 1 + serialized[i].byteLength; // +1 for comma separator
-    if (groupBodySize + addedSize + wrapperOverhead > MAX_QUEUE_CHUNK_BYTES) {
+    if (groupBodySize + addedSize + wrapperOverhead > MAX_CHUNK_BYTES) {
       chunks.push(joinJSONOTLPChunk(prefix, suffix, serialized, groupStart, i));
       groupStart = i;
       groupBodySize = serialized[i].byteLength;
@@ -523,11 +444,11 @@ function joinJSONOTLPChunk(
 
 /**
  * Split a CLEF body (newline-delimited JSON) into chunks that each fit
- * under MAX_QUEUE_CHUNK_BYTES. Each returned chunk is itself a valid CLEF
- * payload, so the queue-consumer processes it identically to a single
- * smaller request.
+ * under MAX_CHUNK_BYTES. Each returned chunk is itself a valid CLEF
+ * payload, so the parser handles it identically to a single smaller
+ * request.
  *
- * Returns null if any single line is larger than MAX_QUEUE_CHUNK_BYTES —
+ * Returns null if any single line is larger than MAX_CHUNK_BYTES —
  * such an event cannot be split further at line boundaries and the caller
  * should surface a 413 so the producer fixes the offending log statement.
  */
@@ -544,13 +465,13 @@ function chunkCLEFBody(body: Uint8Array): Uint8Array[] | null {
     if (lineEnd < body.length) lineEnd++; // include the newline byte
 
     const lineLength = lineEnd - i;
-    if (lineLength > MAX_QUEUE_CHUNK_BYTES) {
-      return null; // single line cannot fit in any queue message
+    if (lineLength > MAX_CHUNK_BYTES) {
+      return null; // single line cannot fit in any chunk
     }
 
     // If appending this line would push the in-progress chunk over the
     // limit, flush what we have first and start a new chunk at this line.
-    if (lineEnd - chunkStart > MAX_QUEUE_CHUNK_BYTES && i > chunkStart) {
+    if (lineEnd - chunkStart > MAX_CHUNK_BYTES && i > chunkStart) {
       chunks.push(body.subarray(chunkStart, i));
       chunkStart = i;
     }
@@ -611,13 +532,13 @@ async function authenticate(
   }
 }
 
-// --- Enqueue ---
+// --- Basin write ---
 
 /**
- * Everything a route handler and its enqueue need from the request that is the
- * same for all of them. Bundled rather than threaded as five more parameters
- * because the enqueue path now needs the request and the execution context too,
- * and a post-handoff failure report needs all of it after the response is gone.
+ * Everything a route handler and its Basin copy need from the request that is
+ * the same for all of them. Bundled rather than threaded as more parameters
+ * because the copy's failure report needs all of it after the response is
+ * gone.
  */
 export interface IngestRequest {
   request: Request;
@@ -639,11 +560,13 @@ export const TELEMETRY_KEY_ID = "log-cannon-ingest";
 
 /**
  * Write the Worker's own CLEF events (slow requests, losses, alert evaluator
- * events) to `source`: the queue first, as every ingest is, then Basin when the
- * dual-write is on, so v2 readers and alerts see them too. The queue leg
- * follows `QUEUE_WRITE` like the request path. Throws only if the queue send
- * does. The Basin copy retries and spills like any other; one that
- * still fails is logged, never reported through this same path.
+ * events) to `source` in Basin, so readers and alerts see them. Never throws:
+ * the copy retries and spills like any other, and one that still fails is
+ * logged, never reported through this same path.
+ *
+ * Its spill gets `copyTiming.telemetrySpillTimeoutMs`, shorter than a request
+ * copy's: a loss report starts only after the request copy it describes has
+ * failed, so it has the least of `waitUntil` left.
  */
 export async function sendTelemetry(
   env: Env,
@@ -651,13 +574,9 @@ export async function sendTelemetry(
   lines: string[],
   opts: Pick<CopyOptions, "spillOnly"> = {},
 ): Promise<void> {
-  if (!lines.length) return;
+  if (!lines.length || !basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
   const bytes = new TextEncoder().encode(`${lines.join("\n")}\n`);
   const contentType = "application/vnd.serilog.clef";
-  if (queueWriteEnabled(env.QUEUE_WRITE, basinWriteEnabled(env.BASIN_WRITE, env.LOGS))) {
-    await env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType });
-  }
-  if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
   try {
     // Off the response path, as copyToBasin is: the slow-request report runs
     // inside the request it describes.
@@ -665,7 +584,7 @@ export async function sendTelemetry(
     await writeCopy(
       env.LOGS,
       { format: "clef", bodies: [bytes], contentType, source, keyId: TELEMETRY_KEY_ID, receivedAt: new Date() },
-      { spill: env.BASIN_SPILL, ...opts },
+      { spill: env.BASIN_SPILL, spillTimeoutMs: copyTiming.telemetrySpillTimeoutMs, ...opts },
     );
   } catch (e) {
     const spill = e instanceof BasinCopyError ? { spilledRows: e.outcome.spilled, lostRows: e.outcome.lost, spillError: e.spillError } : {};
@@ -673,42 +592,29 @@ export async function sendTelemetry(
   }
 }
 
-/** What a route hands `enqueue` for its Basin copy; the request supplies the rest. */
+/** What a route hands `copyToBasin`; the request supplies the rest. */
 export type IngestCopy = Omit<BasinCopy, "source" | "keyId" | "receivedAt">;
 
 /**
- * Copy a request into Basin once `accepted` (its enqueue) resolves, in
- * `waitUntil` so it is off the response path. A request the queue refused
- * becomes a 5xx the client retries, and copying it as well would put the
- * retry's rows into Basin twice, so a rejected `accepted` copies nothing.
+ * Write a request into Basin, the only store, in `waitUntil` so it is off the
+ * response path: the client gets its success response without waiting for it.
  *
- * Call it before awaiting the enqueue, not after. A client that disconnects
- * mid-enqueue ends the invocation there: the queue send still completes, but
- * code after the `await` never runs, so a copy registered there is lost
- * without a trace (refs #175). `enqueue` does this for every route.
+ * It registers the `waitUntil` synchronously, before its first `await`, and
+ * every route calls it with nothing awaited between the call and its
+ * response. A client that disconnects ends the invocation at the next
+ * `await`, and code after that never runs, so a copy registered after one
+ * would be lost without a trace (refs #175).
  *
- * Never throws. A failure is reported on both channels, the way a lost enqueue
- * is, on its own throttle budget; a copy that lost rows (its spill failed too)
- * on a separate one, so a run of spills can't hide it.
+ * Never throws. A failure is reported on both channels, on its own throttle
+ * budget; a copy that lost rows (its spill failed too) on a separate one, so a
+ * run of spills can't hide it.
  */
-export function copyToBasin(
-  ingest: IngestRequest,
-  copy: IngestCopy,
-  accepted: Promise<unknown>,
-): void {
+export function copyToBasin(ingest: IngestRequest, copy: IngestCopy): void {
   const { env, ctx } = ingest;
   if (!basinWriteEnabled(env.BASIN_WRITE, env.LOGS)) return;
   const stream = env.LOGS;
-  // With the queue off the copy is the only write and starts at once, so the
-  // enqueue's share of `waitUntil` goes to the spill (see QUEUE_OFF_SPILL_TIMEOUT_MS).
-  const queueOff = !queueWriteEnabled(env.QUEUE_WRITE, true);
   ctx.waitUntil(
     (async () => {
-      try {
-        await accepted;
-      } catch {
-        return; // the client got the failure and resends
-      }
       // Yield a macrotask first. Without it the async body runs synchronously
       // up to its first await, so the whole parse would happen before this
       // function returns and the handler sends its response.
@@ -718,12 +624,9 @@ export function copyToBasin(
           writeCopy(
             stream,
             { ...copy, source: ingest.source, keyId: ingest.keyId, receivedAt: ingest.receivedAt },
-            {
-              spill: env.BASIN_SPILL,
-              ...(queueOff ? { spillTimeoutMs: copyTiming.queueOffSpillTimeoutMs } : {}),
-            },
+            { spill: env.BASIN_SPILL },
           ),
-          queueOff ? copyTiming.queueOffWatchdogMs : copyTiming.watchdogMs,
+          copyTiming.watchdogMs,
           "copy",
         );
       } catch (e) {
@@ -765,155 +668,38 @@ async function reportBasinFailure(
   }
 }
 
-/**
- * Push to the queue with the caller's wait bounded by `QUEUE_ACK_DEADLINE_MS`,
- * and close the `enqueue` span.
- *
- * Every queue write on the request path goes through here so the deadline, the
- * span and the loss report cannot drift apart per route. `send` is a thunk over
- * the whole enqueue — one `send`, or the full `sendChunksBatched` sequence — so
- * a handoff mid-sequence hands off the remaining batches with it. `copy` is the
- * request's Basin copy, made once the enqueue succeeds.
- *
- * With `QUEUE_WRITE` off `send` never runs: the copy is the only write, still
- * in `waitUntil` behind its macrotask yield, so the response is not held for
- * it, and there is no send to lose or report (refs #169).
- */
-async function enqueue(
-  ingest: IngestRequest,
-  format: QueuePayload["format"],
-  messages: number,
-  send: () => Promise<unknown>,
-  copy: IngestCopy,
-): Promise<void> {
-  const { env } = ingest;
-  if (!queueWriteEnabled(env.QUEUE_WRITE, basinWriteEnabled(env.BASIN_WRITE, env.LOGS))) {
-    copyToBasin(ingest, copy, Promise.resolve());
-    return;
-  }
-  const enqueued = sendWithDeadline(
-    send,
-    resolveQueueAckDeadlineMs(ingest.env.QUEUE_ACK_DEADLINE_MS),
-    ingest.ctx,
-    (error, attempts) =>
-      reportEnqueueFailure(ingest, format, messages, error, attempts),
-  );
-  // Before the await, so a client disconnect can't skip it (see copyToBasin).
-  copyToBasin(ingest, copy, enqueued);
-  const { handedOff } = await enqueued;
-  ingest.trace.enqueued(messages, handedOff);
-}
-
-/**
- * Report a send that failed after its response had already gone out.
- *
- * Only reachable with `QUEUE_ACK_DEADLINE_MS` on. The client was told the
- * events were accepted and has no way to learn otherwise, so this is the only
- * record that they are gone — which is why it goes to both of #107's channels
- * and carries its own event name for alerting. Unlike `reportIfSlow` it does
- * not consult `SLOW_REQUEST_MS`: a loss is worth reporting whatever the
- * latency threshold is set to.
- *
- * Never throws. It runs inside `waitUntil`, where a throw would be recorded as
- * an exception against a request that was served successfully.
- *
- * Exported for the same reason as `reportIfSlow`: the alternative is making a
- * real queue send fail after a real deadline, which no test can do reliably.
- */
-export async function reportEnqueueFailure(
-  ingest: IngestRequest,
-  format: QueuePayload["format"],
-  messages: number,
-  error: unknown,
-  attempts: number,
-): Promise<void> {
-  try {
-    const { request, env, trace } = ingest;
-    const cf = request.cf as CfGeoContext | undefined;
-    const failure: EnqueueFailure = {
-      route: ingest.route,
-      format,
-      ingestSource: ingest.source,
-      queueMessages: messages,
-      bodyBytes: trace.bodyBytes,
-      waitedMs: trace.span("enqueue"),
-      error: error instanceof Error ? error.message : String(error),
-      attempts,
-      colo: cf?.colo,
-      rayId: request.headers.get("cf-ray") ?? undefined,
-    };
-
-    console.error(
-      JSON.stringify({
-        event: "ingest-enqueue-failed-after-response",
-        ...failure,
-      }),
-    );
-
-    const telemetrySource = env.SLOW_REQUEST_SOURCE?.trim() ?? "";
-    if (!telemetrySource) return;
-    if (!shouldEmitTelemetry(Date.now(), "enqueue-failure")) return;
-
-    await sendTelemetry(env, telemetrySource, [enqueueFailureCLEF(failure, new Date().toISOString())]);
-  } catch (e) {
-    // The queue is the thing that just failed, so its report failing too is
-    // the expected case, not a surprise. The console line above has already
-    // gone out by then.
-    warnReportFailed(e);
-  }
-}
-
 // --- Route handlers ---
 
 async function handleCLEF(ingest: IngestRequest): Promise<Response> {
-  const { request, env, source, trace } = ingest;
+  const { request, trace } = ingest;
   const bodyBytes = await readTracedBody(request, trace);
   const contentType =
     request.headers.get("Content-Type") ?? "application/json";
   const enrich = buildEnrichment(request);
 
-  // Fast path: small bodies go in a single queue message.
-  if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
-    await enqueue(ingest, "clef", 1, () =>
-      env.INGEST_QUEUE.send({
-        format: "clef",
-        source,
-        body: encodeBody(bodyBytes),
-        contentType,
-        enrich,
-      }),
-      { format: "clef", bodies: [bodyBytes], contentType, enrich },
-    );
+  // Fast path: a small body is one chunk.
+  if (bodyBytes.byteLength <= MAX_CHUNK_BYTES) {
+    copyToBasin(ingest, { format: "clef", bodies: [bodyBytes], contentType, enrich });
     return jsonResponse({ MinimumLevelAccepted: null }, 201);
   }
 
-  // Large body: split CLEF (newline-delimited JSON) into chunks that each
-  // fit under the CF Queue per-message limit. Without this the entire body
-  // is enqueued as a single message and CF Queues' 128 KB cap rejects it,
-  // surfacing as a 5xx the producer's Serilog sink retries forever.
+  // Large body: split CLEF (newline-delimited JSON) into chunks of at most
+  // MAX_CHUNK_BYTES, so the copy parses one chunk at a time.
   const chunks = chunkCLEFBody(bodyBytes);
   if (chunks === null) {
     return errorResponse(
       413,
-      `CLEF event exceeds ${MAX_QUEUE_CHUNK_BYTES} byte queue chunk limit`,
+      `CLEF event exceeds ${MAX_CHUNK_BYTES} byte queue chunk limit`,
     );
   }
 
-  await enqueue(ingest, "clef", chunks.length, () =>
-    sendChunksBatched(env.INGEST_QUEUE, chunks, {
-      format: "clef",
-      source,
-      contentType,
-      enrich,
-    }),
-    { format: "clef", bodies: chunks, contentType, enrich },
-  );
+  copyToBasin(ingest, { format: "clef", bodies: chunks, contentType, enrich });
 
   return jsonResponse({ MinimumLevelAccepted: null }, 201);
 }
 
 async function handleWebhook(ingest: IngestRequest): Promise<Response> {
-  const { request, env, source, trace } = ingest;
+  const { request, trace } = ingest;
   const bodyBytes = await readTracedBody(request, trace);
 
   // Cloudflare Logpush validation handshake: non-JSON body → 200 OK
@@ -924,23 +710,12 @@ async function handleWebhook(ingest: IngestRequest): Promise<Response> {
     return new Response(null, { status: 200 });
   }
 
-  // NOTE: webhook bodies are also pushed as a single queue message and will
-  // hit the same CF Queue 128 KB limit if they exceed ~96 KB raw. Webhooks
-  // aren't newline-delimited so chunking is format-specific — left for a
-  // follow-up if a webhook producer ever exceeds the cap.
+  // Webhook bodies are not chunked: they aren't newline-delimited, and the
+  // copy parses the whole body at once.
   const preset = new URL(request.url).searchParams.get("preset") ?? "";
 
   const contentType = request.headers.get("Content-Type") ?? "application/json";
-  await enqueue(ingest, "webhook", 1, () =>
-    env.INGEST_QUEUE.send({
-      format: "webhook",
-      source,
-      body: encodeBody(bodyBytes),
-      contentType,
-      preset: preset || undefined,
-    }),
-    { format: "webhook", bodies: [bodyBytes], contentType, preset: preset || undefined },
-  );
+  copyToBasin(ingest, { format: "webhook", bodies: [bodyBytes], contentType, preset: preset || undefined });
 
   return jsonResponse({ accepted: true });
 }
@@ -949,34 +724,23 @@ async function handleOTLP(
   ingest: IngestRequest,
   format: "otlp-logs" | "otlp-traces",
 ): Promise<Response> {
-  const { request, env, source, trace } = ingest;
+  const { request, trace } = ingest;
   const bodyBytes = await readTracedBody(request, trace);
   const contentType =
     request.headers.get("Content-Type") ?? "application/x-protobuf";
   const key = format === "otlp-logs" ? "rejectedLogRecords" : "rejectedSpans";
 
-  // Fast path: small bodies go in a single queue message.
-  if (bodyBytes.byteLength <= MAX_QUEUE_CHUNK_BYTES) {
-    await enqueue(ingest, format, 1, () =>
-      env.INGEST_QUEUE.send({
-        format,
-        source,
-        body: encodeBody(bodyBytes),
-        contentType,
-      }),
-      { format, bodies: [bodyBytes], contentType },
-    );
+  // Fast path: a small body is one chunk.
+  if (bodyBytes.byteLength <= MAX_CHUNK_BYTES) {
+    copyToBasin(ingest, { format, bodies: [bodyBytes], contentType });
     return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
   }
 
   // Large body: split the OTLP request at resource_logs/resource_spans
-  // boundaries so each queue message stays under CF's 128 KB per-message
-  // cap. Without this the entire batch is enqueued as one message and CF
-  // Queues rejects it, surfacing as a 5xx that CF Workers Observability
-  // retries (and eventually drops) — exactly the symptom we saw on
-  // the /v1/logs route. Dispatch matches the consumer's
-  // content-type rule (queue-consumer/otlp.go): exact protobuf media types
-  // get the protobuf splitter; everything else is treated as JSON.
+  // boundaries into chunks of at most MAX_CHUNK_BYTES, so the copy parses one
+  // chunk at a time. Dispatch matches the parser's content-type rule
+  // (src/parse/otlp.ts): exact protobuf media types get the protobuf
+  // splitter; everything else is treated as JSON.
   const isProtobuf =
     contentType === "application/x-protobuf" ||
     contentType === "application/proto";
@@ -986,18 +750,11 @@ async function handleOTLP(
   if (chunks === null) {
     return errorResponse(
       413,
-      `OTLP resource entry exceeds ${MAX_QUEUE_CHUNK_BYTES} byte queue chunk limit`,
+      `OTLP resource entry exceeds ${MAX_CHUNK_BYTES} byte queue chunk limit`,
     );
   }
 
-  await enqueue(ingest, format, chunks.length, () =>
-    sendChunksBatched(env.INGEST_QUEUE, chunks, {
-      format,
-      source,
-      contentType,
-    }),
-    { format, bodies: chunks, contentType },
-  );
+  copyToBasin(ingest, { format, bodies: chunks, contentType });
 
   return jsonResponse({ partialSuccess: { [key]: 0, errorMessage: "" } });
 }
@@ -1021,11 +778,11 @@ function warnReportFailed(e: unknown): void {
  *
  * - `console.warn`, retained by Workers Logs (`[observability]` in
  *   `wrangler.toml`). Costs nothing and survives the case that matters most —
- *   a queue that is itself the slow thing.
- * - A CLEF event on `SLOW_REQUEST_SOURCE`, enqueued in `waitUntil` so it never
+ *   a store that is itself the slow thing.
+ * - A CLEF event on `SLOW_REQUEST_SOURCE`, written in `waitUntil` so it never
  *   adds latency to the caller's request, and throttled per isolate. This is
- *   the channel the dashboard, MCP and `alert-worker` can already read, so
- *   alerting on ingest degradation needs no new machinery.
+ *   the channel the read API, MCP and alerts can already read, so alerting on
+ *   ingest degradation needs no new machinery.
  *
  * Never throws: an instrumentation failure must not turn a served request into
  * a 500 that a Seq sink then retries.
@@ -1106,9 +863,8 @@ function basinError(e: unknown, sql?: string): Response {
 }
 
 /**
- * MCP `create_log`: one CLEF line through the same path as `/ingest/clef`,
- * so during dual-write it lands in ClickHouse and Basin alike. The caller
- * names the source; `key_id` stays the calling key.
+ * MCP `create_log`: one CLEF line through the same Basin write as
+ * `/ingest/clef`. The caller names the source; `key_id` stays the calling key.
  */
 const MAX_SOURCE_CHARS = 200;
 const CLEF_RESERVED = new Set<string>(CLEF_FIELDS);
@@ -1143,8 +899,8 @@ async function createLog(
   if (entry.exception) line["@x"] = entry.exception;
   if (entry.event_type) line["@i"] = entry.event_type;
   const bytes = new TextEncoder().encode(`${JSON.stringify(line)}\n`);
-  if (bytes.byteLength > MAX_QUEUE_CHUNK_BYTES) {
-    throw new Error(`log entry exceeds ${MAX_QUEUE_CHUNK_BYTES} bytes`);
+  if (bytes.byteLength > MAX_CHUNK_BYTES) {
+    throw new Error(`log entry exceeds ${MAX_CHUNK_BYTES} bytes`);
   }
   const contentType = "application/vnd.serilog.clef";
   const ingest: IngestRequest = {
@@ -1157,10 +913,7 @@ async function createLog(
     keyId: key.keyId,
     receivedAt,
   };
-  await enqueue(ingest, "clef", 1, () =>
-    env.INGEST_QUEUE.send({ format: "clef", source, body: encodeBody(bytes), contentType }),
-    { format: "clef", bodies: [bytes], contentType },
-  );
+  copyToBasin(ingest, { format: "clef", bodies: [bytes], contentType });
 }
 
 async function handleRead(
@@ -1357,7 +1110,7 @@ export default {
     }
 
     // Timing starts here: everything above is either a cheap string check or
-    // a path that never touches D1 or the queue. The auth span below is the
+    // a path that never touches D1 or Basin. The auth span below is the
     // first I/O the request does.
     const trace = new RequestTrace();
     const receivedAt = new Date();
@@ -1392,7 +1145,7 @@ export default {
     // Route. The lookup stays after auth: an unauthenticated request to an
     // unknown path must still get 401, not 404.
     const format = ROUTE_FORMATS[path as keyof typeof ROUTE_FORMATS] as
-      | QueuePayload["format"]
+      | BasinFormat
       | undefined;
     if (!format) return errorResponse(404, "Not found");
 

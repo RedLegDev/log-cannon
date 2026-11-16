@@ -1,9 +1,8 @@
-// --- Basin dual-write (v2, refs #163) ---
+// --- Basin write (v2, refs #163) ---
 //
-// While the Queue → ClickHouse path is still the source of truth, every
-// accepted request is also parsed here and its rows sent to the Basin stream
-// `log_events_v1`. The copy is best-effort and off the response path: it runs
-// in `waitUntil` after the queue has accepted the payload, so it can neither
+// Every accepted request is parsed here and its rows sent to the Basin stream
+// `log_events_v1`, the only store since the queue was retired (refs #171). The
+// write is off the response path: it runs in `waitUntil`, so it can neither
 // slow nor fail an ingest request. A failure is reported, never retried into
 // the client. A send is retried briefly; rows the stream still won't take are
 // spilled to R2 (`BASIN_SPILL`) and replayed by the cron (refs #166, see
@@ -24,7 +23,7 @@ export type BasinFormat = "clef" | "webhook" | "otlp-logs" | "otlp-traces";
 export interface BasinCopy {
   format: BasinFormat;
   /**
-   * The payload as the queue received it: one body, or the ≤90 KB chunks a
+   * The payload as the request carried it: one body, or the ≤90 KB chunks a
    * large body was split into. Each chunk is a complete payload of its format,
    * and the copy parses and sends chunk by chunk, so a 32 MB body never holds
    * more than one chunk's rows plus one pending send in memory.
@@ -163,40 +162,35 @@ export const SEND_TIMEOUT_MS = 5_000;
 /**
  * Latest a send attempt may start, in milliseconds after the copy began, and
  * the cap on how long it may run. Rows not sent by then are spilled. The rest
- * of `waitUntil`'s ~30 s covers the spill put and an enqueue still in flight
- * when a client disconnected (the copy starts only once it finishes).
+ * of `waitUntil`'s ~30 s covers the spill put and the failure report.
  */
 export const COPY_DEADLINE_MS = 20_000;
 
 /**
- * Longest the spill (gzip finish and R2 put) may take. Without it, an R2 put
- * that stalls holds the copy until the runtime cancels `waitUntil`, and its
- * rows go with nothing reported (seen 2026-10-26 01:59, refs #175). A timed-out
- * spill reports its rows as lost.
+ * Longest a request copy's spill (gzip finish and R2 put) may take. Without
+ * it, an R2 put that stalls holds the copy until the runtime cancels
+ * `waitUntil`, and its rows go with nothing reported (seen 2026-10-26 01:59,
+ * refs #175). A timed-out spill reports its rows as lost. 20 s of sends + 7 s
+ * of spill fits `waitUntil`'s ~30 s; the spill is the only step that saves the
+ * rows. On 2026-10-28 one row was lost to the earlier 3 s limit during a
+ * Pipelines slowdown (refs #166, #169).
  */
-export const SPILL_TIMEOUT_MS = 3_000;
+export const SPILL_TIMEOUT_MS = 7_000;
 
 /**
  * Longest a whole request copy may run before `copyToBasin` reports it lost:
- * the copy deadline and the spill (23 s) plus the parse. It counts from when
- * the copy starts, which can be up to `QUEUE_ACK_DEADLINE_MS` (4 s) after a
- * client disconnect starts `waitUntil`'s ~30 s, so 4 + 24 leaves ~2 s for the
- * report. Anything that
- * still hangs is at least reported rather than cancelled silently.
+ * the copy deadline and the spill (27 s) plus the parse. The copy starts at
+ * once, so 28 s leaves ~2 s of `waitUntil`'s ~30 s for the report. Anything
+ * that still hangs is at least reported rather than cancelled silently.
  */
-export const COPY_WATCHDOG_MS = 24_000;
+export const COPY_WATCHDOG_MS = 28_000;
 
 /**
- * The spill limit and watchdog when `QUEUE_WRITE` is off (refs #166, #169).
- * The copy then starts straight away instead of after an enqueue of up to
- * `QUEUE_ACK_DEADLINE_MS` (4 s), so those 4 s go to the spill, the only step
- * that saves the rows once the queue is gone. 20 s of sends + 7 s of spill
- * still fits `waitUntil`'s ~30 s, and the watchdog at 28 s leaves ~2 s for
- * the report. On 2026-10-28 one row was lost to a 3 s spill limit during a
- * Pipelines slowdown, with the queue still on.
+ * The spill limit for the Worker's own telemetry (`sendTelemetry`). Shorter
+ * than a request copy's because a loss report starts only once the request
+ * copy it describes has failed, so it runs in what is left of `waitUntil`.
  */
-export const QUEUE_OFF_SPILL_TIMEOUT_MS = 7_000;
-export const QUEUE_OFF_WATCHDOG_MS = 28_000;
+export const TELEMETRY_SPILL_TIMEOUT_MS = 3_000;
 
 /** Retry delays, sleep and the time limits. Mutable so tests can run the
  * retries and time-outs without waiting seconds of real time; nothing else
@@ -207,8 +201,7 @@ export const copyTiming = {
   timeoutMs: SEND_TIMEOUT_MS,
   spillTimeoutMs: SPILL_TIMEOUT_MS,
   watchdogMs: COPY_WATCHDOG_MS,
-  queueOffSpillTimeoutMs: QUEUE_OFF_SPILL_TIMEOUT_MS,
-  queueOffWatchdogMs: QUEUE_OFF_WATCHDOG_MS,
+  telemetrySpillTimeoutMs: TELEMETRY_SPILL_TIMEOUT_MS,
 };
 
 /** `work`, rejected with "`what` timed out after `ms` ms" if it hasn't settled by then. */
@@ -301,8 +294,8 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * Parse and send one request's copy, a chunk at a time. A chunk that fails to
- * parse is skipped and the rest still go out, the way the consumer fails one
- * queue message and not its siblings.
+ * parse is skipped and the rest still go out, so one bad chunk never costs its
+ * siblings.
  *
  * A failed or timed-out send (`SEND_TIMEOUT_MS`) is retried from the copy's
  * budget (`SEND_RETRY_DELAYS_MS`). Once that is spent, or the copy reaches

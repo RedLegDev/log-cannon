@@ -16,7 +16,6 @@ let basinQueries: string[];
 
 const testEnv = () => ({
   ...env,
-  INGEST_QUEUE: { send: async () => {}, sendBatch: async () => {} },
   BASIN_SQL_TOKEN: "t",
   BASIN_SQL_ACCOUNT: "acct",
   BASIN_SQL_BUCKET: "bucket",
