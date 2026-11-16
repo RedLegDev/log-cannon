@@ -1,6 +1,6 @@
 # Log Cannon v2: Cloudflare-native on Basin
 
-**Status:** in progress on branch `v2`
+**Status:** historical. This is the plan the v2 migration was built from, kept as a record. v2 is live: cutover 2026-11-04, Basin the only write since 2026-11-10, Queue and retired Go services removed under #171. The current architecture is in `README.md` and `AGENTS.md`; where this plan and the code differ, the code wins.
 **Goal:** keep what's actually used (ingest, the query API, MCP, alerts) and run all of it
 on Cloudflare. Remove the self-hosted stack (ClickHouse, the queue consumer, the alert and
 retention workers, backups, the Next.js dashboard) and the Cloudflare Queue that feeds it.
