@@ -116,6 +116,9 @@ export interface BasinOutcome {
   spilled: number;
   /** Rows neither sent nor spilled: no bucket, or its put failed too. */
   lost: number;
+  /** 2 when the first spill attempt failed and a second put was started
+   * (`SPILL_RESERVE_MS`); absent otherwise. */
+  spillAttempts?: number;
 }
 
 /** A copy that didn't send every row. `stage` says whether a body or some of
@@ -170,18 +173,36 @@ export const COPY_DEADLINE_MS = 20_000;
  * Longest a request copy's spill (gzip finish and R2 put) may take. Without
  * it, an R2 put that stalls holds the copy until the runtime cancels
  * `waitUntil`, and its rows go with nothing reported (seen 2026-10-26 01:59,
- * refs #175). A timed-out spill reports its rows as lost. 20 s of sends + 7 s
- * of spill fits `waitUntil`'s ~30 s; the spill is the only step that saves the
- * rows. On 2026-10-28 one row was lost to the earlier 3 s limit during a
- * Pipelines slowdown (refs #166, #169).
+ * refs #175). 20 s of sends + 7 s of spill fits `waitUntil`'s ~30 s; the
+ * spill is the only step that saves the rows. On 2026-10-28 one row was lost
+ * to the earlier 3 s limit during a Pipelines slowdown (refs #166, #169).
+ *
+ * This is the first attempt's limit. A request copy whose first attempt fails
+ * or times out gets a second put, under a new key, with whatever is left
+ * before `COPY_WATCHDOG_MS` minus `SPILL_RESERVE_MS`; only if that fails too
+ * are its rows lost. R2 puts stalled for a few seconds during Pipelines stalls
+ * on 2026-11-12, 11-16 and 11-18, and the first attempt alone lost 21 rows
+ * (refs #190).
  */
 export const SPILL_TIMEOUT_MS = 7_000;
 
 /**
+ * Time a request copy's second spill attempt leaves before `COPY_WATCHDOG_MS`,
+ * so the copy still ends, and its failure report still lands, inside
+ * `waitUntil`. A second attempt that would get less than `SPILL_RETRY_MIN_MS`
+ * isn't started.
+ */
+export const SPILL_RESERVE_MS = 2_000;
+export const SPILL_RETRY_MIN_MS = 1_000;
+
+/**
  * Longest a whole request copy may run before `copyToBasin` reports it lost:
- * the copy deadline and the spill (27 s) plus the parse. The copy starts at
- * once, so 28 s leaves ~2 s of `waitUntil`'s ~30 s for the report. Anything
- * that still hangs is at least reported rather than cancelled silently.
+ * the copy deadline and the first spill attempt (27 s) plus the parse. The
+ * copy starts at once, so 28 s leaves ~2 s of `waitUntil`'s ~30 s for the
+ * report. A second spill attempt is held to `SPILL_RESERVE_MS` short of this,
+ * timed from when `writeCopy` began, which is no later than the watchdog's
+ * start. Anything that still hangs is at least reported rather than cancelled
+ * silently.
  */
 export const COPY_WATCHDOG_MS = 28_000;
 
@@ -201,6 +222,8 @@ export const copyTiming = {
   timeoutMs: SEND_TIMEOUT_MS,
   spillTimeoutMs: SPILL_TIMEOUT_MS,
   watchdogMs: COPY_WATCHDOG_MS,
+  spillReserveMs: SPILL_RESERVE_MS,
+  spillRetryMinMs: SPILL_RETRY_MIN_MS,
   telemetrySpillTimeoutMs: TELEMETRY_SPILL_TIMEOUT_MS,
 };
 
@@ -288,6 +311,14 @@ export interface CopyOptions {
   spillOnly?: boolean;
   /** The spill's time limit; `copyTiming.spillTimeoutMs` when absent. */
   spillTimeoutMs?: number;
+  /**
+   * The caller's limit on the whole copy (`copyToBasin`'s watchdog), timed
+   * from when `writeCopy` began. Given, a failed first spill attempt gets a
+   * second put in the time left before it, less `copyTiming.spillReserveMs`.
+   * Absent (the telemetry copy, which runs in what is left of `waitUntil`),
+   * there is no second attempt.
+   */
+  watchdogMs?: number;
 }
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -391,26 +422,38 @@ export async function writeCopy(
       try {
         const bucket = opts.spill;
         const writer = spill;
-        await within(
-          (async () => {
-            const blob = await writer.finish();
-            const put = () =>
-              bucket.put(spillKey(copy.receivedAt), blob, {
-                httpMetadata: { contentType: "application/x-ndjson" },
-                customMetadata: { rows: String(writer.rows) },
-              });
-            // A put that fails outright gets one more try inside the limit; one
-            // that stalls runs into the limit. Each try has its own key, so a
-            // first put that did land shows up as duplicate ids, not a loss.
-            try {
-              await put();
-            } catch {
-              await put();
-            }
-          })(),
-          opts.spillTimeoutMs ?? copyTiming.spillTimeoutMs,
-          "spill",
-        );
+        // Finished once: the blob is an in-memory buffer, so every put below
+        // can send it.
+        const finished = writer.finish();
+        const put = async () => {
+          const blob = await finished;
+          await bucket.put(spillKey(copy.receivedAt), blob, {
+            httpMetadata: { contentType: "application/x-ndjson" },
+            customMetadata: { rows: String(writer.rows) },
+          });
+        };
+        try {
+          // A put that fails outright gets one more try inside the limit; one
+          // that stalls runs into the limit.
+          await within(
+            put().catch(() => put()),
+            opts.spillTimeoutMs ?? copyTiming.spillTimeoutMs,
+            "spill",
+          );
+        } catch (e) {
+          // Then a request copy gets a second attempt in the time left before
+          // its watchdog, minus room for the failure report (refs #190). Every
+          // put has its own key, so an abandoned put that lands late shows up
+          // as duplicate ids under another key (the at-least-once caveat of
+          // a retried send), never as a loss.
+          const left =
+            opts.watchdogMs === undefined
+              ? 0
+              : opts.watchdogMs - (Date.now() - started) - copyTiming.spillReserveMs;
+          if (left < copyTiming.spillRetryMinMs) throw e;
+          out.spillAttempts = 2;
+          await within(put(), left, "spill");
+        }
         out.spilled = spill.rows;
       } catch (e) {
         spillError = message(e);
@@ -441,6 +484,8 @@ export interface BasinFailure {
   lostRows?: number;
   /** Why the spill didn't happen, when it didn't. */
   spillError?: string;
+  /** 2 when a second spill attempt was made (`BasinOutcome.spillAttempts`). */
+  spillAttempts?: number;
 }
 
 export function classifyFailure(e: unknown): BasinFailure["stage"] {
@@ -471,5 +516,6 @@ export function basinFailureCLEF(f: BasinFailure, at: string): string {
     SpilledRows: f.spilledRows,
     LostRows: f.lostRows,
     SpillError: f.spillError,
+    SpillAttempts: f.spillAttempts,
   })}\n`;
 }

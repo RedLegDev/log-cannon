@@ -6,6 +6,8 @@ import {
   COPY_DEADLINE_MS,
   COPY_WATCHDOG_MS,
   SPILL_TIMEOUT_MS,
+  SPILL_RESERVE_MS,
+  SPILL_RETRY_MIN_MS,
   TELEMETRY_SPILL_TIMEOUT_MS,
   isBasinLoss,
   SEND_RETRY_DELAYS_MS,
@@ -40,6 +42,8 @@ afterEach(() => {
   copyTiming.timeoutMs = SEND_TIMEOUT_MS;
   copyTiming.spillTimeoutMs = SPILL_TIMEOUT_MS;
   copyTiming.watchdogMs = COPY_WATCHDOG_MS;
+  copyTiming.spillReserveMs = SPILL_RESERVE_MS;
+  copyTiming.spillRetryMinMs = SPILL_RETRY_MIN_MS;
   copyTiming.telemetrySpillTimeoutMs = TELEMETRY_SPILL_TIMEOUT_MS;
   vi.restoreAllMocks();
 });
@@ -477,6 +481,69 @@ describe("spill and copy time limits", () => {
     expect(err.spillError).toBe("spill timed out after 5 ms");
   });
 
+  // refs #190: a stalled first put gets a second one, under a new key, in the
+  // time left before the watchdog.
+  describe("second spill attempt", () => {
+    /** A bucket whose put `n` (0-based) stalls forever when `stall(n)`, and
+     * otherwise lands in the real spill bucket. */
+    function stallingBucket(stall: (n: number) => boolean) {
+      const keys: string[] = [];
+      const bucket = {
+        put: (k: string, v: Blob, o?: R2PutOptions) => {
+          keys.push(k);
+          return stall(keys.length - 1) ? never() : env.BASIN_SPILL.put(k, v, o);
+        },
+      };
+      return { bucket, keys };
+    }
+    beforeEach(() => {
+      copyTiming.spillTimeoutMs = 5;
+      copyTiming.spillReserveMs = 0;
+      copyTiming.spillRetryMinMs = 1;
+    });
+
+    it("spills the rows when the first put stalls and the second lands", async () => {
+      const { stream } = flakyStream(() => true);
+      const { bucket, keys } = stallingBucket((n) => n === 0);
+      const err = await writeCopy(stream, copy(), { spill: bucket, watchdogMs: 5_000 }).catch((e) => e);
+      expect(err).toBeInstanceOf(BasinCopyError);
+      expect(err.spillError).toBeUndefined();
+      expect(err.outcome).toMatchObject({ spilled: 2, lost: 0, spillAttempts: 2 });
+      expect(keys).toHaveLength(2);
+      expect(new Set(keys).size).toBe(2);
+      expect(await spilledRows()).toHaveLength(2);
+    });
+
+    it("reports the rows as lost when both puts stall", async () => {
+      const { stream } = flakyStream(() => true);
+      const { bucket, keys } = stallingBucket(() => true);
+      const err = await writeCopy(stream, copy(), { spill: bucket, watchdogMs: 40 }).catch((e) => e);
+      expect(err.spillError).toMatch(/^spill timed out after \d+ ms$/);
+      expect(err.outcome).toMatchObject({ spilled: 0, lost: 2, spillAttempts: 2 });
+      expect(keys).toHaveLength(2);
+    });
+
+    it("makes no second attempt when too little of the watchdog is left", async () => {
+      copyTiming.spillReserveMs = 2_000;
+      copyTiming.spillRetryMinMs = 1_000;
+      const { stream } = flakyStream(() => true);
+      const { bucket, keys } = stallingBucket(() => true);
+      const err = await writeCopy(stream, copy(), { spill: bucket, watchdogMs: 2_500 }).catch((e) => e);
+      expect(err.spillError).toBe("spill timed out after 5 ms");
+      expect(err.outcome).toMatchObject({ spilled: 0, lost: 2 });
+      expect(err.outcome.spillAttempts).toBeUndefined();
+      expect(keys).toHaveLength(1);
+    });
+
+    it("makes no second attempt without a watchdog (the telemetry copy)", async () => {
+      const { stream } = flakyStream(() => true);
+      const { bucket, keys } = stallingBucket(() => true);
+      const err = await writeCopy(stream, copy(), { spill: bucket }).catch((e) => e);
+      expect(err.outcome).toMatchObject({ spilled: 0, lost: 2 });
+      expect(keys).toHaveLength(1);
+    });
+  });
+
   it("copyToBasin cuts a copy off at the watchdog", async () => {
     copyTiming.timeoutMs = 60_000;
     copyTiming.watchdogMs = 20;
@@ -611,8 +678,8 @@ describe("copyToBasin spill reporting", () => {
 
   it("reports an R2 put failure as an Error with the lost row count", async () => {
     const { logged, event } = await run({ put: async () => { throw new Error("r2 unavailable"); } });
-    expect(logged).toMatchObject({ spilledRows: 0, lostRows: 2, spillError: "r2 unavailable" });
-    expect(event).toMatchObject({ "@l": "Error", LostRows: 2, SpillError: "r2 unavailable" });
+    expect(logged).toMatchObject({ spilledRows: 0, lostRows: 2, spillError: "r2 unavailable", spillAttempts: 2 });
+    expect(event).toMatchObject({ "@l": "Error", LostRows: 2, SpillError: "r2 unavailable", SpillAttempts: 2 });
   });
 
   it("a loss still reports when a spill report just used the throttle", async () => {

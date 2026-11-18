@@ -624,7 +624,7 @@ export function copyToBasin(ingest: IngestRequest, copy: IngestCopy): void {
           writeCopy(
             stream,
             { ...copy, source: ingest.source, keyId: ingest.keyId, receivedAt: ingest.receivedAt },
-            { spill: env.BASIN_SPILL },
+            { spill: env.BASIN_SPILL, watchdogMs: copyTiming.watchdogMs },
           ),
           copyTiming.watchdogMs,
           "copy",
@@ -650,7 +650,12 @@ async function reportBasinFailure(
       stage: classifyFailure(error),
       error: error instanceof Error ? error.message : String(error),
       ...(error instanceof BasinCopyError && error.stage === "send"
-        ? { spilledRows: error.outcome.spilled, lostRows: error.outcome.lost, spillError: error.spillError }
+        ? {
+            spilledRows: error.outcome.spilled,
+            lostRows: error.outcome.lost,
+            spillError: error.spillError,
+            spillAttempts: error.outcome.spillAttempts,
+          }
         : {}),
     };
     console.error(JSON.stringify({ event: "basin-copy-failed", ...failure }));
