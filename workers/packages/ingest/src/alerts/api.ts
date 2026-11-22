@@ -5,7 +5,7 @@
 import { BasinQueryError, queryBasin, type BasinSqlEnv } from "../basin-sql";
 import { ConditionError, evaluateCondition } from "./condition";
 import { deliverAlert, type DeliveryEnv } from "./deliver";
-import { alertLagSeconds, pinNow } from "./evaluate";
+import { DUE_SLACK_MS, alertLagSeconds, pinNow } from "./evaluate";
 import {
   deleteAlert,
   deleteDestination,
@@ -15,10 +15,12 @@ import {
   insertDestination,
   listAlerts,
   listDestinations,
+  listFirings,
   parseJsonArray,
   updateAlert,
   updateDestination,
   type AlertRow,
+  type FiringRow,
   type NormalizedAlert,
 } from "./store";
 
@@ -40,6 +42,29 @@ export interface ApiContext {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * What one Basin SQL query costs at the 10 MB per-query minimum, which is
+ * what an alert query is billed whatever it reads: 0.01 GB at $0.0025/GB
+ * (refs #194). Change it here if Basin's pricing changes.
+ */
+export const BASIN_USD_PER_QUERY = 0.01 * 0.0025;
+
+/**
+ * How often the evaluator actually runs an alert: on the first once-a-minute
+ * tick at least `interval - DUE_SLACK_MS` after its last run (isDue), so a
+ * 30 s interval runs every minute and a 90 s one every two. A disabled alert
+ * runs none. Arithmetic only, no Basin call (refs #194).
+ */
+export function alertCost(a: Pick<AlertRow, "interval_seconds" | "enabled">) {
+  if (!a.enabled) return { queries_per_day: 0, est_usd_per_month: 0 };
+  const ticks = Math.max(1, Math.ceil((Math.max(a.interval_seconds, 30) * 1000 - DUE_SLACK_MS) / 60_000));
+  const perDay = 1440 / ticks;
+  return {
+    queries_per_day: Math.round(perDay * 10) / 10,
+    est_usd_per_month: Math.round(perDay * 30 * BASIN_USD_PER_QUERY * 1000) / 1000,
+  };
+}
+
 export function alertOut(a: AlertRow) {
   return {
     id: a.id,
@@ -60,6 +85,7 @@ export function alertOut(a: AlertRow) {
     last_status: a.last_status,
     last_value: a.last_value ? JSON.parse(a.last_value) : null,
     last_error: a.last_error,
+    ...alertCost(a),
   };
 }
 
@@ -145,6 +171,8 @@ export async function handleAlerts(request: Request, sub: string, ctx: ApiContex
     if (request.method !== "POST") return error("method_not_allowed", "Use POST", 405);
     return testAlert(request, test[1], ctx);
   }
+  const firings = /^\/([^/]+)\/firings$/.exec(sub);
+  if (firings) return handleFirings(request, firings[1], ctx);
   if (sub !== "") return error("not_found", "Not found", 404);
 
   if (request.method === "GET") return json({ data: (await listAlerts(db)).map(alertOut) });
@@ -225,6 +253,62 @@ async function testAlert(request: Request, id: string, ctx: ApiContext): Promise
     meta.delivery = await deliverAlert(ctx.env, { ...stored, subject: `[Test] ${stored.subject}` }, destinations, rows[0] ?? {}, ctx.now());
   }
   return ctx.json({ data: rows, meta });
+}
+
+// --- Firing history (refs #193) ---
+
+export const DEFAULT_FIRINGS_LIMIT = 100;
+export const MAX_FIRINGS_LIMIT = 1000;
+
+/** ISO 8601 (date or date-time) or epoch milliseconds; null when it's neither. */
+export function parseInstant(v: string): Date | null {
+  const t = v.trim();
+  const ms = /^\d{1,15}$/.test(t) ? Number(t) : /^\d{4}-\d{2}-\d{2}(T|$)/.test(t) ? Date.parse(t) : NaN;
+  return Number.isFinite(ms) ? new Date(ms) : null;
+}
+
+export function firingOut(f: FiringRow) {
+  return {
+    id: f.id,
+    alert_id: f.alert_id,
+    alert_name: f.alert_name,
+    fired_at: f.fired_at,
+    outcome: f.outcome,
+    values: f.values_json ? JSON.parse(f.values_json) : null,
+    destinations: JSON.parse(f.destinations_json || "[]"),
+    error: f.error,
+  };
+}
+
+/**
+ * `GET /api/v1/alerts/:id/firings` (one alert) and `GET /api/v1/alert-firings`
+ * (all): live firings, newest first, `from`/`to` inclusive, read scope.
+ */
+export async function handleFirings(request: Request, alertId: string | null, ctx: ApiContext): Promise<Response> {
+  if (request.method !== "GET") return ctx.error("method_not_allowed", "Use GET", 405);
+  const params = new URL(request.url).searchParams;
+  const fields: Record<string, string> = {};
+  const instant = (k: "from" | "to") => {
+    const v = params.get(k);
+    if (v === null || v === "") return undefined;
+    const d = parseInstant(v);
+    if (!d) fields[k] = "Must be an ISO 8601 time or epoch milliseconds";
+    return d ?? undefined;
+  };
+  const from = instant("from");
+  const to = instant("to");
+  if (from && to && from > to) fields.from = "Must not be after to";
+  let limit = DEFAULT_FIRINGS_LIMIT;
+  const rawLimit = params.get("limit");
+  if (rawLimit !== null && rawLimit !== "") {
+    const n = Number(rawLimit);
+    if (!Number.isInteger(n) || n < 1) fields.limit = `Must be an integer from 1 to ${MAX_FIRINGS_LIMIT}`;
+    else limit = Math.min(n, MAX_FIRINGS_LIMIT);
+  }
+  if (Object.keys(fields).length) return ctx.error("validation_error", "Invalid request", 400, { fields });
+  if (alertId !== null && !(await getAlert(ctx.env.KEYS_DB, alertId))) return ctx.error("not_found", `No alert ${alertId}`, 404);
+  const rows = await listFirings(ctx.env.KEYS_DB, { alertId: alertId ?? undefined, from, to, limit });
+  return ctx.json({ data: rows.map(firingOut), meta: { count: rows.length, limit } });
 }
 
 export const MASKED = "********";

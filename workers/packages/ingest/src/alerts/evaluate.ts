@@ -18,15 +18,19 @@ import {
   acquireLease,
   destinationsByIds,
   enabledAlerts,
+  firingOf,
   markErrorReported,
   markTriggered,
   parseJsonArray,
   pruneEvaluations,
+  pruneFirings,
   recordEvaluation,
+  recordFirings,
   previousEvaluation,
   releaseLease,
   type AlertRow,
   type Evaluation,
+  type Firing,
 } from "./store";
 
 export interface AlertsEnv extends BasinSqlEnv, DeliveryEnv {
@@ -90,7 +94,7 @@ export async function basinNewest(env: BasinSqlEnv, pinned: Date): Promise<Date 
  * alert whose previous run was 59.8 s ago would skip a tick and run every
  * two minutes.
  */
-const DUE_SLACK_MS = 10_000;
+export const DUE_SLACK_MS = 10_000;
 
 /**
  * A Basin SQL timeout on one tick (`Query exceeded 30 seconds`). Seen on whole
@@ -182,6 +186,7 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
       }
     }
     const evaluated: Evaluation[] = [];
+    const firings: Firing[] = [];
     const lines: string[] = [];
     let next = 0;
     const worker = async () => {
@@ -189,6 +194,8 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
         const alert = due[next++];
         const e = await evaluateAlert(env, alert, mode, now, lag, deps.fetch);
         evaluated.push(e);
+        const firing = firingOf(e);
+        if (firing) firings.push(firing);
         const report = telemetryFor(alert, e, now);
         lines.push(...report);
         try {
@@ -200,8 +207,22 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
       }
     };
     await Promise.all(Array.from({ length: Math.min(ALERT_CONCURRENCY, due.length) }, worker));
+    // Firing history (refs #193): one batch after every delivery is done, so
+    // it never delays a send, and a failed write is reported, never thrown.
+    try {
+      await recordFirings(env.KEYS_DB, firings);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      console.error(JSON.stringify({ event: "alert-firings-record-failed", firings: firings.length, error }));
+      lines.push(firingsFailedLine(now, firings.length, error));
+    }
     if (lines.length) await deps.emit(lines);
-    if (now.getUTCMinutes() === 0) await pruneEvaluations(env.KEYS_DB, now).catch(() => {});
+    if (now.getUTCMinutes() === 0) {
+      await pruneEvaluations(env.KEYS_DB, now).catch(() => {});
+      await pruneFirings(env.KEYS_DB, now).catch((err) =>
+        console.error(JSON.stringify({ event: "alert-firings-prune-failed", error: err instanceof Error ? err.message : String(err) })),
+      );
+    }
     return { mode, due: due.length, evaluated };
   } finally {
     await releaseLease(env.KEYS_DB, LEASE_NAME, holder).catch(() => {});
@@ -279,6 +300,7 @@ export async function evaluateAlert(
     value: row,
     wouldSend: true,
     sent: delivery.delivered > 0,
+    deliveries: delivery.attempts,
     error:
       delivery.delivered > 0
         ? failed.length
@@ -289,6 +311,18 @@ export async function evaluateAlert(
 }
 
 export const ERROR_REPORT_INTERVAL_MS = 3_600_000;
+
+/** Not in the `[id] …` shape, so the "an alert cannot evaluate" alert doesn't match it. */
+function firingsFailedLine(now: Date, count: number, error: string): string {
+  return JSON.stringify({
+    "@t": now.toISOString(),
+    "@l": "Warning",
+    "@m": `Alert firing history not recorded for ${count} firing(s): ${error}`,
+    "@mt": "Alert firing history not recorded for {Firings} firing(s): {Error}",
+    Firings: count,
+    Error: error,
+  });
+}
 
 function behindLine(now: Date, pinned: Date, newest: Date | null, held: number): string {
   const behind = newest ? Math.round((pinned.getTime() - newest.getTime()) / 60_000) : null;

@@ -26,7 +26,7 @@ import {
 import { BasinQueryError, queryBasin } from "./basin-sql";
 import { CLEF_FIELDS } from "./parse/clef";
 import { handleMcp, type CreateLogArgs } from "./mcp";
-import { handleAlerts, handleDestinations } from "./alerts/api";
+import { handleAlerts, handleDestinations, handleFirings } from "./alerts/api";
 import { runAlerts } from "./alerts/evaluate";
 import { runSupabasePull } from "./supabase/pull";
 import { runBasinSpillReplay } from "./basin-spill";
@@ -840,13 +840,20 @@ export function reportIfSlow(
  * unprefixed routes (refs #168), those paths still go to the v1 dashboard.
  */
 const READ_PREFIX = "/v2";
-const READ_PATHS = new Set(["/api/v1/query", "/api/v1/logs", "/api/mcp", "/api/v1/alerts", "/api/v1/alert-destinations"]);
+const READ_PATHS = new Set([
+  "/api/v1/query",
+  "/api/v1/logs",
+  "/api/mcp",
+  "/api/v1/alerts",
+  "/api/v1/alert-destinations",
+  "/api/v1/alert-firings",
+]);
 
 export function readPath(path: string): string | null {
   const rest = path.startsWith(`${READ_PREFIX}/`) ? path.slice(READ_PREFIX.length) : path;
   if (READ_PATHS.has(rest)) return rest;
-  // The one sub-route: POST /api/v1/alerts/:id/test.
-  return /^\/api\/v1\/alerts\/[^/]+\/test$/.test(rest) ? rest : null;
+  // The sub-routes: POST /api/v1/alerts/:id/test and GET /api/v1/alerts/:id/firings (refs #193).
+  return /^\/api\/v1\/alerts\/[^/]+\/(test|firings)$/.test(rest) ? rest : null;
 }
 
 function apiError(error: string, message: string, status: number, extra?: Record<string, unknown>): Response {
@@ -932,11 +939,15 @@ async function handleRead(
     return apiError("internal_error", "Authentication failed", 500);
   }
 
+  // One alerts context for REST and MCP, so both get the same scope checks.
+  const api = { env, canWrite: hasScope(key, "write"), json: jsonResponse, error: apiError, now: () => new Date() };
+
   if (route === "/api/mcp") {
     return handleMcp(request, {
       env,
       scopes: key.scopes,
       createLog: (entry) => createLog(request, env, ctx, key, entry),
+      alertsApi: api,
     });
   }
 
@@ -944,12 +955,18 @@ async function handleRead(
     return apiError("forbidden", "This key lacks the required 'read' scope", 403);
   }
 
-  if (route === "/api/v1/alerts" || route.startsWith("/api/v1/alerts/") || route === "/api/v1/alert-destinations") {
-    const api = { env, canWrite: hasScope(key, "write"), json: jsonResponse, error: apiError, now: () => new Date() };
+  if (
+    route === "/api/v1/alerts" ||
+    route.startsWith("/api/v1/alerts/") ||
+    route === "/api/v1/alert-destinations" ||
+    route === "/api/v1/alert-firings"
+  ) {
     try {
       return route === "/api/v1/alert-destinations"
         ? await handleDestinations(request, api)
-        : await handleAlerts(request, route.slice("/api/v1/alerts".length), api);
+        : route === "/api/v1/alert-firings"
+          ? await handleFirings(request, null, api)
+          : await handleAlerts(request, route.slice("/api/v1/alerts".length), api);
     } catch (e) {
       console.error(JSON.stringify({ event: "alerts-api-error", route, error: e instanceof Error ? e.message : String(e) }));
       return apiError("internal_error", "Alert request failed", 500);

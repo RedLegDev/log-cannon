@@ -47,7 +47,7 @@ beforeEach(async () => {
   __resetKeyCache();
   __resetTelemetryThrottle();
   await env.KEYS_DB.prepare("DELETE FROM api_keys").run();
-  for (const t of ["alerts", "alert_destinations", "alert_evaluations"]) await env.KEYS_DB.prepare(`DELETE FROM ${t}`).run();
+  for (const t of ["alerts", "alert_destinations", "alert_evaluations", "alert_firings"]) await env.KEYS_DB.prepare(`DELETE FROM ${t}`).run();
   for (const [k, scopes] of KEYS) {
     await env.KEYS_DB.prepare(
       "INSERT INTO api_keys (api_key, key_id, name, enabled, scopes, retention_days, created_at) VALUES (?, ?, ?, 1, ?, 0, '2026-01-01T00:00:00Z')",
@@ -91,6 +91,24 @@ describe("/v2/api/v1/alerts", () => {
         last_value: null,
       }),
     ]);
+  });
+
+  it("shows each alert's query volume and its cost at Basin's per-query minimum (refs #194)", async () => {
+    const mk = async (interval_seconds: number, enabled = true) =>
+      ((await (await call("/api/v1/alerts", "k-write", "POST", { ...ALERT, interval_seconds, enabled })).json()) as { id: string }).id;
+    const ids = { s30: await mk(30), s60: await mk(60), s90: await mk(90), s300: await mk(300), off: await mk(60, false) };
+    const before = basinQueries.length;
+    const list = (await (await call("/api/v1/alerts", "k-read")).json()) as { data: { id: string; queries_per_day: number; est_usd_per_month: number }[] };
+    expect(basinQueries.length).toBe(before);
+    const cost = (id: string) => {
+      const a = list.data.find((x) => x.id === id)!;
+      return [a.queries_per_day, a.est_usd_per_month];
+    };
+    expect(cost(ids.s30)).toEqual([1440, 1.08]);
+    expect(cost(ids.s60)).toEqual([1440, 1.08]);
+    expect(cost(ids.s90)).toEqual([720, 0.54]);
+    expect(cost(ids.s300)).toEqual([288, 0.216]);
+    expect(cost(ids.off)).toEqual([0, 0]);
   });
 
   it("validates like v1, field by field", async () => {
@@ -194,6 +212,71 @@ describe("/v2/api/v1/alerts/:id/test deliver", () => {
   });
 });
 
+describe("alert firing history routes (refs #193)", () => {
+  const seed = async () => {
+    const { id } = (await (await call("/api/v1/alerts", "k-write", "POST", ALERT)).json()) as { id: string };
+    const ins = (alertId: string, at: string, outcome: string) =>
+      env.KEYS_DB.prepare(
+        "INSERT INTO alert_firings (alert_id, fired_at, values_json, outcome, destinations_json, error) VALUES (?, ?, '{\"cnt\":5}', ?, '[{\"target\":\"webhook:Hook\",\"ok\":true}]', NULL)",
+      ).bind(alertId, at, outcome);
+    await env.KEYS_DB.batch([
+      ins(id, "2026-11-20T10:00:00.000Z", "delivered"),
+      ins(id, "2026-11-20T10:01:00.000Z", "cooldown"),
+      ins(id, "2026-11-21T09:00:00.000Z", "failed"),
+      ins("deleted-alert", "2026-11-21T08:00:00.000Z", "delivered"),
+    ]);
+    return id;
+  };
+  type Page = { data: { alert_id: string; alert_name: string | null; fired_at: string; outcome: string; values: unknown; destinations: unknown }[]; meta: { count: number; limit: number } };
+  const page = async (path: string, key = "k-read") => {
+    const res = await call(path, key);
+    return { status: res.status, body: (await res.json()) as Page & { fields?: Record<string, string> } };
+  };
+
+  it("lists every alert's firings newest first, parsed, with the alert's name", async () => {
+    const id = await seed();
+    const { status, body } = await page("/api/v1/alert-firings");
+    expect(status).toBe(200);
+    expect(body.data.map((f) => [f.alert_id === id ? "a" : f.alert_id, f.outcome])).toEqual([
+      ["a", "failed"],
+      ["deleted-alert", "delivered"],
+      ["a", "cooldown"],
+      ["a", "delivered"],
+    ]);
+    expect(body.data[0]).toMatchObject({ alert_name: "Example Errors", values: { cnt: 5 }, destinations: [{ target: "webhook:Hook", ok: true }] });
+    expect(body.data[1].alert_name).toBeNull();
+    expect(body.meta).toEqual({ count: 4, limit: 100 });
+  });
+
+  it("one alert's firings, filtered by from/to (ISO or epoch ms) and limit; /v2 answers the same", async () => {
+    const id = await seed();
+    const one = await page(`/api/v1/alerts/${id}/firings`);
+    expect(one.body.data.map((f) => f.outcome)).toEqual(["failed", "cooldown", "delivered"]);
+    const ms = Date.parse("2026-11-20T10:00:30Z");
+    const window = await page(`/api/v1/alerts/${id}/firings?from=${ms}&to=2026-11-21T00:00:00Z`);
+    expect(window.body.data.map((f) => f.fired_at)).toEqual(["2026-11-20T10:01:00.000Z"]);
+    const limited = await page(`/api/v1/alert-firings?limit=2`);
+    expect(limited.body.data).toHaveLength(2);
+    expect(limited.body.meta.limit).toBe(2);
+    expect((await page(`/api/v1/alert-firings?limit=5000`)).body.meta.limit).toBe(1000);
+    expect((await page(`/v2/api/v1/alerts/${id}/firings`)).body).toEqual(one.body);
+    expect((await page(`/v2/api/v1/alert-firings`)).body).toEqual((await page(`/api/v1/alert-firings`)).body);
+  });
+
+  it("400s on a bad from, to or limit; 404s an unknown alert; read scope like GET /api/v1/alerts", async () => {
+    await seed();
+    for (const q of ["from=yesterday", "to=2026-13-45", "from=2026-11-21&to=2026-11-20", "limit=0", "limit=abc"]) {
+      const r = await page(`/api/v1/alert-firings?${q}`);
+      expect(r.status, q).toBe(400);
+    }
+    expect((await page("/api/v1/alert-firings?from=yesterday")).body.fields).toEqual({ from: "Must be an ISO 8601 time or epoch milliseconds" });
+    expect((await page("/api/v1/alerts/00000000-0000-0000-0000-000000000000/firings")).status).toBe(404);
+    expect((await page("/api/v1/alert-firings", "k-ingest")).status).toBe(403);
+    expect((await call("/api/v1/alert-firings", null)).status).toBe(401);
+    expect((await call("/api/v1/alert-firings", "k-write", "POST", {})).status).toBe(405);
+  });
+});
+
 describe("/v2/api/v1/alert-destinations", () => {
   it("creates, lists with parsed config, patches and deletes", async () => {
     const bad = await call("/v2/api/v1/alert-destinations", "k-write", "POST", { name: "Mail", type: "email", config: {} });
@@ -236,6 +319,61 @@ describe("MCP alert tools", () => {
     const ok = await rpc("k-write", "create_alert", ALERT);
     expect(JSON.parse(ok.result!.content[0].text)).toMatchObject({ success: true });
     expect((await env.KEYS_DB.prepare("SELECT count(*) AS n FROM alerts").first<{ n: number }>())?.n).toBe(1);
+  });
+
+  const text = (r: Awaited<ReturnType<typeof rpc>>) => JSON.parse(r.result!.content[0].text);
+
+  it("list_alerts returns GET /api/v1/alerts' shape, with no destination config", async () => {
+    const hook = (await (
+      await call("/v2/api/v1/alert-destinations", "k-write", "POST", { name: "Hook", type: "webhook", config: { url: "https://hook.example.com/x", headers: { "X-Token": "s3cret" } } })
+    ).json()) as { id: string };
+    await call("/api/v1/alerts", "k-write", "POST", { ...ALERT, destination_ids: [hook.id] });
+    const res = await rpc("k-read", "list_alerts", {});
+    expect(text(res)).toEqual((await (await call("/api/v1/alerts", "k-read")).json()) as unknown);
+    expect(res.result!.content[0].text).not.toContain("s3cret");
+    expect(res.result!.content[0].text).not.toContain("hook.example.com");
+    expect((await rpc("k-ingest", "list_alerts", {})).error?.code).toBe(-32602);
+  });
+
+  it("update_alert disables and re-enables, validates like PATCH, and needs write scope", async () => {
+    const { id } = (await (await call("/api/v1/alerts", "k-write", "POST", ALERT)).json()) as { id: string };
+    const enabled = async () => (await env.KEYS_DB.prepare("SELECT enabled FROM alerts WHERE id = ?").bind(id).first<{ enabled: number }>())?.enabled;
+
+    expect((await rpc("k-read", "update_alert", { id, enabled: false })).error?.code).toBe(-32602);
+    expect(await enabled()).toBe(1);
+
+    expect(text(await rpc("k-write", "update_alert", { id, enabled: false }))).toEqual({ success: true });
+    expect(await enabled()).toBe(0);
+    expect(text(await rpc("k-write", "update_alert", { id, enabled: true, cooldown_seconds: 900 }))).toEqual({ success: true });
+    expect(await env.KEYS_DB.prepare("SELECT enabled, cooldown_seconds FROM alerts WHERE id = ?").bind(id).first()).toEqual({ enabled: 1, cooldown_seconds: 900 });
+
+    const bad = await rpc("k-write", "update_alert", { id, interval_seconds: 5 });
+    expect(bad.error).toMatchObject({ code: -32602, message: "interval_seconds: Must be an integer >= 30" });
+    const missing = await rpc("k-write", "update_alert", { id: "nope", name: "x" });
+    expect(missing.result).toMatchObject({ isError: true });
+    expect((await rpc("k-write", "update_alert", {})).error?.code).toBe(-32602);
+  });
+
+  it("test_alert runs as REST's test does; deliver needs write scope", async () => {
+    const { id } = (await (await call("/api/v1/alerts", "k-write", "POST", ALERT)).json()) as { id: string };
+    expect(text(await rpc("k-read", "test_alert", { id }))).toMatchObject({ data: [{ cnt: 5 }], meta: { condition: "cnt > 3", would_fire: true } });
+    const refused = await rpc("k-read", "test_alert", { id, deliver: true });
+    expect(refused.result).toMatchObject({ isError: true });
+    expect(refused.result!.content[0].text).toMatch(/write/);
+    expect((await rpc("k-ingest", "test_alert", { id })).error?.code).toBe(-32602);
+  });
+
+  it("get_alert_history reads the firing routes, for one alert or all", async () => {
+    const { id } = (await (await call("/api/v1/alerts", "k-write", "POST", ALERT)).json()) as { id: string };
+    await env.KEYS_DB.batch([
+      env.KEYS_DB.prepare("INSERT INTO alert_firings (alert_id, fired_at, outcome) VALUES (?, '2026-11-20T10:00:00.000Z', 'delivered')").bind(id),
+      env.KEYS_DB.prepare("INSERT INTO alert_firings (alert_id, fired_at, outcome) VALUES ('other', '2026-11-21T10:00:00.000Z', 'failed')"),
+    ]);
+    expect(text(await rpc("k-read", "get_alert_history", {})).data.map((f: { alert_id: string }) => f.alert_id)).toEqual(["other", id]);
+    const one = text(await rpc("k-read", "get_alert_history", { alert_id: id, from: Date.parse("2026-11-01T00:00:00Z"), limit: 10 }));
+    expect(one).toMatchObject({ data: [{ alert_id: id, outcome: "delivered", alert_name: "Example Errors" }], meta: { count: 1, limit: 10 } });
+    expect((await rpc("k-read", "get_alert_history", { from: "last week" })).error?.code).toBe(-32602);
+    expect((await rpc("k-ingest", "get_alert_history", {})).error?.code).toBe(-32602);
   });
 
   it("get_firing_alerts lists alerts inside their cooldown, live and shadow apart", async () => {

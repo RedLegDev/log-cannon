@@ -44,6 +44,8 @@ export interface Evaluation {
   value: Record<string, unknown> | null;
   error: string | null;
   durationMs: number;
+  /** Live sends only: one entry per destination tried (refs #193). */
+  deliveries?: { target: string; ok: boolean; error?: string }[];
 }
 
 /** The fields a caller may set. Everything else is server-owned. */
@@ -260,6 +262,108 @@ export const EVALUATION_RETENTION_DAYS = 14;
 export async function pruneEvaluations(db: D1Database, now: Date): Promise<void> {
   const cutoff = new Date(now.getTime() - EVALUATION_RETENTION_DAYS * 86_400_000).toISOString();
   await db.prepare("DELETE FROM alert_evaluations WHERE evaluated_at < ?").bind(cutoff).run();
+}
+
+// --- Firing history (refs #193) ---
+
+export type FiringOutcome = "delivered" | "cooldown" | "failed";
+
+export interface Firing {
+  alertId: string;
+  firedAt: Date;
+  outcome: FiringOutcome;
+  value: Record<string, unknown> | null;
+  destinations: { target: string; ok: boolean; error?: string }[];
+  error: string | null;
+}
+
+export interface FiringRow {
+  id: number;
+  alert_id: string;
+  alert_name: string | null;
+  fired_at: string;
+  values_json: string | null;
+  outcome: FiringOutcome;
+  destinations_json: string;
+  error: string | null;
+}
+
+/**
+ * The history row one evaluation contributes: a live evaluation whose
+ * condition was true, whether it went out, failed, or was held by cooldown.
+ * Shadow never records history, so it can't read as a real page.
+ */
+export function firingOf(e: Evaluation): Firing | null {
+  if (e.mode !== "live" || (e.status !== "triggered" && e.status !== "cooldown")) return null;
+  return {
+    alertId: e.alertId,
+    firedAt: e.evaluatedAt,
+    outcome: e.status === "cooldown" ? "cooldown" : e.sent ? "delivered" : "failed",
+    value: e.value,
+    destinations: e.deliveries ?? [],
+    error: e.status === "cooldown" ? null : e.error,
+  };
+}
+
+/** One batch for the whole tick, written after every delivery has finished. */
+export async function recordFirings(db: D1Database, firings: Firing[]): Promise<void> {
+  if (!firings.length) return;
+  await db.batch(
+    firings.map((f) =>
+      db
+        .prepare(
+          `INSERT INTO alert_firings (alert_id, fired_at, values_json, outcome, destinations_json, error)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(f.alertId, f.firedAt.toISOString(), valueJson(f.value), f.outcome, JSON.stringify(f.destinations), f.error),
+    ),
+  );
+}
+
+export const FIRING_RETENTION_DAYS = 90;
+/** Rows one prune may delete, so a backlog clears over several runs instead of one long write. */
+export const FIRING_PRUNE_BATCH = 10_000;
+
+export async function pruneFirings(db: D1Database, now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - FIRING_RETENTION_DAYS * 86_400_000).toISOString();
+  const r = await db
+    .prepare("DELETE FROM alert_firings WHERE id IN (SELECT id FROM alert_firings WHERE fired_at < ? ORDER BY fired_at LIMIT ?)")
+    .bind(cutoff, FIRING_PRUNE_BATCH)
+    .run();
+  return r.meta.changes;
+}
+
+/** Newest first; `from` and `to` are inclusive. A deleted alert's rows keep a null name. */
+export async function listFirings(
+  db: D1Database,
+  q: { alertId?: string; from?: Date; to?: Date; limit: number },
+): Promise<FiringRow[]> {
+  const where: string[] = [];
+  const binds: unknown[] = [];
+  if (q.alertId !== undefined) {
+    where.push("f.alert_id = ?");
+    binds.push(q.alertId);
+  }
+  if (q.from) {
+    where.push("f.fired_at >= ?");
+    binds.push(q.from.toISOString());
+  }
+  if (q.to) {
+    where.push("f.fired_at <= ?");
+    binds.push(q.to.toISOString());
+  }
+  binds.push(q.limit);
+  return (
+    await db
+      .prepare(
+        `SELECT f.id, f.alert_id, a.name AS alert_name, f.fired_at, f.values_json, f.outcome, f.destinations_json, f.error
+         FROM alert_firings f LEFT JOIN alerts a ON a.id = f.alert_id
+         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ORDER BY f.fired_at DESC, f.id DESC LIMIT ?`,
+      )
+      .bind(...binds)
+      .all<FiringRow>()
+  ).results;
 }
 
 /**

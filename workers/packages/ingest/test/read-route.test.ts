@@ -86,6 +86,11 @@ describe("readPath", () => {
     expect(readPath("/v2/api/v1/alerts/abc/test")).toBe("/api/v1/alerts/abc/test");
     expect(readPath("/v2/api/v1/alerts/abc")).toBeNull();
     expect(readPath("/v2/api/v1/alert-destinations")).toBe("/api/v1/alert-destinations");
+    for (const p of ["/api/v1/alert-firings", "/api/v1/alerts/abc/firings"]) {
+      expect(readPath(p)).toBe(p);
+      expect(readPath(`/v2${p}`)).toBe(p);
+    }
+    expect(readPath("/api/v1/alerts/abc/firings/x")).toBeNull();
     expect(readPath("/v2/api/v1/keys")).toBeNull();
   });
 });
@@ -218,9 +223,22 @@ describe("/v2/api/mcp", () => {
         (t) => t.name,
       );
     expect(await list("k-ingest")).toEqual(["create_log"]);
-    expect(await list("k-read")).toEqual(["create_log", "search_logs", "execute_query", "get_overview", "get_firing_alerts", "get_docs"]);
+    expect(await list("k-read")).toEqual([
+      "create_log",
+      "search_logs",
+      "execute_query",
+      "get_overview",
+      "get_firing_alerts",
+      "list_alerts",
+      "get_alert_history",
+      "test_alert",
+      "get_docs",
+    ]);
     expect(await list("k-write")).toContain("create_alert");
+    expect(await list("k-write")).toContain("update_alert");
     expect(await list("k-read")).not.toContain("create_alert");
+    expect(await list("k-read")).not.toContain("update_alert");
+    expect(await list("k-read")).not.toContain("delete_alert");
   });
 
   it("won't run a tool the key can't see", async () => {

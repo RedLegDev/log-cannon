@@ -22,7 +22,7 @@ import {
 } from "./query";
 import { queryBasin } from "./basin-sql";
 import type { Scope } from "./keys";
-import { normalizeAlert } from "./alerts/api";
+import { handleAlerts, handleFirings, normalizeAlert, type ApiContext } from "./alerts/api";
 import { insertAlert, listAlerts, type AlertRow, type NormalizedAlert } from "./alerts/store";
 
 export const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -34,6 +34,8 @@ export interface McpContext {
   env: BasinSqlEnv & { KEYS_DB: D1Database };
   scopes: Scope[];
   createLog: (entry: CreateLogArgs) => Promise<void>;
+  /** The REST alerts context for this key; the alert tools run its handlers (refs #193). */
+  alertsApi: ApiContext;
   now?: () => Date;
 }
 
@@ -297,6 +299,95 @@ export const TOOLS: Tool[] = [
       }
     },
   },
+  // list_alerts, get_alert_history, update_alert and test_alert run the REST
+  // handlers themselves (refs #193), so validation, scope checks and the
+  // response shapes are REST's. A 400 is invalid params, as for create_alert.
+  {
+    name: "list_alerts",
+    title: "List Alerts",
+    description:
+      "List every alert rule with its query, condition, interval, cooldown, destination ids, enabled flag and latest evaluation (last_status: ok, triggered, cooldown or error), plus queries_per_day and est_usd_per_month, the Basin SQL cost of running it at its interval. Same as GET /api/v1/alerts.",
+    scope: "read",
+    inputSchema: { type: "object", properties: {} },
+    run: async (_args, ctx) => restResult(await handleAlerts(alertsRequest("GET"), "", ctx.alertsApi), "Failed to list alerts"),
+  },
+  {
+    name: "get_alert_history",
+    title: "Get Alert History",
+    description:
+      "Alert firing history, newest first: each live evaluation whose condition was true, with the evaluated values, outcome (delivered, cooldown or failed), the destinations tried and any delivery error. Kept 90 days; shadow mode records none. Omit alert_id for every alert.",
+    scope: "read",
+    inputSchema: {
+      type: "object",
+      properties: {
+        alert_id: { type: "string", description: "One alert's id; omit for all alerts" },
+        from: { type: "string", description: "Earliest fired_at, ISO 8601 or epoch milliseconds (inclusive)" },
+        to: { type: "string", description: "Latest fired_at, ISO 8601 or epoch milliseconds (inclusive)" },
+        limit: { type: "number", minimum: 1, maximum: 1000, description: "Max rows (default 100, max 1000)" },
+      },
+    },
+    run: async (args, ctx) => {
+      const params = new URLSearchParams();
+      for (const k of ["from", "to", "limit"]) {
+        const v = args[k];
+        if (v === undefined || v === null) continue;
+        if (typeof v !== "string" && typeof v !== "number") throw new InvalidParams(`${k} must be a string or number`);
+        params.set(k, String(v));
+      }
+      const alertId = str(args, "alert_id") ?? null;
+      return restResult(await handleFirings(alertsRequest("GET", undefined, params), alertId, ctx.alertsApi), "Failed to get alert history");
+    },
+  },
+  {
+    name: "update_alert",
+    title: "Update Alert",
+    description:
+      "Change an alert rule: pass its id and only the fields to change (name, description, query, condition, interval_seconds, cooldown_seconds, destination_ids, recipients, subject, enabled). enabled: false disables it without deleting it. Same as PATCH /api/v1/alerts.",
+    scope: "write",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Alert id" },
+        name: { type: "string" },
+        description: { type: "string" },
+        query: { type: "string", description: "SELECT returning one row of values for the condition" },
+        condition: { type: "string", description: 'Condition expression, e.g. "cnt > 50"' },
+        interval_seconds: { type: "integer", minimum: 30 },
+        cooldown_seconds: { type: "integer", minimum: 0 },
+        destination_ids: { type: "array", items: { type: "string" } },
+        recipients: { type: "array", items: { type: "string" } },
+        subject: { type: "string" },
+        enabled: { type: "boolean", description: "false disables the alert; true re-enables it" },
+      },
+      required: ["id"],
+    },
+    run: async (args, ctx) => {
+      str(args, "id", true);
+      return restResult(await handleAlerts(alertsRequest("PATCH", args), "", ctx.alertsApi), "Failed to update alert");
+    },
+  },
+  {
+    name: "test_alert",
+    title: "Test Alert",
+    description:
+      "Run an alert's query exactly as the evaluator would (now() pinned back by the ingest lag) and report the rows and whether the condition would fire. query and condition override the stored ones for a dry run. deliver: true (write scope) also sends to the alert's destinations without starting its cooldown. Same as POST /api/v1/alerts/:id/test.",
+    scope: "read",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Alert id" },
+        query: { type: "string", description: "Query to try instead of the stored one" },
+        condition: { type: "string", description: "Condition to try instead of the stored one" },
+        deliver: { type: "boolean", description: "Also send through the alert's destinations (write scope)" },
+      },
+      required: ["id"],
+    },
+    run: async (args, ctx) => {
+      const id = str(args, "id", true)!;
+      const { id: _id, ...body } = args;
+      return restResult(await handleAlerts(alertsRequest("POST", body), `/${id}/test`, ctx.alertsApi), "Failed to test alert");
+    },
+  },
   {
     name: "get_docs",
     title: "Get Documentation",
@@ -327,6 +418,26 @@ export const TOOLS: Tool[] = [
     },
   },
 ];
+
+/** A Request for an alerts REST handler called from a tool; only method, body and query are read. */
+function alertsRequest(method: string, body?: Record<string, unknown>, params?: URLSearchParams): Request {
+  const qs = params?.toString();
+  return new Request(`https://mcp.invalid/api/v1/alerts${qs ? `?${qs}` : ""}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+/** A REST handler's answer as a tool result: 2xx is the body, 400 invalid params, anything else a tool error. */
+async function restResult(res: Response, prefix: string): Promise<ToolResult> {
+  const body = (await res.json().catch(() => null)) as { message?: string; fields?: Record<string, string> } | null;
+  if (res.ok) return json(body);
+  const detail = body?.fields ? Object.entries(body.fields).map(([k, v]) => `${k}: ${v}`).join("; ") : "";
+  const message = detail || body?.message || `status ${res.status}`;
+  if (res.status === 400) throw new InvalidParams(message);
+  return fail(`${prefix}: ${message}`);
+}
 
 const SCOPE_RANK: Record<Scope, number> = { ingest: 0, read: 1, write: 2, admin: 3 };
 

@@ -212,6 +212,12 @@ The cron evaluates the due alerts once a minute. Every `now()` in an alert query
 | `ALERTS_SOURCE` | `log-cannon-alerts` | Source for the evaluator's own events (errors, sends) |
 | `SAASMAIL_API_URL` / `ALERT_FROM_EMAIL` | — | Email delivery; the key is the `SAASMAIL_API_KEY` secret |
 
+Every live evaluation whose condition was true is kept for 90 days in D1 `alert_firings`, with the evaluated values, the outcome (`delivered`, `cooldown` or `failed`), the destinations tried and any delivery error; shadow mode keeps none. Read it with `GET /api/v1/alerts/{id}/firings` (one alert) or `GET /api/v1/alert-firings` (all), each taking `from` / `to` (ISO 8601 or epoch ms) and `limit` (default 100, max 1000), newest first and read-scoped like `GET /api/v1/alerts`.
+
+`GET /api/v1/alerts` (and MCP `list_alerts`) shows each alert's `queries_per_day` and `est_usd_per_month`: how often the once-a-minute evaluator runs it, priced at Basin SQL's 10 MB per-query minimum (#194). A 60 s alert is about $1.08/mo, a 300 s one about $0.22.
+
+MCP has the alert tools too: `list_alerts`, `get_alert_history`, `test_alert` (read; `deliver` needs write), `create_alert` and `update_alert` (write; `enabled: false` disables). They run the REST handlers, so validation and scopes match. Deleting an alert is REST-only.
+
 Email goes out as `POST {SAASMAIL_API_URL}/api/send` with a multipart `payload` field holding `{to, fromAddress, subject, bodyText, bodyHtml}` and a Bearer token.
 
 ## Durability

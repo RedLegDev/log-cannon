@@ -165,7 +165,7 @@ describe("runAlerts against D1", () => {
     sent = [];
     deliveryStatus = 200;
     emitted = [];
-    for (const t of ["alerts", "alert_destinations", "alert_evaluations", "cron_leases"]) {
+    for (const t of ["alerts", "alert_destinations", "alert_evaluations", "alert_firings", "cron_leases"]) {
       await env.KEYS_DB.prepare(`DELETE FROM ${t}`).run();
     }
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
@@ -363,6 +363,82 @@ describe("runAlerts against D1", () => {
     const t2 = await tick(baseEnv({ ALERTS_MODE: "live" }), new Date(NOW.getTime() + 60_000));
     expect(t2.evaluated[0]).toMatchObject({ status: "cooldown" });
     expect(sent).toHaveLength(1);
+  });
+
+  // --- Firing history (refs #193) ---
+
+  const firingRows = async () =>
+    (await env.KEYS_DB.prepare("SELECT alert_id, fired_at, outcome, values_json, destinations_json, error FROM alert_firings ORDER BY fired_at, id").all())
+      .results as Record<string, unknown>[];
+
+  it("live: a delivered firing writes one row, and a cooldown hold writes another", async () => {
+    const id = await addAlert();
+    await tick(baseEnv({ ALERTS_MODE: "live" }));
+    expect(await firingRows()).toEqual([
+      {
+        alert_id: id,
+        fired_at: NOW.toISOString(),
+        outcome: "delivered",
+        values_json: '{"cnt":3}',
+        destinations_json: '[{"target":"email:ops@example.com","ok":true}]',
+        error: null,
+      },
+    ]);
+    const later = new Date(NOW.getTime() + 60_000);
+    expect((await tick(baseEnv({ ALERTS_MODE: "live" }), later)).evaluated[0]).toMatchObject({ status: "cooldown" });
+    const rows = await firingRows();
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({ fired_at: later.toISOString(), outcome: "cooldown", destinations_json: "[]", error: null });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("live: a refused delivery is a failed firing with the error; a false condition writes nothing", async () => {
+    await addAlert();
+    deliveryStatus = 500;
+    await tick(baseEnv({ ALERTS_MODE: "live" }));
+    const [row] = await firingRows();
+    expect(row).toMatchObject({ outcome: "failed" });
+    expect(row.error).toMatch(/^Dispatch failed \(cooldown not started\): email:ops@example.com: saasmail error \(status 500\)/);
+    expect(JSON.parse(row.destinations_json as string)).toEqual([{ target: "email:ops@example.com", ok: false, error: expect.stringContaining("status 500") }]);
+    basinRows = [{ cnt: 0 }];
+    await tick(baseEnv({ ALERTS_MODE: "live" }), new Date(NOW.getTime() + 60_000));
+    expect(await firingRows()).toHaveLength(1);
+  });
+
+  it("shadow writes no firing history", async () => {
+    await addAlert();
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow" }));
+    expect(t.evaluated[0]).toMatchObject({ status: "triggered", wouldSend: true });
+    await tick(baseEnv({ ALERTS_MODE: "shadow" }), new Date(NOW.getTime() + 60_000));
+    expect(await firingRows()).toEqual([]);
+  });
+
+  it("live: a failed history write is reported and the alert still sends", async () => {
+    const id = await addAlert();
+    await env.KEYS_DB.prepare("ALTER TABLE alert_firings RENAME TO alert_firings_off").run();
+    let t;
+    try {
+      t = await tick(baseEnv({ ALERTS_MODE: "live" }));
+    } finally {
+      await env.KEYS_DB.prepare("ALTER TABLE alert_firings_off RENAME TO alert_firings").run();
+    }
+    expect(t.evaluated[0]).toMatchObject({ status: "triggered", sent: true });
+    expect(sent).toHaveLength(1);
+    expect(await getAlert(env.KEYS_DB, id)).toMatchObject({ last_triggered_at: NOW.toISOString(), last_status: "triggered" });
+    const warning = emitted.map((l) => JSON.parse(l)).find((l) => l["@mt"]?.startsWith("Alert firing history not recorded"));
+    expect(warning).toMatchObject({ "@l": "Warning", Firings: 1 });
+  });
+
+  it("prunes firings past 90 days on the hourly tick, and keeps the rest", async () => {
+    const day = 86_400_000;
+    const ins = (at: number) =>
+      env.KEYS_DB.prepare("INSERT INTO alert_firings (alert_id, fired_at, outcome) VALUES ('old', ?, 'delivered')").bind(new Date(at).toISOString());
+    await env.KEYS_DB.batch([ins(NOW.getTime() - 91 * day), ins(NOW.getTime() - 90 * day - 1000), ins(NOW.getTime() - 89 * day)]);
+    // A minute past the hour doesn't prune.
+    await tick(baseEnv({ ALERTS_MODE: "live" }), new Date("2026-10-23T15:01:30Z"));
+    expect(await firingRows()).toHaveLength(3);
+    await tick(baseEnv({ ALERTS_MODE: "live" }));
+    expect((await firingRows()).map((r) => r.fired_at)).toEqual([new Date(NOW.getTime() - 89 * day).toISOString()]);
   });
 
   it("stops starting alerts at the tick deadline; the rest stay due", async () => {
