@@ -28,7 +28,10 @@ function harness(extra: Record<string, string> = {}) {
     return new Response(
       JSON.stringify({
         success: true,
-        result: { rows: [{ id: "1", ts: "2026-10-23T12:00:00Z", level: "Error", message: "m", source: "A", properties: '{"k":"v"}' }], metrics: { bytes_scanned: 7 } },
+        result: {
+          rows: [{ id: "1", ts: "2026-10-23T12:00:00Z", cursor_ts: "2026-10-23T12:00:00", level: "Error", message: "m", source: "A", properties: '{"k":"v"}' }],
+          metrics: { bytes_scanned: 7 },
+        },
       }),
     );
   });
@@ -201,7 +204,140 @@ describe("/v2/api/v1/logs", () => {
   });
 });
 
+describe("search windows and paging over HTTP", () => {
+  it("refuses a bad from, order or cursor with a 400 before calling Basin", async () => {
+    const h = harness();
+    for (const q of ["from=yesterday", "from=2026-01-01T00:00:00Z&to=2026-03-01T00:00:00Z", "order=up", "cursor=***"]) {
+      const res = await h.call(`/api/v1/logs?${q}`, { key: "k-read" });
+      expect(res.status, q).toBe(400);
+      expect(await res.json()).toMatchObject({ error: "validation_error" });
+    }
+    expect(h.sent.basin).toHaveLength(0);
+  });
+
+  it("returns next_cursor on a full page, and the cursor continues in one query", async () => {
+    const h = harness();
+    const first = (await (await h.call("/api/v1/logs?limit=1&order=asc&from=2026-10-23T11:00:00Z&to=2026-10-23T13:00:00Z", { key: "k-read" })).json()) as {
+      meta: { next_cursor: string; order: string };
+    };
+    expect(first.meta.order).toBe("asc");
+    expect(first.meta.next_cursor).toEqual(expect.any(String));
+    await h.call(`/api/v1/logs?limit=1&order=asc&from=2026-10-23T11:00:00Z&to=2026-10-23T13:00:00Z&cursor=${first.meta.next_cursor}`, { key: "k-read" });
+    expect(h.sent.basin).toHaveLength(2);
+    expect(h.sent.basin[1]).toContain("(ts > TIMESTAMP '2026-10-23T12:00:00' OR (ts = TIMESTAMP '2026-10-23T12:00:00' AND id > '1'))");
+  });
+});
+
+describe("/api/v1/stats", () => {
+  it("needs read scope and GET", async () => {
+    const h = harness();
+    expect((await h.call("/api/v1/stats", { key: "k-ingest" })).status).toBe(403);
+    expect((await h.call("/api/v1/stats", { method: "POST", key: "k-read" })).status).toBe(405);
+    expect(h.sent.basin).toHaveLength(0);
+  });
+
+  it("groups and buckets in one Basin query, naming the group keys, on both paths", async () => {
+    const h = harness();
+    vi.mocked(globalThis.fetch).mockImplementation(async (_input, init) => {
+      h.sent.basin.push(JSON.parse(String(init?.body)).query as string);
+      return new Response(
+        JSON.stringify({ success: true, result: { rows: [{ bucket: "2026-10-23T12:00:00", g0: "Error", g1: null, count: 3, unique: 2 }], metrics: { bytes_scanned: 9 } } }),
+      );
+    });
+    for (const path of ["/api/v1/stats", "/v2/api/v1/stats"]) {
+      const res = await h.call(`${path}?source=A&group_by=level,prop:Path&bucket=hour`, { key: "k-read" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        data: [{ level: "Error", "prop:Path": null, bucket: "2026-10-23T12:00:00", count: 3, unique: 2 }],
+        meta: { rows: 1, limit: 100, bytes_scanned: 9 },
+      });
+    }
+    expect(h.sent.basin).toHaveLength(2);
+    expect(h.sent.basin[0]).toBe(h.sent.basin[1]);
+    expect(h.sent.basin[0]).toMatch(/^SELECT date_trunc\('hour', ts\) AS bucket, level AS g0, CASE WHEN octet_length/);
+  });
+
+  it("rejects an unknown group_by or bucket with a 400", async () => {
+    const h = harness();
+    expect((await h.call("/api/v1/stats?group_by=key_id", { key: "k-read" })).status).toBe(400);
+    expect((await h.call("/api/v1/stats?bucket=week", { key: "k-read" })).status).toBe(400);
+    expect(h.sent.basin).toHaveLength(0);
+  });
+});
+
+describe("/api/v1/events/:id", () => {
+  it("is a read route, unprefixed and under /v2, with one id segment", () => {
+    expect(readPath("/api/v1/events/abc")).toBe("/api/v1/events/abc");
+    expect(readPath("/v2/api/v1/events/abc")).toBe("/api/v1/events/abc");
+    expect(readPath("/api/v1/events")).toBeNull();
+    expect(readPath("/api/v1/events/a/b")).toBeNull();
+    expect(readPath("/api/v1/stats")).toBe("/api/v1/stats");
+  });
+
+  it("needs read scope", async () => {
+    const h = harness();
+    expect((await h.call("/api/v1/events/1", { key: "k-ingest" })).status).toBe(403);
+    expect(h.sent.basin).toHaveLength(0);
+  });
+
+  it("finds the event in one query without context", async () => {
+    const h = harness();
+    const res = await h.call("/api/v1/events/1", { key: "k-read" });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Record<string, unknown>; context?: unknown };
+    expect(body.data).toMatchObject({ id: "1", source: "A", properties: { k: "v" } });
+    expect(body.data).not.toHaveProperty("cursor_ts");
+    expect(body).not.toHaveProperty("context");
+    expect(h.sent.basin).toHaveLength(1);
+    expect(h.sent.basin[0]).toContain("strpos(id, '1') > 0 AND octet_length(id) = 1");
+  });
+
+  it("adds the source context in a second query", async () => {
+    const h = harness();
+    const res = await h.call("/v2/api/v1/events/1?context=source&before_minutes=2", { key: "k-read" });
+    const body = (await res.json()) as { context: unknown[]; meta: { context: Record<string, unknown> } };
+    expect(body.context).toHaveLength(1);
+    expect(body.meta.context).toMatchObject({ kind: "source", before_minutes: 2, after_minutes: 1, count: 1, limit: 200 });
+    expect(h.sent.basin).toHaveLength(2);
+    expect(h.sent.basin[1]).toContain("ts >= TIMESTAMP '2026-10-23T12:00:00' - INTERVAL '2 minutes'");
+    expect(h.sent.basin[1]).toContain("AND source = 'A' ORDER BY ts ASC, id ASC");
+  });
+
+  it("404s an id that isn't in the window, and decodes the path", async () => {
+    const h = harness();
+    const res = await h.call("/api/v1/events/no%20such", { key: "k-read" });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: "not_found" });
+    expect(h.sent.basin[0]).toContain("strpos(id, 'no such') > 0");
+  });
+
+  it("refuses a bad context or ts with a 400 before calling Basin", async () => {
+    const h = harness();
+    expect((await h.call("/api/v1/events/1?context=host", { key: "k-read" })).status).toBe(400);
+    expect((await h.call("/api/v1/events/1?ts=later", { key: "k-read" })).status).toBe(400);
+    expect(h.sent.basin).toHaveLength(0);
+  });
+});
+
 describe("/v2/api/mcp", () => {
+  it("log_stats and get_event run through the shared builders", async () => {
+    const h = harness();
+    const call = async (name: string, args: Record<string, unknown>) =>
+      ((await (await h.rpc("k-read", { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name, arguments: args } })).json()) as {
+        result: { isError?: boolean; content: { text: string }[] };
+      }).result;
+    const from = Date.now() - 3_600_000;
+    expect((await call("log_stats", { group_by: ["level"], bucket: "5m", from })).isError).toBeUndefined();
+    expect(h.sent.basin[0]).toContain("date_bin(INTERVAL '5 minutes', ts");
+    expect(h.sent.basin[0]).toContain(`ts >= TIMESTAMP '${new Date(from).toISOString()}'`);
+    const ev = await call("get_event", { id: "1", context: "trace" });
+    // The fixture row has no trace_id: no context query, and it says why.
+    expect(JSON.parse(ev.content[0].text).meta.context).toMatchObject({ kind: "trace", count: 0 });
+    expect(h.sent.basin).toHaveLength(2);
+    expect((await call("get_event", { id: "nope" })).isError).toBe(true);
+    expect((await call("search_logs", { from: "not a time" })).isError).toBe(true);
+  });
+
   it("initializes, echoing a supported protocol version", async () => {
     const h = harness();
     const res = await h.rpc("k-read", { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } });
@@ -226,6 +362,8 @@ describe("/v2/api/mcp", () => {
     expect(await list("k-read")).toEqual([
       "create_log",
       "search_logs",
+      "log_stats",
+      "get_event",
       "execute_query",
       "get_overview",
       "get_firing_alerts",

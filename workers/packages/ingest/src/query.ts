@@ -75,14 +75,25 @@ export interface PropertyFilter {
   operator: PropertyOperator;
 }
 
-export interface SearchParams {
+/** The filters search, stats and their MCP tools share. */
+export interface FilterParams {
   source?: string;
   level?: string;
   search?: string;
+  exception?: string;
   traceId?: string;
   hours?: number;
-  limit?: number;
+  /** ISO 8601 or epoch milliseconds. Overrides `hours`. */
+  from?: string | number;
+  /** ISO 8601 or epoch milliseconds, exclusive. Defaults to now. */
+  to?: string | number;
   propertyFilters?: PropertyFilter[];
+}
+
+export interface SearchParams extends FilterParams {
+  limit?: number;
+  order?: string;
+  cursor?: string;
 }
 
 /** `prop.Key=>5` style values, as v1 accepted them. */
@@ -120,17 +131,155 @@ function propertyCondition(f: PropertyFilter): string {
 export const SEARCH_COLUMNS =
   "id, ts, level, message, message_template, exception, event_type, source, kind, trace_id, span_id, parent_span_id, duration_ms, properties";
 
-export function buildSearchSql(p: SearchParams): string {
+/**
+ * `ts` as Basin prints it, at full precision, for cursors and context
+ * windows. Read back as text so a cursor names the exact instant the row
+ * carries; stripped before rows go to callers.
+ */
+const CURSOR_TS = "CAST(ts AS VARCHAR) AS cursor_ts";
+
+// --- Time windows ---
+
+const HOUR_MS = 3_600_000;
+/** Year 10000: past it toISOString() grows a sign and stops being a literal. */
+const MAX_INSTANT_MS = 253_402_300_800_000;
+
+/** A caller's `from` / `to` / `ts`: ISO 8601 or epoch milliseconds. */
+export function parseInstant(raw: string | number, name: string): Date {
+  let ms = NaN;
+  if (typeof raw === "number") ms = raw;
+  else if (typeof raw === "string") {
+    const s = raw.trim();
+    if (/^\d+$/.test(s)) ms = Number(s);
+    else if (/^\d{4}-\d{2}-\d{2}/.test(s)) ms = Date.parse(s);
+  }
+  if (!Number.isFinite(ms) || ms < 0 || ms >= MAX_INSTANT_MS) {
+    throw new QueryRejected(`${name} must be an ISO 8601 time or epoch milliseconds`);
+  }
+  return new Date(Math.trunc(ms));
+}
+
+/** A DataFusion timestamp literal, millisecond precision, UTC. */
+export function instantLiteral(at: Date): string {
+  return `TIMESTAMP '${at.toISOString()}'`;
+}
+
+/**
+ * The time predicate. With neither `from` nor `to` it is today's relative
+ * window, unchanged. Otherwise the window is [from, to): `from` overrides
+ * `hours`, `to` defaults to now (no upper bound in the SQL, as with `hours`),
+ * and a window over MAX_SEARCH_HOURS is refused rather than cut, so a caller
+ * never reads a shorter window than they asked for without knowing.
+ */
+function windowConditions(p: FilterParams, now: Date): string[] {
   const hours = clampInt(p.hours, 24, 1, MAX_SEARCH_HOURS);
-  const limit = clampInt(p.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT);
-  const where = [`ts > now() - INTERVAL '${hours} hours'`];
+  if (p.from === undefined && p.to === undefined) return [`ts > now() - INTERVAL '${hours} hours'`];
+  const to = p.to === undefined ? undefined : parseInstant(p.to, "to");
+  const end = to ?? now;
+  const from = p.from === undefined ? new Date(end.getTime() - hours * HOUR_MS) : parseInstant(p.from, "from");
+  if (from.getTime() >= end.getTime()) throw new QueryRejected("from must be before to (default now)");
+  if (end.getTime() - from.getTime() > MAX_SEARCH_HOURS * HOUR_MS) {
+    throw new QueryRejected(`The window from ${from.toISOString()} to ${end.toISOString()} is over ${MAX_SEARCH_HOURS} hours`);
+  }
+  const out = [`ts >= ${instantLiteral(from)}`];
+  if (to) out.push(`ts < ${instantLiteral(to)}`);
+  return out;
+}
+
+/** The WHERE terms search and stats share. Every value goes through sqlString or a number. */
+export function filterConditions(p: FilterParams, now = new Date()): string[] {
+  const where = windowConditions(p, now);
   if (p.source) where.push(`source = ${sqlString(p.source)}`);
   if (p.level) where.push(`level = ${sqlString(p.level)}`);
-  // strpos, not LIKE: a % or _ in the search text is literal.
+  // strpos, not LIKE: a % or _ in the search text is literal. It is also a
+  // function call, so Basin can't prune on it (#187).
   if (p.search) where.push(`strpos(message, ${sqlString(p.search)}) > 0`);
+  if (p.exception) where.push(`strpos(exception, ${sqlString(p.exception)}) > 0`);
   if (p.traceId) where.push(`trace_id = ${sqlString(p.traceId)}`);
   for (const f of p.propertyFilters ?? []) where.push(propertyCondition(f));
-  return `SELECT ${SEARCH_COLUMNS} FROM logs.events WHERE ${where.join(" AND ")} ORDER BY ts DESC LIMIT ${limit}`;
+  return where;
+}
+
+// --- Paging ---
+
+export type Order = "asc" | "desc";
+
+export function parseOrder(v: unknown): Order {
+  if (v === undefined || v === null || v === "") return "desc";
+  if (v === "asc" || v === "desc") return v;
+  throw new QueryRejected("order must be asc or desc");
+}
+
+/** What Basin prints for a naive timestamp cast to text. Anything else in a cursor is refused. */
+const CURSOR_TS_TEXT = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d{1,9})?$/;
+
+export interface Cursor {
+  order: Order;
+  ts: string;
+  id: string;
+}
+
+function base64url(s: string): string {
+  let bin = "";
+  for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Opaque to callers: base64url of `order|ts|id`. */
+export function encodeCursor(c: Cursor): string {
+  return base64url(`${c.order}|${c.ts}|${c.id}`);
+}
+
+export function decodeCursor(s: string): Cursor {
+  let text: string;
+  try {
+    const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(Uint8Array.from(bin, (ch) => ch.charCodeAt(0)));
+  } catch {
+    throw new QueryRejected("cursor is not one this API issued");
+  }
+  // The id is last and may itself contain "|"; order and ts never do.
+  const [order, ts, ...rest] = text.split("|");
+  const id = rest.join("|");
+  if ((order !== "asc" && order !== "desc") || !CURSOR_TS_TEXT.test(ts ?? "") || rest.length === 0 || id === "") {
+    throw new QueryRejected("cursor is not one this API issued");
+  }
+  return { order, ts, id };
+}
+
+/**
+ * Rows after the cursor in the page order, keyed on (ts, id) so rows sharing
+ * a timestamp are neither skipped nor repeated.
+ *
+ * The `ts` comparisons do the window work. `ts` is a timestamp column, which
+ * #187 doesn't affect, so files wholly past the cursor are pruned correctly.
+ * `id` is a string column from the same writers as the columns #187 names,
+ * so a bare range filter on it could prune away a file that holds the next
+ * rows. Here it only appears ANDed with `ts = <cursor ts>`, inside an OR
+ * whose other arm is the plain ts range. A file whose ts range reaches past
+ * the cursor instant matches the ts arm and can't be pruned on id at all; the
+ * only file a bad id bound could drop is one whose rows all sit at or beyond
+ * the cursor instant with its first row exactly at it, and only rows at that
+ * one instant. That is the narrowest exposure an (ts, id) key can have, and
+ * the hourly bound repair (#187) closes it for data over an hour old.
+ */
+function cursorCondition(c: Cursor): string {
+  const ts = `TIMESTAMP ${sqlString(c.ts)}`;
+  const cmp = c.order === "asc" ? ">" : "<";
+  return `(ts ${cmp} ${ts} OR (ts = ${ts} AND id ${cmp} ${sqlString(c.id)}))`;
+}
+
+export function buildSearchSql(p: SearchParams, now = new Date()): string {
+  const limit = clampInt(p.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT);
+  const order = parseOrder(p.order);
+  const where = filterConditions(p, now);
+  if (p.cursor) {
+    const cursor = decodeCursor(p.cursor);
+    if (cursor.order !== order) throw new QueryRejected(`cursor was issued for order=${cursor.order}`);
+    where.push(cursorCondition(cursor));
+  }
+  const dir = order.toUpperCase();
+  return `SELECT ${SEARCH_COLUMNS}, ${CURSOR_TS} FROM logs.events WHERE ${where.join(" AND ")} ORDER BY ts ${dir}, id ${dir} LIMIT ${limit}`;
 }
 
 export interface LogOut {
@@ -159,11 +308,11 @@ function parseProperties(p: unknown): unknown {
   }
 }
 
-/** Shape a search row for callers: drop empty optional fields, parse properties. */
+/** Shape a search row for callers: drop empty optional fields and cursor_ts, parse properties. */
 export function toLogOut(r: Record<string, unknown>): LogOut {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(r)) {
-    if (k === "properties") continue;
+    if (k === "properties" || k === "cursor_ts") continue;
     if (v === null || v === undefined || v === "") continue;
     if (k === "kind" && v === "log") continue;
     out[k] = v;
@@ -174,16 +323,19 @@ export function toLogOut(r: Record<string, unknown>): LogOut {
 
 export async function searchLogs(env: BasinSqlEnv, p: SearchParams) {
   const sql = buildSearchSql(p);
+  const limit = clampInt(p.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT);
+  const order = parseOrder(p.order);
   const { rows, bytesScanned } = await queryBasin(env, sql);
-  return {
-    data: rows.map(toLogOut),
-    meta: { count: rows.length, limit: clampInt(p.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT), bytes_scanned: bytesScanned },
-  };
+  const meta: Record<string, unknown> = { count: rows.length, limit, order, bytes_scanned: bytesScanned };
+  const last = rows.at(-1);
+  if (rows.length === limit && last && typeof last.cursor_ts === "string" && typeof last.id === "string") {
+    meta.next_cursor = encodeCursor({ order, ts: last.cursor_ts, id: last.id });
+  }
+  return { data: rows.map(toLogOut), meta };
 }
 
-export function searchParamsFromUrl(url: URL): SearchParams {
-  const q = url.searchParams;
-  const num = (k: string) => (q.has(k) ? Number.parseInt(q.get(k)!, 10) : undefined);
+/** Repeated `prop.<key>=<value>` parameters, as v1 accepted them. */
+function filterParamsFromUrl(q: URLSearchParams): FilterParams {
   const propertyFilters: PropertyFilter[] = [];
   for (const [k, v] of q.entries()) {
     if (k.startsWith("prop.")) propertyFilters.push({ key: k.slice(5), ...parseOperatorFromValue(v) });
@@ -192,10 +344,247 @@ export function searchParamsFromUrl(url: URL): SearchParams {
     source: q.get("source") || undefined,
     level: q.get("level") || undefined,
     search: q.get("search") || undefined,
+    exception: q.get("exception") || undefined,
     traceId: q.get("trace_id") || undefined,
-    hours: num("hours"),
-    limit: num("limit"),
+    hours: intParam(q, "hours"),
+    from: q.get("from") || undefined,
+    to: q.get("to") || undefined,
     propertyFilters,
+  };
+}
+
+function intParam(q: URLSearchParams, k: string): number | undefined {
+  return q.has(k) ? Number.parseInt(q.get(k)!, 10) : undefined;
+}
+
+export function searchParamsFromUrl(url: URL): SearchParams {
+  const q = url.searchParams;
+  return {
+    ...filterParamsFromUrl(q),
+    limit: intParam(q, "limit"),
+    order: q.get("order") || undefined,
+    cursor: q.get("cursor") || undefined,
+  };
+}
+
+// --- Stats (GET /api/v1/stats, MCP log_stats) ---
+
+export const MAX_STATS_LIMIT = 10_000;
+export const DEFAULT_STATS_LIMIT = 100;
+export const MAX_GROUP_BY = 2;
+const GROUP_COLUMNS = ["source", "level", "message_template", "event_type"];
+const BUCKETS: Record<string, string> = {
+  minute: "date_trunc('minute', ts)",
+  "5m": "date_bin(INTERVAL '5 minutes', ts, TIMESTAMP '1970-01-01T00:00:00')",
+  "15m": "date_bin(INTERVAL '15 minutes', ts, TIMESTAMP '1970-01-01T00:00:00')",
+  hour: "date_trunc('hour', ts)",
+  day: "date_trunc('day', ts)",
+};
+
+export interface StatsParams extends FilterParams {
+  groupBy?: string[];
+  bucket?: string;
+  limit?: number;
+}
+
+/** A group key as SQL: a column, or `prop:<key>` read through the guarded property helper. */
+function groupExpression(g: string): string {
+  if (GROUP_COLUMNS.includes(g)) return g;
+  if (g.startsWith("prop:")) {
+    const path = g.slice(5).split(".").filter((p) => p !== "");
+    if (path.length === 0) throw new QueryRejected("group_by prop: needs a key");
+    // Oversized properties read as NULL here (or via the top-level regex),
+    // never as a json_get over the 2000-byte cap that would fail the query.
+    return propString(path);
+  }
+  throw new QueryRejected(`group_by must be one of ${GROUP_COLUMNS.join(", ")} or prop:<key>`);
+}
+
+/**
+ * Counts grouped and bucketed. Group keys are aliased g0/g1 and renamed in
+ * `getStats`, so a `prop:<key>` name never has to become a SQL identifier.
+ */
+export function buildStatsSql(p: StatsParams, now = new Date()): string {
+  const groups = p.groupBy ?? [];
+  if (groups.length > MAX_GROUP_BY) throw new QueryRejected(`group_by takes at most ${MAX_GROUP_BY} keys`);
+  if (new Set(groups).size !== groups.length) throw new QueryRejected("group_by repeats a key");
+  if (p.bucket !== undefined && !(p.bucket in BUCKETS)) {
+    throw new QueryRejected(`bucket must be one of ${Object.keys(BUCKETS).join(", ")}`);
+  }
+  const limit = clampInt(p.limit, DEFAULT_STATS_LIMIT, 1, MAX_STATS_LIMIT);
+  const keys = groups.map(groupExpression);
+  const select: string[] = [];
+  const groupBy: string[] = [];
+  if (p.bucket) {
+    select.push(`${BUCKETS[p.bucket]} AS bucket`);
+    groupBy.push(BUCKETS[p.bucket]);
+  }
+  keys.forEach((k, i) => {
+    select.push(`${k} AS g${i}`);
+    groupBy.push(k);
+  });
+  // Delivery is at-least-once, so `unique` (distinct ids) sits beside count.
+  select.push("count(*) AS count", 'count(DISTINCT id) AS "unique"');
+  const orderBy = p.bucket ? "bucket ASC, count DESC" : "count DESC";
+  return (
+    `SELECT ${select.join(", ")} FROM logs.events WHERE ${filterConditions(p, now).join(" AND ")}` +
+    (groupBy.length ? ` GROUP BY ${groupBy.join(", ")}` : "") +
+    ` ORDER BY ${orderBy} LIMIT ${limit}`
+  );
+}
+
+export async function getStats(env: BasinSqlEnv, p: StatsParams) {
+  const sql = buildStatsSql(p);
+  const groups = p.groupBy ?? [];
+  const { rows, bytesScanned } = await queryBasin(env, sql);
+  const data = rows.map((r) => {
+    const out: Record<string, unknown> = {};
+    groups.forEach((g, i) => (out[g] = r[`g${i}`] ?? null));
+    if (p.bucket) out.bucket = r.bucket;
+    out.count = Number(r.count);
+    out.unique = Number(r.unique);
+    return out;
+  });
+  return {
+    data,
+    meta: { rows: data.length, limit: clampInt(p.limit, DEFAULT_STATS_LIMIT, 1, MAX_STATS_LIMIT), bytes_scanned: bytesScanned },
+  };
+}
+
+/** Comma-separated on REST. */
+function listParam(v: string | null): string[] | undefined {
+  if (!v) return undefined;
+  const items = v.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  return items.length ? items : undefined;
+}
+
+export function statsParamsFromUrl(url: URL): StatsParams {
+  const q = url.searchParams;
+  return {
+    ...filterParamsFromUrl(q),
+    groupBy: listParam(q.get("group_by")),
+    bucket: q.get("bucket") || undefined,
+    limit: intParam(q, "limit"),
+  };
+}
+
+// --- One event and its context (GET /api/v1/events/{id}, MCP get_event) ---
+
+export const EVENT_TS_SLACK_MINUTES = 10;
+export const DEFAULT_EVENT_HOURS = 24;
+export const DEFAULT_CONTEXT_LIMIT = 200;
+export const MAX_CONTEXT_LIMIT = 1000;
+/** A context window reaches at most a day either side of the event. */
+export const MAX_CONTEXT_MINUTES = 1440;
+
+export interface EventParams {
+  id: string;
+  /** Narrows the lookup to ±10 minutes around this instant. */
+  ts?: string | number;
+  hours?: number;
+  context?: string;
+  beforeMinutes?: number;
+  afterMinutes?: number;
+  limit?: number;
+}
+
+/**
+ * Find one row by id. `id` is a string column from the same writers #187
+ * names, so `id = '…'` could be pruned away; `strpos` is a function call and
+ * can't prune. Matching the length as well makes the predicate exact, and the
+ * caller still checks equality on the rows that come back. The ts window
+ * bounds the scan.
+ */
+export function buildEventLookupSql(p: EventParams, now = new Date()): string {
+  if (!p.id) throw new QueryRejected("id is required");
+  let window: string;
+  if (p.ts !== undefined) {
+    const at = parseInstant(p.ts, "ts");
+    const slack = EVENT_TS_SLACK_MINUTES * 60_000;
+    window = `ts >= ${instantLiteral(new Date(at.getTime() - slack))} AND ts <= ${instantLiteral(new Date(at.getTime() + slack))}`;
+  } else {
+    window = windowConditions({ hours: p.hours ?? DEFAULT_EVENT_HOURS }, now).join(" AND ");
+  }
+  const bytes = new TextEncoder().encode(p.id).byteLength;
+  return (
+    `SELECT ${SEARCH_COLUMNS}, ${CURSOR_TS} FROM logs.events WHERE ${window} ` +
+    `AND strpos(id, ${sqlString(p.id)}) > 0 AND octet_length(id) = ${bytes} ORDER BY ts ASC LIMIT 10`
+  );
+}
+
+export type ContextKind = "source" | "trace";
+
+export function parseContext(v: unknown): ContextKind | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  if (v === "source" || v === "trace") return v;
+  throw new QueryRejected("context must be source or trace");
+}
+
+/**
+ * The rows around an event, in time order: the same source, or the same
+ * trace, from `before_minutes` before it to `after_minutes` after it. The
+ * window is built on the event's own ts text, so it is exact.
+ */
+export function buildContextSql(
+  event: { ts: string; source?: unknown; trace_id?: unknown },
+  p: EventParams,
+): string | null {
+  const kind = parseContext(p.context);
+  if (!kind) return null;
+  if (!CURSOR_TS_TEXT.test(event.ts)) throw new Error(`unexpected ts text from Basin: ${event.ts}`);
+  const before = clampInt(p.beforeMinutes, 5, 0, MAX_CONTEXT_MINUTES);
+  const after = clampInt(p.afterMinutes, 1, 0, MAX_CONTEXT_MINUTES);
+  const limit = clampInt(p.limit, DEFAULT_CONTEXT_LIMIT, 1, MAX_CONTEXT_LIMIT);
+  const at = `TIMESTAMP ${sqlString(event.ts)}`;
+  const where = [`ts >= ${at} - INTERVAL '${before} minutes'`, `ts <= ${at} + INTERVAL '${after} minutes'`];
+  const key = kind === "source" ? event.source : event.trace_id;
+  if (typeof key !== "string" || key === "") return null;
+  where.push(kind === "source" ? `source = ${sqlString(key)}` : `trace_id = ${sqlString(key)}`);
+  return `SELECT ${SEARCH_COLUMNS} FROM logs.events WHERE ${where.join(" AND ")} ORDER BY ts ASC, id ASC LIMIT ${limit}`;
+}
+
+/** The event, or null when no row in the window carries exactly this id. */
+export async function getEvent(env: BasinSqlEnv, p: EventParams) {
+  // Validate everything before the first query, so a bad context param is a
+  // 400 rather than a 400 after a lookup.
+  const kind = parseContext(p.context);
+  const lookup = buildEventLookupSql(p);
+  const found = await queryBasin(env, lookup);
+  const row = found.rows.find((r) => r.id === p.id);
+  if (!row) return null;
+  const meta: Record<string, unknown> = { bytes_scanned: found.bytesScanned };
+  const out: { data: LogOut; context?: LogOut[]; meta: Record<string, unknown> } = { data: toLogOut(row), meta };
+  if (kind) {
+    const sql = buildContextSql({ ts: String(row.cursor_ts ?? ""), source: row.source, trace_id: row.trace_id }, p);
+    if (sql) {
+      const ctx = await queryBasin(env, sql);
+      out.context = ctx.rows.map(toLogOut);
+      meta.bytes_scanned = found.bytesScanned + ctx.bytesScanned;
+      meta.context = {
+        kind,
+        before_minutes: clampInt(p.beforeMinutes, 5, 0, MAX_CONTEXT_MINUTES),
+        after_minutes: clampInt(p.afterMinutes, 1, 0, MAX_CONTEXT_MINUTES),
+        count: ctx.rows.length,
+        limit: clampInt(p.limit, DEFAULT_CONTEXT_LIMIT, 1, MAX_CONTEXT_LIMIT),
+      };
+    } else {
+      out.context = [];
+      meta.context = { kind, count: 0, note: kind === "trace" ? "The event has no trace_id" : "The event has no source" };
+    }
+  }
+  return out;
+}
+
+export function eventParamsFromUrl(id: string, url: URL): EventParams {
+  const q = url.searchParams;
+  return {
+    id,
+    ts: q.get("ts") || undefined,
+    hours: intParam(q, "hours"),
+    context: q.get("context") || undefined,
+    beforeMinutes: intParam(q, "before_minutes"),
+    afterMinutes: intParam(q, "after_minutes"),
+    limit: intParam(q, "limit"),
   };
 }
 

@@ -34,9 +34,13 @@ import { RETENTION_CRON, runBasinRetention } from "./basin-retention";
 import {
   QueryRejected,
   dialectHints,
+  eventParamsFromUrl,
+  getEvent,
+  getStats,
   prepareQuery,
   searchLogs,
   searchParamsFromUrl,
+  statsParamsFromUrl,
 } from "./query";
 
 interface Env {
@@ -843,16 +847,20 @@ const READ_PREFIX = "/v2";
 const READ_PATHS = new Set([
   "/api/v1/query",
   "/api/v1/logs",
+  "/api/v1/stats",
   "/api/mcp",
   "/api/v1/alerts",
   "/api/v1/alert-destinations",
   "/api/v1/alert-firings",
 ]);
+const EVENTS_PREFIX = "/api/v1/events/";
 
 export function readPath(path: string): string | null {
   const rest = path.startsWith(`${READ_PREFIX}/`) ? path.slice(READ_PREFIX.length) : path;
   if (READ_PATHS.has(rest)) return rest;
-  // The sub-routes: POST /api/v1/alerts/:id/test and GET /api/v1/alerts/:id/firings (refs #193).
+  // The sub-routes: GET /api/v1/events/:id, POST /api/v1/alerts/:id/test and
+  // GET /api/v1/alerts/:id/firings (refs #193).
+  if (/^\/api\/v1\/events\/[^/]+$/.test(rest)) return rest;
   return /^\/api\/v1\/alerts\/[^/]+\/(test|firings)$/.test(rest) ? rest : null;
 }
 
@@ -983,6 +991,31 @@ async function handleRead(
       // v1 rows carried `timestamp`; callers still on the unprefixed path read it.
       if (unprefixed) result.data = result.data.map((row) => ({ ...row, timestamp: row.ts }));
       return jsonResponse(result);
+    } catch (e) {
+      return basinError(e);
+    }
+  }
+
+  if (route === "/api/v1/stats") {
+    if (request.method !== "GET") return apiError("method_not_allowed", "Use GET", 405);
+    try {
+      return jsonResponse(await getStats(env, statsParamsFromUrl(new URL(request.url))));
+    } catch (e) {
+      return basinError(e);
+    }
+  }
+
+  if (route.startsWith(EVENTS_PREFIX)) {
+    if (request.method !== "GET") return apiError("method_not_allowed", "Use GET", 405);
+    let id: string;
+    try {
+      id = decodeURIComponent(route.slice(EVENTS_PREFIX.length));
+    } catch {
+      return apiError("validation_error", "The event id in the path is not valid percent-encoding", 400);
+    }
+    try {
+      const result = await getEvent(env, eventParamsFromUrl(id, new URL(request.url)));
+      return result ? jsonResponse(result) : apiError("not_found", `No event with id ${id} in the window searched`, 404);
     } catch (e) {
       return basinError(e);
     }

@@ -140,7 +140,9 @@ curl "https://logs.yourdomain.com/api/v1/logs?source=your-key-name&hours=1" -H "
 | `/ingest/webhook` | POST | Webhook JSON; `?preset=cloudflare` for Logpush |
 | `/ingest/otlp/logs`, `/v1/logs` | POST | OTel logs, protobuf or JSON |
 | `/ingest/otlp/traces`, `/v1/traces` | POST | OTel traces, protobuf or JSON |
-| `/api/v1/logs` | GET | Search |
+| `/api/v1/logs` | GET | Search: filters, `hours` or `from`/`to`, `order`, `cursor` paging |
+| `/api/v1/stats` | GET | Counts grouped by up to two keys (`group_by`), optionally per time `bucket` |
+| `/api/v1/events/{id}` | GET | One event by id, optionally with its `context` (same source or trace) |
 | `/api/v1/query` | POST | Basin SQL, `{"sql": "SELECT ..."}` |
 | `/api/mcp` | POST | MCP server |
 | `/api/v1/alerts`, `/api/v1/alert-destinations` | various | Alert and destination management |
@@ -183,7 +185,7 @@ Basin SQL is Apache DataFusion, not ClickHouse. The full reference (table schema
 
 ### MCP server
 
-`/api/mcp` serves `search_logs`, `execute_query`, `get_overview`, `get_firing_alerts`, `create_alert`, `create_log` and `get_docs`, scoped to the key's permissions. `create_log` writes through the same path as `/ingest/clef`.
+`/api/mcp` serves `search_logs`, `log_stats`, `get_event`, `execute_query`, `get_overview`, `get_firing_alerts`, `create_alert`, `create_log` and `get_docs`, scoped to the key's permissions. `create_log` writes through the same path as `/ingest/clef`.
 
 **Claude Code** (`~/.claude.json`) / **Cursor** (`.cursor/mcp.json`):
 

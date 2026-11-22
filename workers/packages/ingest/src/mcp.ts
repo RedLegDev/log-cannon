@@ -10,14 +10,22 @@ import type { BasinSqlEnv } from "./basin-sql";
 import { BasinQueryError } from "./basin-sql";
 import { API_DOCS, LOGGER_DOCS, OVERVIEW_DOCS } from "./docs";
 import {
+  MAX_CONTEXT_LIMIT,
+  MAX_CONTEXT_MINUTES,
+  MAX_GROUP_BY,
+  MAX_SEARCH_HOURS,
   MAX_SEARCH_LIMIT,
+  MAX_STATS_LIMIT,
   QueryRejected,
   dialectHints,
+  getEvent,
   getLiveFacts,
   getOverview,
+  getStats,
   isOperator,
   prepareQuery,
   searchLogs,
+  type FilterParams,
   type PropertyFilter,
 } from "./query";
 import { queryBasin } from "./basin-sql";
@@ -99,6 +107,74 @@ function str(args: Record<string, unknown>, k: string, required = false): string
   return v;
 }
 
+function num(args: Record<string, unknown>, k: string): number | undefined {
+  return typeof args[k] === "number" ? (args[k] as number) : undefined;
+}
+
+/** `from` / `to` / `ts`: an ISO 8601 string or epoch milliseconds. */
+function instant(args: Record<string, unknown>, k: string): string | number | undefined {
+  const v = args[k];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string" && typeof v !== "number") throw new InvalidParams(`${k} must be an ISO 8601 string or epoch milliseconds`);
+  return v;
+}
+
+function propertyFilters(args: Record<string, unknown>): PropertyFilter[] {
+  const filters: PropertyFilter[] = [];
+  const raw = args.property_filters;
+  if (raw === undefined) return filters;
+  if (!Array.isArray(raw)) throw new InvalidParams("property_filters must be an array");
+  for (const f of raw as Record<string, unknown>[]) {
+    const op = f?.operator ?? "=";
+    if (typeof f?.key !== "string" || typeof f?.value !== "string" || !isOperator(op)) {
+      throw new InvalidParams("each property filter needs string key and value, and a valid operator");
+    }
+    filters.push({ key: f.key, value: f.value, operator: op });
+  }
+  return filters;
+}
+
+/** The filters search_logs and log_stats share. */
+function filterArgs(args: Record<string, unknown>): FilterParams {
+  return {
+    source: str(args, "source"),
+    level: str(args, "level"),
+    search: str(args, "search"),
+    exception: str(args, "exception"),
+    traceId: str(args, "trace_id"),
+    hours: num(args, "hours"),
+    from: instant(args, "from"),
+    to: instant(args, "to"),
+    propertyFilters: propertyFilters(args),
+  };
+}
+
+const TIME_VALUE = { type: ["string", "number"] };
+
+const FILTER_SCHEMA = {
+  source: { type: "string", description: "Filter by source/service name" },
+  level: { type: "string", description: "Filter by level (Error, Warning, Information, Debug)" },
+  search: { type: "string", description: "Substring of the message (literal, case-sensitive)" },
+  exception: { type: "string", description: "Substring of the exception text (literal, case-sensitive)" },
+  trace_id: { type: "string", description: "Filter by trace id" },
+  hours: { type: "number", minimum: 1, maximum: MAX_SEARCH_HOURS, description: "Look-back window in hours (default 24)" },
+  from: { ...TIME_VALUE, description: "Window start, ISO 8601 or epoch ms. Overrides hours" },
+  to: { ...TIME_VALUE, description: "Window end (exclusive), ISO 8601 or epoch ms. Default now. Window max 720 hours" },
+  property_filters: {
+    type: "array",
+    description: "Filter by structured properties",
+    items: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "Property key; dot paths for nesting (metrics.latency)" },
+        value: { type: "string", description: "Value to compare against" },
+        operator: { type: "string", enum: ["=", "!=", ">", ">=", "<", "<="], description: "Default =" },
+      },
+      required: ["key", "value"],
+    },
+  },
+};
+
 function queryFailure(prefix: string, e: unknown, sql?: string): ToolResult {
   if (e instanceof BasinQueryError || e instanceof QueryRejected) {
     const hints = sql && e instanceof BasinQueryError && e.status === 400 ? dialectHints(sql) : [];
@@ -152,60 +228,94 @@ export const TOOLS: Tool[] = [
     name: "search_logs",
     title: "Search Logs",
     description:
-      "Search log events by source, level, message text, trace id and property filters, newest first. Last 24 hours by default (hours, max 720). Up to 1000 results.",
+      "Search log events by source, level, message or exception text, trace id and property filters. Last 24 hours by default, or a from/to window. Newest first (order asc for oldest first). Up to 1000 per page; pass meta.next_cursor back as cursor for the next page.",
     scope: "read",
     inputSchema: {
       type: "object",
       properties: {
-        source: { type: "string", description: "Filter by source/service name" },
-        level: { type: "string", description: "Filter by level (Error, Warning, Information, Debug)" },
-        search: { type: "string", description: "Substring of the message (literal, case-sensitive)" },
-        trace_id: { type: "string", description: "Filter by trace id" },
-        hours: { type: "number", minimum: 1, maximum: 720, description: "Look-back window in hours (default 24)" },
+        ...FILTER_SCHEMA,
+        order: { type: "string", enum: ["desc", "asc"], description: "Default desc" },
+        cursor: { type: "string", description: "meta.next_cursor from the previous page, same filters and order" },
         limit: { type: "number", minimum: 1, maximum: MAX_SEARCH_LIMIT, description: "Max results (default 100)" },
-        property_filters: {
-          type: "array",
-          description: "Filter by structured properties",
-          items: {
-            type: "object",
-            properties: {
-              key: { type: "string", description: "Property key; dot paths for nesting (metrics.latency)" },
-              value: { type: "string", description: "Value to compare against" },
-              operator: { type: "string", enum: ["=", "!=", ">", ">=", "<", "<="], description: "Default =" },
-            },
-            required: ["key", "value"],
-          },
-        },
       },
     },
     run: async (args, ctx) => {
-      const filters: PropertyFilter[] = [];
-      const raw = args.property_filters;
-      if (raw !== undefined) {
-        if (!Array.isArray(raw)) throw new InvalidParams("property_filters must be an array");
-        for (const f of raw as Record<string, unknown>[]) {
-          const op = f?.operator ?? "=";
-          if (typeof f?.key !== "string" || typeof f?.value !== "string" || !isOperator(op)) {
-            throw new InvalidParams("each property filter needs string key and value, and a valid operator");
-          }
-          filters.push({ key: f.key, value: f.value, operator: op });
-        }
-      }
-      const num = (k: string) => (typeof args[k] === "number" ? (args[k] as number) : undefined);
+      const params = { ...filterArgs(args), order: str(args, "order"), cursor: str(args, "cursor"), limit: num(args, "limit") };
       try {
-        return json(
-          await searchLogs(ctx.env, {
-            source: str(args, "source"),
-            level: str(args, "level"),
-            search: str(args, "search"),
-            traceId: str(args, "trace_id"),
-            hours: num("hours"),
-            limit: num("limit"),
-            propertyFilters: filters,
-          }),
-        );
+        return json(await searchLogs(ctx.env, params));
       } catch (e) {
         return queryFailure("Failed to search logs", e);
+      }
+    },
+  },
+  {
+    name: "log_stats",
+    title: "Log Stats",
+    description:
+      "Count log events, grouped and optionally time-bucketed, with the same filters as search_logs. Each row has the group keys, bucket, count and unique (distinct ids). E.g. group_by [\"level\"], bucket \"hour\".",
+    scope: "read",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...FILTER_SCHEMA,
+        group_by: {
+          type: "array",
+          maxItems: MAX_GROUP_BY,
+          items: { type: "string" },
+          description: "Up to 2 of source, level, message_template, event_type, prop:<key> (dot paths allowed)",
+        },
+        bucket: { type: "string", enum: ["minute", "5m", "15m", "hour", "day"], description: "Time bucket; omit for none" },
+        limit: { type: "number", minimum: 1, maximum: MAX_STATS_LIMIT, description: "Max rows (default 100), ordered by bucket then count desc" },
+      },
+    },
+    run: async (args, ctx) => {
+      const groupBy = args.group_by;
+      if (groupBy !== undefined && (!Array.isArray(groupBy) || !groupBy.every((g) => typeof g === "string"))) {
+        throw new InvalidParams("group_by must be an array of strings");
+      }
+      try {
+        return json(
+          await getStats(ctx.env, { ...filterArgs(args), groupBy: groupBy as string[] | undefined, bucket: str(args, "bucket"), limit: num(args, "limit") }),
+        );
+      } catch (e) {
+        return queryFailure("Failed to get stats", e);
+      }
+    },
+  },
+  {
+    name: "get_event",
+    title: "Get Event",
+    description:
+      "Fetch one log event by id, optionally with the rows around it from the same source or trace (context). Pass ts if known; otherwise it looks back hours (default 24).",
+    scope: "read",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Event id" },
+        ts: { ...TIME_VALUE, description: "The event's time if known (ISO 8601 or epoch ms); searches ±10 minutes around it" },
+        hours: { type: "number", minimum: 1, maximum: MAX_SEARCH_HOURS, description: "Look-back without ts (default 24)" },
+        context: { type: "string", enum: ["source", "trace"], description: "Also return surrounding rows from the same source or trace" },
+        before_minutes: { type: "number", minimum: 0, maximum: MAX_CONTEXT_MINUTES, description: "Context before the event (default 5)" },
+        after_minutes: { type: "number", minimum: 0, maximum: MAX_CONTEXT_MINUTES, description: "Context after the event (default 1)" },
+        limit: { type: "number", minimum: 1, maximum: MAX_CONTEXT_LIMIT, description: "Max context rows (default 200)" },
+      },
+      required: ["id"],
+    },
+    run: async (args, ctx) => {
+      const id = str(args, "id", true)!;
+      try {
+        const result = await getEvent(ctx.env, {
+          id,
+          ts: instant(args, "ts"),
+          hours: num(args, "hours"),
+          context: str(args, "context"),
+          beforeMinutes: num(args, "before_minutes"),
+          afterMinutes: num(args, "after_minutes"),
+          limit: num(args, "limit"),
+        });
+        return result ? json(result) : fail(`No event with id ${id} in the window searched`);
+      } catch (e) {
+        return queryFailure("Failed to get event", e);
       }
     },
   },

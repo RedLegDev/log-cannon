@@ -3,11 +3,21 @@ import { BasinQueryError, JSON_ARG_LIMIT, MAX_BASIN_RESPONSE_BYTES, propNumber, 
 import {
   MAX_QUERY_ROWS,
   QueryRejected,
+  buildContextSql,
+  buildEventLookupSql,
   buildSearchSql,
+  buildStatsSql,
+  decodeCursor,
   dialectHints,
+  encodeCursor,
+  eventParamsFromUrl,
+  getEvent,
+  parseInstant,
   parseOperatorFromValue,
   prepareQuery,
+  searchLogs,
   searchParamsFromUrl,
+  statsParamsFromUrl,
   toLogOut,
 } from "../src/query";
 
@@ -86,7 +96,7 @@ describe("buildSearchSql", () => {
   it("defaults to the last 24 hours, newest first, 100 rows", () => {
     const sql = buildSearchSql({});
     expect(sql).toContain("WHERE ts > now() - INTERVAL '24 hours'");
-    expect(sql).toMatch(/ORDER BY ts DESC LIMIT 100$/);
+    expect(sql).toMatch(/ORDER BY ts DESC, id DESC LIMIT 100$/);
   });
 
   it("clamps hours and limit", () => {
@@ -115,7 +125,273 @@ describe("buildSearchSql", () => {
   });
 });
 
+const NOW = new Date("2026-11-20T12:00:00Z");
+
+describe("search windows: from / to", () => {
+  it("pins an absolute window [from, to) and ignores hours", () => {
+    const sql = buildSearchSql({ from: "2026-11-17T20:20:00Z", to: "2026-11-17T23:50:00Z", hours: 1 }, NOW);
+    expect(sql).toContain("WHERE ts >= TIMESTAMP '2026-11-17T20:20:00.000Z' AND ts < TIMESTAMP '2026-11-17T23:50:00.000Z'");
+    expect(sql).not.toContain("now()");
+  });
+
+  it("reads epoch milliseconds, as a string or a number", () => {
+    const ms = Date.parse("2026-11-17T20:20:00Z");
+    expect(buildSearchSql({ from: String(ms) }, NOW)).toContain("ts >= TIMESTAMP '2026-11-17T20:20:00.000Z'");
+    expect(parseInstant(ms, "from").toISOString()).toBe("2026-11-17T20:20:00.000Z");
+  });
+
+  it("leaves the upper bound open when only from is given, as hours does", () => {
+    const sql = buildSearchSql({ from: "2026-11-20T10:00:00Z" }, NOW);
+    expect(sql).toContain("WHERE ts >= TIMESTAMP '2026-11-20T10:00:00.000Z' ORDER BY");
+    expect(sql).not.toContain("ts <");
+  });
+
+  it("counts hours back from to when only to is given", () => {
+    expect(buildSearchSql({ to: "2026-11-20T00:00:00Z", hours: 2 }, NOW)).toContain(
+      "ts >= TIMESTAMP '2026-11-19T22:00:00.000Z' AND ts < TIMESTAMP '2026-11-20T00:00:00.000Z'",
+    );
+  });
+
+  it("caps the window at 720 hours, with to defaulting to now", () => {
+    expect(() => buildSearchSql({ from: "2026-10-21T12:00:00Z" }, NOW)).not.toThrow();
+    expect(() => buildSearchSql({ from: "2026-10-21T11:59:59Z" }, NOW)).toThrow(/over 720 hours/);
+    expect(() => buildSearchSql({ from: "2026-01-01T00:00:00Z", to: "2026-03-01T00:00:00Z" }, NOW)).toThrow(QueryRejected);
+  });
+
+  it("refuses unreadable times and backwards windows instead of ignoring them", () => {
+    for (const bad of ["yesterday", "2026-13-45", "-5", "1e12", "99999999999999999"]) {
+      expect(() => buildSearchSql({ from: bad }, NOW), bad).toThrow(QueryRejected);
+    }
+    expect(() => buildSearchSql({ from: "2026-11-20T10:00:00Z", to: "2026-11-20T09:00:00Z" }, NOW)).toThrow(/before to/);
+    expect(() => buildSearchSql({ from: "2026-11-21T00:00:00Z" }, NOW)).toThrow(/before to/);
+  });
+});
+
+describe("search: exception and order", () => {
+  it("matches exception text literally with strpos, never a prunable comparison", () => {
+    const sql = buildSearchSql({ exception: "Null%_Ref'" });
+    expect(sql).toContain("strpos(exception, 'Null%_Ref''') > 0");
+    expect(sql).not.toMatch(/exception (=|LIKE|>|<)/);
+  });
+
+  it("orders asc on request and rejects anything else", () => {
+    expect(buildSearchSql({ order: "asc" })).toMatch(/ORDER BY ts ASC, id ASC LIMIT 100$/);
+    expect(() => buildSearchSql({ order: "newest" })).toThrow(QueryRejected);
+  });
+});
+
+describe("search cursors", () => {
+  const c = { order: "desc" as const, ts: "2026-11-17T21:00:00.123456", id: "ev|7'x" };
+
+  it("round-trips order, the exact ts text and an id containing | and quotes", () => {
+    const s = encodeCursor(c);
+    expect(s).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(decodeCursor(s)).toEqual(c);
+  });
+
+  it("continues desc after (ts, id): earlier ts, or the same ts and a smaller id", () => {
+    const sql = buildSearchSql({ cursor: encodeCursor(c) });
+    expect(sql).toContain(
+      "(ts < TIMESTAMP '2026-11-17T21:00:00.123456' OR (ts = TIMESTAMP '2026-11-17T21:00:00.123456' AND id < 'ev|7''x'))",
+    );
+    expect(sql).toMatch(/ORDER BY ts DESC, id DESC LIMIT/);
+  });
+
+  it("continues asc after (ts, id): later ts, or the same ts and a larger id", () => {
+    const sql = buildSearchSql({ order: "asc", cursor: encodeCursor({ ...c, order: "asc" }) });
+    expect(sql).toContain("(ts > TIMESTAMP '2026-11-17T21:00:00.123456' OR (ts = TIMESTAMP '2026-11-17T21:00:00.123456' AND id > 'ev|7''x'))");
+    expect(sql).toMatch(/ORDER BY ts ASC, id ASC LIMIT/);
+  });
+
+  it("refuses a cursor from the other order, or one it didn't issue", () => {
+    expect(() => buildSearchSql({ order: "asc", cursor: encodeCursor(c) })).toThrow(/order=desc/);
+    for (const bad of ["!!!", "Zm9v", encodeCursor({ ...c, ts: "2026-11-17' OR 1=1 --" }), btoa("desc|2026-11-17T21:00:00|")]) {
+      expect(() => buildSearchSql({ cursor: bad }), bad).toThrow(QueryRejected);
+    }
+  });
+
+  it("pages rows that share a timestamp without skipping or repeating any, one Basin query per page", async () => {
+    // A fake Basin that applies the generated cursor, order and limit to a
+    // fixed table: five rows at one instant between two others.
+    const table = [
+      { id: "a", cursor_ts: "2026-11-17T21:00:00" },
+      { id: "b", cursor_ts: "2026-11-17T21:00:01" },
+      { id: "c", cursor_ts: "2026-11-17T21:00:01" },
+      { id: "d", cursor_ts: "2026-11-17T21:00:01" },
+      { id: "e", cursor_ts: "2026-11-17T21:00:01" },
+      { id: "f", cursor_ts: "2026-11-17T21:00:01" },
+      { id: "g", cursor_ts: "2026-11-17T21:00:02" },
+    ];
+    const key = (r: { id: string; cursor_ts: string }) => `${r.cursor_ts}|${r.id}`;
+    const f = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const sql = JSON.parse(String(init?.body)).query as string;
+      const asc = / ORDER BY ts ASC, id ASC /.test(sql);
+      const m = sql.match(/\(ts [<>] TIMESTAMP '([^']+)' OR \(ts = TIMESTAMP '[^']+' AND id [<>] '([^']*)'\)\)/);
+      const after = m ? `${m[1]}|${m[2]}` : null;
+      const limit = Number(sql.match(/LIMIT (\d+)$/)![1]);
+      const rows = [...table]
+        .sort((x, y) => (asc ? key(x).localeCompare(key(y)) : key(y).localeCompare(key(x))))
+        .filter((r) => after === null || (asc ? key(r) > after : key(r) < after))
+        .slice(0, limit)
+        .map((r) => ({ ...r, ts: r.cursor_ts, level: "Information", message: "m", source: "s" }));
+      return new Response(JSON.stringify({ success: true, result: { rows } }));
+    });
+    try {
+      for (const order of ["asc", "desc"]) {
+        f.mockClear();
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        let pages = 0;
+        do {
+          const page = await searchLogs(ENV, { order, limit: 2, cursor, from: "2026-11-17T20:00:00Z", to: "2026-11-17T22:00:00Z" });
+          seen.push(...page.data.map((r) => r.id));
+          cursor = page.meta.next_cursor as string | undefined;
+          pages++;
+        } while (cursor && pages < 10);
+        const ids = table.map((r) => r.id);
+        expect(seen).toEqual(order === "asc" ? ids : [...ids].reverse());
+        expect(f).toHaveBeenCalledTimes(pages);
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("leaves next_cursor off a page that isn't full", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ success: true, result: { rows: [{ id: "a", ts: "t", cursor_ts: "2026-11-17T21:00:00" }] } })),
+    );
+    try {
+      const page = await searchLogs(ENV, { limit: 2 });
+      expect(page.meta).not.toHaveProperty("next_cursor");
+      expect(page.data[0]).not.toHaveProperty("cursor_ts");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe("buildStatsSql", () => {
+  it("shares search's filters and counts rows and distinct ids", () => {
+    const sql = buildStatsSql({ source: "api", level: "Error", search: "x", exception: "y", traceId: "t", hours: 6 });
+    expect(sql).toBe(
+      `SELECT count(*) AS count, count(DISTINCT id) AS "unique" FROM logs.events WHERE ts > now() - INTERVAL '6 hours' ` +
+        "AND source = 'api' AND level = 'Error' AND strpos(message, 'x') > 0 AND strpos(exception, 'y') > 0 AND trace_id = 't' " +
+        "ORDER BY count DESC LIMIT 100",
+    );
+  });
+
+  it("groups by columns and buckets by hour, ordered by bucket then count", () => {
+    const sql = buildStatsSql({ groupBy: ["level", "source"], bucket: "hour" });
+    expect(sql).toContain("SELECT date_trunc('hour', ts) AS bucket, level AS g0, source AS g1, count(*) AS count");
+    expect(sql).toContain("GROUP BY date_trunc('hour', ts), level, source ORDER BY bucket ASC, count DESC LIMIT 100");
+  });
+
+  it("truncates to each bucket size", () => {
+    expect(buildStatsSql({ bucket: "minute" })).toContain("date_trunc('minute', ts) AS bucket");
+    expect(buildStatsSql({ bucket: "day" })).toContain("date_trunc('day', ts) AS bucket");
+    expect(buildStatsSql({ bucket: "5m" })).toContain("date_bin(INTERVAL '5 minutes', ts, TIMESTAMP '1970-01-01T00:00:00') AS bucket");
+    expect(buildStatsSql({ bucket: "15m" })).toContain("date_bin(INTERVAL '15 minutes', ts, TIMESTAMP '1970-01-01T00:00:00') AS bucket");
+    expect(() => buildStatsSql({ bucket: "week" })).toThrow(QueryRejected);
+  });
+
+  it("groups a property key through the guarded helper, so oversized rows read as null", () => {
+    const sql = buildStatsSql({ groupBy: ["prop:Request.Path"] });
+    expect(sql).toContain(`${propString(["Request", "Path"])} AS g0`);
+    expect(sql).toContain(`GROUP BY ${propString(["Request", "Path"])} ORDER BY`);
+    expect(propString(["Request", "Path"])).toMatch(new RegExp(`^CASE WHEN octet_length\\(properties\\) <= ${JSON_ARG_LIMIT} THEN .* ELSE NULL END$`));
+  });
+
+  it("caps group_by at two known keys and the limit at 10,000", () => {
+    expect(() => buildStatsSql({ groupBy: ["level", "source", "event_type"] })).toThrow(/at most 2/);
+    expect(() => buildStatsSql({ groupBy: ["key_id"] })).toThrow(QueryRejected);
+    expect(() => buildStatsSql({ groupBy: ["prop:"] })).toThrow(QueryRejected);
+    expect(() => buildStatsSql({ groupBy: ["level", "level"] })).toThrow(QueryRejected);
+    expect(buildStatsSql({ limit: 50_000 })).toMatch(/LIMIT 10000$/);
+  });
+
+  it("applies the same window rules as search", () => {
+    expect(buildStatsSql({ from: "2026-11-17T20:00:00Z", to: "2026-11-17T21:00:00Z" }, NOW)).toContain(
+      "WHERE ts >= TIMESTAMP '2026-11-17T20:00:00.000Z' AND ts < TIMESTAMP '2026-11-17T21:00:00.000Z'",
+    );
+    expect(() => buildStatsSql({ from: "2026-01-01T00:00:00Z" }, NOW)).toThrow(/720 hours/);
+  });
+
+  it("reads REST params: comma-separated group_by, bucket, filters", () => {
+    expect(statsParamsFromUrl(new URL("https://x/api/v1/stats?group_by=level,%20prop:Path&bucket=hour&exception=E&from=1&limit=7"))).toMatchObject({
+      groupBy: ["level", "prop:Path"],
+      bucket: "hour",
+      exception: "E",
+      from: "1",
+      limit: 7,
+    });
+  });
+});
+
+describe("event lookup", () => {
+  it("matches the id with strpos and its length, never = on id, inside the default 24 hours", () => {
+    const sql = buildEventLookupSql({ id: "ab'c" }, NOW);
+    expect(sql).toContain("WHERE ts > now() - INTERVAL '24 hours' AND strpos(id, 'ab''c') > 0 AND octet_length(id) = 4");
+    expect(sql).not.toMatch(/\bid (=|IN|LIKE)/);
+  });
+
+  it("narrows to ±10 minutes around ts, or looks back hours (max 720)", () => {
+    expect(buildEventLookupSql({ id: "x", ts: "2026-11-17T21:00:00Z" })).toContain(
+      "ts >= TIMESTAMP '2026-11-17T20:50:00.000Z' AND ts <= TIMESTAMP '2026-11-17T21:10:00.000Z'",
+    );
+    expect(buildEventLookupSql({ id: "x", hours: 5000 })).toContain("INTERVAL '720 hours'");
+    expect(() => buildEventLookupSql({ id: "x", ts: "soon" })).toThrow(QueryRejected);
+    expect(() => buildEventLookupSql({ id: "" })).toThrow(QueryRejected);
+  });
+
+  it("builds source and trace context windows around the event's exact ts", () => {
+    const ev = { ts: "2026-11-17T21:00:00.5", source: "api", trace_id: "t1" };
+    expect(buildContextSql(ev, { id: "x", context: "source" })).toContain(
+      "WHERE ts >= TIMESTAMP '2026-11-17T21:00:00.5' - INTERVAL '5 minutes' AND ts <= TIMESTAMP '2026-11-17T21:00:00.5' + INTERVAL '1 minutes' AND source = 'api' ORDER BY ts ASC, id ASC LIMIT 200",
+    );
+    expect(buildContextSql(ev, { id: "x", context: "trace", beforeMinutes: 30, afterMinutes: 0, limit: 5000 })).toMatch(
+      /INTERVAL '30 minutes' .* INTERVAL '0 minutes' AND trace_id = 't1' ORDER BY ts ASC, id ASC LIMIT 1000$/,
+    );
+    expect(buildContextSql({ ...ev, trace_id: null }, { id: "x", context: "trace" })).toBeNull();
+    expect(buildContextSql(ev, { id: "x" })).toBeNull();
+    expect(() => buildContextSql(ev, { id: "x", context: "host" })).toThrow(QueryRejected);
+  });
+
+  it("returns only an exact id match, and null when none came back", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ success: true, result: { rows: [{ id: "xab", ts: "t", cursor_ts: "2026-11-17T21:00:00" }] } })),
+    );
+    try {
+      expect(await getEvent(ENV, { id: "abx" })).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("reads REST params", () => {
+    expect(eventParamsFromUrl("e1", new URL("https://x/api/v1/events/e1?ts=1700000000000&context=trace&before_minutes=2&after_minutes=3&limit=9"))).toEqual({
+      id: "e1",
+      ts: "1700000000000",
+      hours: undefined,
+      context: "trace",
+      beforeMinutes: 2,
+      afterMinutes: 3,
+      limit: 9,
+    });
+  });
+});
+
 describe("searchParamsFromUrl", () => {
+  it("reads from, to, order, cursor and exception", () => {
+    expect(searchParamsFromUrl(new URL("https://x/api/v1/logs?from=2026-11-17T20:20:00Z&to=1700000000000&order=asc&cursor=abc&exception=Boom"))).toMatchObject({
+      from: "2026-11-17T20:20:00Z",
+      to: "1700000000000",
+      order: "asc",
+      cursor: "abc",
+      exception: "Boom",
+    });
+  });
+
   it("reads v1's parameters and prop.* operators", () => {
     const p = searchParamsFromUrl(new URL("https://x/v2/api/v1/logs?source=A&level=Error&limit=5&hours=2&trace_id=t&prop.Delta=>%3D3&prop.Env=prod"));
     expect(p).toMatchObject({ source: "A", level: "Error", limit: 5, hours: 2, traceId: "t" });

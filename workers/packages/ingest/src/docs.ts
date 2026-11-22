@@ -267,7 +267,7 @@ own per-run summary is source \`supabase-pull\` (Error level when a table failed
 - **json_get_* fails the whole query if any row's properties is over 2000 bytes.**
   Guard it: \`CASE WHEN octet_length(properties) <= 2000 THEN json_get_str(properties, 'k') END\`.
   For big rows, \`(regexp_match(properties, '"k":"([^"]*)"'))[1]\` reads a top-level string.
-  The search API and MCP search_logs apply both for you.
+  The search and stats APIs and MCP search_logs / log_stats apply both for you.
 - **Results are capped at 10,000 rows.** Page by time window for more.
 - **Read-only.** No INSERT, ALTER or DELETE.
 
@@ -324,16 +324,50 @@ Structured search, newest first.
 |---|---|
 | source, level | Exact match |
 | search | Substring of message (literal, case-sensitive) |
+| exception | Substring of the exception text (literal, case-sensitive) |
 | trace_id | Exact match |
 | hours | Look-back window, default 24, max 720 |
+| from, to | Absolute window [from, to), ISO 8601 or epoch milliseconds. from overrides hours; to defaults to now. Max 720 hours; a longer window, a from not before to, or an unreadable time is a 400 |
+| order | desc (default) or asc |
 | limit | Default 100, max 1000 |
+| cursor | meta.next_cursor from the previous page. Keep the other params the same |
 | prop.<key>=<value> | Property filter. Dot paths for nesting. Prefix the value with >, >=, <, <=, != for comparisons |
 
-Response: \`{"data": [{id, ts, timestamp, level, message, message_template, source, exception?, trace_id?, ..., properties}], "meta": {count, limit, bytes_scanned}}\`
+Response: \`{"data": [{id, ts, timestamp, level, message, message_template, source, exception?, trace_id?, ..., properties}], "meta": {count, limit, order, bytes_scanned, next_cursor?}}\`
 
 \`timestamp\` repeats \`ts\` for v1 callers; use \`ts\`. The \`/v2\` alias leaves it out.
 
+Paging: a full page carries \`meta.next_cursor\`; pass it as \`cursor\` for the next page in the same order. Pages are keyed on (ts, id), so rows sharing a timestamp are neither skipped nor repeated. No \`next_cursor\` means the window is exhausted. Pin \`to\` (or use order=asc with from/to) when paging a window that is still receiving rows.
+
 Property filters on rows whose properties exceed 2000 bytes match top-level keys only.
+
+## GET /api/v1/stats
+
+Counts, grouped and optionally bucketed by time. Takes the search filters above (source, level, search, exception, trace_id, prop.*, hours, from, to), plus:
+
+| Param | Notes |
+|---|---|
+| group_by | Comma-separated, up to 2 of source, level, message_template, event_type, prop:<key> (dot paths as in prop filters). Rows with properties over 2000 bytes group as null for nested keys |
+| bucket | minute, 5m, 15m, hour, day; omit for no time bucket |
+| limit | Rows, default 100, max 10000. Ordered by bucket, then count descending |
+
+Response: \`{"data": [{<group keys>, bucket?, count, unique}], "meta": {rows, limit, bytes_scanned}}\`. \`unique\` is count(DISTINCT id): delivery is at-least-once, so count can run slightly high.
+
+Example: \`/api/v1/stats?source=api&group_by=level&bucket=hour&hours=6\`
+
+## GET /api/v1/events/{id}
+
+One event by id. 404 \`not_found\` when it isn't in the window searched.
+
+| Param | Notes |
+|---|---|
+| ts | The event's time if known (ISO 8601 or epoch ms); searches ±10 minutes around it |
+| hours | Look-back when ts is not given, default 24, max 720 |
+| context | source or trace: also return the rows from the same source, or sharing the event's trace_id, around it, oldest first |
+| before_minutes, after_minutes | Context window around the event, default 5 and 1, max 1440 |
+| limit | Context rows, default 200, max 1000 |
+
+Response: \`{"data": {event}, "context"?: [rows], "meta": {bytes_scanned, context?: {kind, before_minutes, after_minutes, count, limit}}}\`
 
 ## POST /api/v1/query
 
@@ -361,9 +395,10 @@ Alert queries are Basin SQL. The query runs every interval (evaluated at most on
 
 | Status | error | When |
 |---|---|---|
-| 400 | validation_error / query_error | Missing SQL, not a SELECT, or Basin rejected it. hints lists ClickHouse spellings found in the query |
+| 400 | validation_error / query_error | Missing SQL, not a SELECT, a bad parameter, or Basin rejected it. hints lists ClickHouse spellings found in the query |
 | 401 | unauthorized | Missing key |
 | 403 | forbidden | Invalid/disabled key, or missing scope |
+| 404 | not_found | GET /api/v1/events/{id}: no such id in the window |
 | 502 | upstream_error | Basin SQL failed |
 | 504 | query_timeout | Over 30 s |
 
