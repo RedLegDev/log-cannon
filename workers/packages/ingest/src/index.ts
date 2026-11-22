@@ -869,9 +869,9 @@ function basinError(e: unknown, sql?: string): Response {
 
 /**
  * MCP `create_log`: one CLEF line through the same Basin write as
- * `/ingest/clef`. The caller names the source; `key_id` stays the calling key.
+ * `/ingest/clef`, stamped the same way: source is the calling key's name and
+ * `key_id` the calling key, so an MCP key can't write as another tenant (#84).
  */
-const MAX_SOURCE_CHARS = 200;
 const CLEF_RESERVED = new Set<string>(CLEF_FIELDS);
 
 async function createLog(
@@ -881,13 +881,7 @@ async function createLog(
   key: APIKeyRecord,
   entry: CreateLogArgs,
 ): Promise<void> {
-  const source = entry.source.trim();
-  if (!source || source.length > MAX_SOURCE_CHARS) {
-    throw new Error(`source must be 1-${MAX_SOURCE_CHARS} characters`);
-  }
-  if (source === env.SLOW_REQUEST_SOURCE?.trim()) {
-    throw new Error(`source ${source} is reserved for the Worker's own telemetry`);
-  }
+  const source = key.name;
   const receivedAt = new Date();
   // A property named like a CLEF field the parser consumes (@x, @i, …) would
   // set that field instead of being data. Double its @ (Serilog's escape);

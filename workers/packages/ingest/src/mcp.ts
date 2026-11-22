@@ -57,7 +57,6 @@ export function firingAlerts(alerts: AlertRow[], now: Date, column: "last_trigge
 export interface CreateLogArgs {
   level: (typeof LEVELS)[number];
   message: string;
-  source: string;
   message_template?: string;
   exception?: string;
   event_type?: string;
@@ -111,20 +110,19 @@ export const TOOLS: Tool[] = [
     name: "create_log",
     title: "Create Log Entry",
     description:
-      "Create a log entry in Log Cannon. Use this to record agent activity, task progress, errors, or any structured event. It is queryable within about two minutes.",
+      "Create a log entry in Log Cannon. Use this to record agent activity, task progress, errors, or any structured event. It is queryable within about two minutes. The entry's source is the calling API key's name, as on /ingest/clef; a source argument is ignored.",
     scope: "ingest",
     inputSchema: {
       type: "object",
       properties: {
         level: { type: "string", enum: LEVELS, description: "Log level" },
         message: { type: "string", description: "Log message text" },
-        source: { type: "string", description: 'Source/service name (e.g. "my-agent", "build-bot")' },
         message_template: { type: "string", description: "Structured message template with {Placeholder} tokens" },
         exception: { type: "string", description: "Exception/stack trace text" },
         event_type: { type: "string", description: "Event type id. Computed from the template if omitted." },
         properties: { type: "object", description: "Structured properties as key-value pairs" },
       },
-      required: ["level", "message", "source"],
+      required: ["level", "message"],
     },
     run: async (args, ctx) => {
       const level = str(args, "level", true)!;
@@ -137,7 +135,6 @@ export const TOOLS: Tool[] = [
         await ctx.createLog({
           level: level as CreateLogArgs["level"],
           message: str(args, "message", true)!,
-          source: str(args, "source", true)!,
           message_template: str(args, "message_template"),
           exception: str(args, "exception"),
           event_type: str(args, "event_type"),

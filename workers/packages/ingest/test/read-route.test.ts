@@ -243,7 +243,7 @@ describe("/v2/api/mcp", () => {
     expect(body.result.content[0].text).toContain("count(*) FILTER");
   });
 
-  it("create_log goes through the ingest path: Basin, caller's source, calling key", async () => {
+  it("create_log goes through the ingest path: Basin, the key's name as source, calling key", async () => {
     const h = harness();
     const res = await h.rpc("k-ingest", {
       jsonrpc: "2.0",
@@ -253,7 +253,8 @@ describe("/v2/api/mcp", () => {
     });
     expect(((await res.json()) as { result: { isError?: boolean } }).result.isError).toBeUndefined();
     expect(h.sent.logs).toHaveLength(1);
-    expect(h.sent.logs[0]).toMatchObject({ source: "my-agent", key_id: "id-k-ingest", level: "Warning", message: "hi there", properties: { Task: "x" } });
+    // The caller's source is ignored: like /ingest/clef, the key's name is the source (#84).
+    expect(h.sent.logs[0]).toMatchObject({ source: "ingest-app", key_id: "id-k-ingest", level: "Warning", message: "hi there", properties: { Task: "x" } });
   });
 
   it("escapes properties named like CLEF fields, so they stay data", async () => {
@@ -267,13 +268,20 @@ describe("/v2/api/mcp", () => {
     expect(h.sent.logs[0]).toMatchObject({ exception: "", properties: { "@@x": "not an exception", "@tr": "kept" } });
   });
 
-  it("won't write to an empty source or the Worker's telemetry source", async () => {
+  it("create_log can't write as another source, the Worker's telemetry included", async () => {
     const h = harness();
-    for (const source of ["  ", "log-cannon-ingest"]) {
-      const res = await h.rpc("k-ingest", { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "create_log", arguments: { level: "Error", message: "m", source } } });
-      expect(((await res.json()) as { result: { isError: boolean } }).result.isError).toBe(true);
+    for (const source of ["other-tenant", "log-cannon-ingest"]) {
+      await h.rpc("k-ingest", { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "create_log", arguments: { level: "Error", message: "m", source } } });
     }
-    expect(h.sent.logs).toHaveLength(0);
+    expect(h.sent.logs.map((r) => r.source)).toEqual(["ingest-app", "ingest-app"]);
+  });
+
+  it("create_log no longer advertises a source argument", async () => {
+    const h = harness();
+    const res = await h.rpc("k-ingest", { jsonrpc: "2.0", id: 1, method: "tools/list" });
+    const tool = ((await res.json()) as { result: { tools: { name: string; inputSchema: { properties: object; required: string[] } }[] } }).result.tools[0];
+    expect(tool.inputSchema.properties).not.toHaveProperty("source");
+    expect(tool.inputSchema.required).toEqual(["level", "message"]);
   });
 
   it("doesn't run a tools/call sent as a notification", async () => {
