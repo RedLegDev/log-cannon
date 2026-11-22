@@ -322,7 +322,8 @@ Structured search, newest first.
 
 | Param | Notes |
 |---|---|
-| source, level | Exact match |
+| source | Exact match. Comma-separated for several (up to 20), e.g. \`source=readerful,Readerful\` |
+| level | Exact match |
 | search | Substring of message (literal, case-sensitive) |
 | exception | Substring of the exception text (literal, case-sensitive) |
 | trace_id | Exact match |
@@ -343,7 +344,7 @@ Property filters on rows whose properties exceed 2000 bytes match top-level keys
 
 ## GET /api/v1/stats
 
-Counts, grouped and optionally bucketed by time. Takes the search filters above (source, level, search, exception, trace_id, prop.*, hours, from, to), plus:
+Counts, grouped and optionally bucketed by time. Takes the search filters above (source, one or several, level, search, exception, trace_id, prop.*, hours, from, to), plus:
 
 | Param | Notes |
 |---|---|

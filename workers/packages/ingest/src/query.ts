@@ -17,6 +17,7 @@ export const MAX_QUERY_ROWS = 10_000;
 export const MAX_SEARCH_LIMIT = 1000;
 export const DEFAULT_SEARCH_LIMIT = 100;
 export const MAX_SEARCH_HOURS = 720;
+export const MAX_SOURCES = 20;
 
 // --- Raw SQL ---
 
@@ -77,7 +78,8 @@ export interface PropertyFilter {
 
 /** The filters search, stats and their MCP tools share. */
 export interface FilterParams {
-  source?: string;
+  /** One source, or several (`source IN (...)`, at most MAX_SOURCES). */
+  source?: string | string[];
   level?: string;
   search?: string;
   exception?: string;
@@ -189,7 +191,10 @@ function windowConditions(p: FilterParams, now: Date): string[] {
 /** The WHERE terms search and stats share. Every value goes through sqlString or a number. */
 export function filterConditions(p: FilterParams, now = new Date()): string[] {
   const where = windowConditions(p, now);
-  if (p.source) where.push(`source = ${sqlString(p.source)}`);
+  const sources = [...new Set(typeof p.source === "string" ? [p.source] : (p.source ?? []))].filter((s) => s !== "");
+  if (sources.length > MAX_SOURCES) throw new QueryRejected(`source takes at most ${MAX_SOURCES} values`);
+  if (sources.length === 1) where.push(`source = ${sqlString(sources[0])}`);
+  else if (sources.length > 1) where.push(`source IN (${sources.map(sqlString).join(", ")})`);
   if (p.level) where.push(`level = ${sqlString(p.level)}`);
   // strpos, not LIKE: a % or _ in the search text is literal. It is also a
   // function call, so Basin can't prune on it (#187).
@@ -341,7 +346,8 @@ function filterParamsFromUrl(q: URLSearchParams): FilterParams {
     if (k.startsWith("prop.")) propertyFilters.push({ key: k.slice(5), ...parseOperatorFromValue(v) });
   }
   return {
-    source: q.get("source") || undefined,
+    // Comma-separated for several sources.
+    source: listParam(q.get("source")),
     level: q.get("level") || undefined,
     search: q.get("search") || undefined,
     exception: q.get("exception") || undefined,

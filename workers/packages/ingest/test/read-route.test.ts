@@ -197,6 +197,17 @@ describe("/v2/api/v1/logs", () => {
     expect(rest).toEqual(v2.data[0]);
   });
 
+  it("takes several sources: comma-separated on REST, an array on MCP", async () => {
+    const h = harness();
+    expect((await h.call("/api/v1/logs?source=readerful,Readerful", { key: "k-read" })).status).toBe(200);
+    expect(h.sent.basin[0]).toContain("source IN ('readerful', 'Readerful')");
+    await h.rpc("k-read", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "search_logs", arguments: { source: ["readerful", "Readerful"] } } });
+    expect(h.sent.basin[1]).toBe(h.sent.basin[0]);
+    const tooMany = Array.from({ length: 21 }, (_, i) => `s${i}`).join(",");
+    expect((await h.call(`/api/v1/logs?source=${tooMany}`, { key: "k-read" })).status).toBe(400);
+    expect(h.sent.basin).toHaveLength(2);
+  });
+
   it("refuses DELETE: Basin is read-only", async () => {
     const h = harness();
     const res = await h.call("/v2/api/v1/logs?source=A", { method: "DELETE", key: "k-write" });

@@ -15,6 +15,7 @@ import {
   MAX_GROUP_BY,
   MAX_SEARCH_HOURS,
   MAX_SEARCH_LIMIT,
+  MAX_SOURCES,
   MAX_STATS_LIMIT,
   QueryRejected,
   dialectHints,
@@ -134,10 +135,20 @@ function propertyFilters(args: Record<string, unknown>): PropertyFilter[] {
   return filters;
 }
 
+/** A source name, or an array of them. */
+function sources(args: Record<string, unknown>): string | string[] | undefined {
+  const v = args.source;
+  if (Array.isArray(v)) {
+    if (!v.every((s) => typeof s === "string")) throw new InvalidParams("source must be a string or an array of strings");
+    return v as string[];
+  }
+  return str(args, "source");
+}
+
 /** The filters search_logs and log_stats share. */
 function filterArgs(args: Record<string, unknown>): FilterParams {
   return {
-    source: str(args, "source"),
+    source: sources(args),
     level: str(args, "level"),
     search: str(args, "search"),
     exception: str(args, "exception"),
@@ -152,7 +163,10 @@ function filterArgs(args: Record<string, unknown>): FilterParams {
 const TIME_VALUE = { type: ["string", "number"] };
 
 const FILTER_SCHEMA = {
-  source: { type: "string", description: "Filter by source/service name" },
+  source: {
+    anyOf: [{ type: "string" }, { type: "array", items: { type: "string" }, maxItems: MAX_SOURCES }],
+    description: "Source/service name, or an array of up to 20 (matches any)",
+  },
   level: { type: "string", description: "Filter by level (Error, Warning, Information, Debug)" },
   search: { type: "string", description: "Substring of the message (literal, case-sensitive)" },
   exception: { type: "string", description: "Substring of the exception text (literal, case-sensitive)" },

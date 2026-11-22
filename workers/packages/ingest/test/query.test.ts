@@ -381,6 +381,31 @@ describe("event lookup", () => {
   });
 });
 
+describe("several sources", () => {
+  it("keeps one source as today's equality", () => {
+    expect(buildSearchSql({ source: "A" })).toBe(buildSearchSql({ source: ["A"] }));
+    expect(buildSearchSql({ source: ["A"] })).toContain("AND source = 'A' ORDER BY");
+  });
+
+  it("matches several with IN, each value escaped, duplicates and blanks dropped", () => {
+    const sql = buildSearchSql({ source: ["readerful", "Readerful", "o'neil", "readerful", ""] });
+    expect(sql).toContain("source IN ('readerful', 'Readerful', 'o''neil')");
+    expect(buildStatsSql({ source: ["a", "b"], groupBy: ["source"] })).toContain("source IN ('a', 'b')");
+  });
+
+  it("caps the list at 20", () => {
+    const many = Array.from({ length: 21 }, (_, i) => `s${i}`);
+    expect(() => buildSearchSql({ source: many.slice(0, 20) })).not.toThrow();
+    expect(() => buildSearchSql({ source: many })).toThrow(/at most 20/);
+  });
+
+  it("splits a comma-separated REST source", () => {
+    expect(searchParamsFromUrl(new URL("https://x/api/v1/logs?source=readerful,%20Readerful")).source).toEqual(["readerful", "Readerful"]);
+    expect(statsParamsFromUrl(new URL("https://x/api/v1/stats?source=a,b")).source).toEqual(["a", "b"]);
+    expect(searchParamsFromUrl(new URL("https://x/api/v1/logs?source=")).source).toBeUndefined();
+  });
+});
+
 describe("searchParamsFromUrl", () => {
   it("reads from, to, order, cursor and exception", () => {
     expect(searchParamsFromUrl(new URL("https://x/api/v1/logs?from=2026-11-17T20:20:00Z&to=1700000000000&order=asc&cursor=abc&exception=Boom"))).toMatchObject({
@@ -394,7 +419,7 @@ describe("searchParamsFromUrl", () => {
 
   it("reads v1's parameters and prop.* operators", () => {
     const p = searchParamsFromUrl(new URL("https://x/v2/api/v1/logs?source=A&level=Error&limit=5&hours=2&trace_id=t&prop.Delta=>%3D3&prop.Env=prod"));
-    expect(p).toMatchObject({ source: "A", level: "Error", limit: 5, hours: 2, traceId: "t" });
+    expect(p).toMatchObject({ source: ["A"], level: "Error", limit: 5, hours: 2, traceId: "t" });
     expect(p.propertyFilters).toEqual([
       { key: "Delta", operator: ">=", value: "3" },
       { key: "Env", operator: "=", value: "prod" },

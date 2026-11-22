@@ -140,8 +140,8 @@ curl "https://logs.yourdomain.com/api/v1/logs?source=your-key-name&hours=1" -H "
 | `/ingest/webhook` | POST | Webhook JSON; `?preset=cloudflare` for Logpush |
 | `/ingest/otlp/logs`, `/v1/logs` | POST | OTel logs, protobuf or JSON |
 | `/ingest/otlp/traces`, `/v1/traces` | POST | OTel traces, protobuf or JSON |
-| `/api/v1/logs` | GET | Search: filters, `hours` or `from`/`to`, `order`, `cursor` paging |
-| `/api/v1/stats` | GET | Counts grouped by up to two keys (`group_by`), optionally per time `bucket` |
+| `/api/v1/logs` | GET | Search: filters (`source` takes a comma-separated list), `hours` or `from`/`to`, `order`, `cursor` paging |
+| `/api/v1/stats` | GET | Counts, with the search filters, grouped by up to two keys (`group_by`), optionally per time `bucket` |
 | `/api/v1/events/{id}` | GET | One event by id, optionally with its `context` (same source or trace) |
 | `/api/v1/query` | POST | Basin SQL, `{"sql": "SELECT ..."}` |
 | `/api/mcp` | POST | MCP server |
