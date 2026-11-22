@@ -30,11 +30,6 @@ npm-debug.log*
 # Testing
 coverage/
 
-# Go binaries
-retention-worker/retention-worker
-
-# Docker volumes
-clickhouse-data/
 .claude/settings.local.json
 .superpowers/
 

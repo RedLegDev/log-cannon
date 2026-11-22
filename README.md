@@ -27,7 +27,7 @@ cron 17 20 * * * ──► Basin retention (day partitions; off by default)
 
 The write happens in `waitUntil`, after the response, so a slow or failing stream never slows or fails an ingest request. A send that fails is retried, then spilled to R2 and replayed by the cron (see [Durability](#durability)). Basin flushes on a 60 s roll, so data is queryable 1–2 minutes after it is accepted.
 
-> **Remnants of v1.** The ClickHouse stack (`clickhouse/`, `dashboard/`, `retention-worker/`, `backup/`, `go/ship/`, `docker-compose.yml`) holds the pre-cutover history read-only. It is kept until the ~2026-11-22 shutdown, then removed. Nothing writes to it.
+> **v1 history.** The v1 ClickHouse stack was shut down and removed from the repo on 2026-11-22 (#171). Its history (everything before 2026-10-23 12:23 UTC, which Basin doesn't have) is kept as one final full ClickHouse backup in the `log-cannon-backups` R2 bucket under `final/`; the `MANIFEST.txt` beside it says how to restore it.
 
 ## Setup
 
@@ -293,9 +293,7 @@ log-cannon/
 │   ├── migrations/            #   D1 migrations
 │   ├── basin/                 #   Stream schema, provisioning, manifest-bound tools
 │   └── scripts/               #   One-off operator scripts
-├── docs/                      # Design notes and plans (docs/v2/PLAN.md is the migration record)
-└── clickhouse/, dashboard/, retention-worker/, backup/, go/ship/, docker-compose.yml
-                               # v1 ClickHouse stack, kept read-only until the ~2026-11-22 shutdown, then removed
+└── docs/                      # Design notes and plans (docs/v2/PLAN.md is the migration record)
 ```
 
 ## Tech stack

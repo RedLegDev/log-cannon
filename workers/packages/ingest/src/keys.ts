@@ -23,7 +23,7 @@ interface Row {
   created_at: string;
 }
 
-// Scope hierarchy mirrors dashboard/src/lib/api-auth.ts so the two agree.
+// Scope hierarchy (inherited from the retired v1 dashboard's api-auth.ts).
 const SCOPE_HIERARCHY: Record<Scope, Scope[]> = {
   admin: ["admin", "write", "read", "ingest"],
   write: ["write", "read", "ingest"],
