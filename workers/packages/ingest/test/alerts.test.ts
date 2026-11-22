@@ -4,7 +4,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConditionError, evaluateCondition } from "../src/alerts/condition";
 import { deriveService } from "../src/alerts/deliver";
-import { LEASE_TTL_MS, TICK_DEADLINE_MS, isDue, isQueryTimeout, retriesTimeout, pinNow, runAlerts, telemetryFor, type AlertsEnv } from "../src/alerts/evaluate";
+import { ALERT_BATCH_SIZE, LEASE_TTL_MS, TICK_DEADLINE_MS, alertBatchMode, isDue, isQueryTimeout, retriesTimeout, pinNow, runAlerts, telemetryFor, type AlertsEnv } from "../src/alerts/evaluate";
 import { acquireLease, getAlert, insertAlert, insertDestination, recordEvaluation, type AlertRow } from "../src/alerts/store";
 
 describe("evaluateCondition (alert-worker's grammar)", () => {
@@ -140,6 +140,11 @@ describe("runAlerts against D1", () => {
   let sent: { url: string; body: string }[];
   let deliveryStatus: number;
   let emitted: string[];
+  let batchQueries: string[];
+  let batchStatus: number;
+  let batchRowFor: (member: number) => Record<string, unknown>;
+  let freshnessQueries: number;
+  let spikeRows: Record<string, unknown>[] | null;
 
   const baseEnv = (over: Partial<AlertsEnv> = {}): AlertsEnv => ({
     KEYS_DB: env.KEYS_DB,
@@ -150,6 +155,8 @@ describe("runAlerts against D1", () => {
     SAASMAIL_API_URL: "https://mail.example.com",
     ALERT_FROM_EMAIL: "alerts@example.com",
     ALERT_LAG_SECONDS: "180",
+    // The per-alert path; batching has its own tests below.
+    ALERT_BATCH_MODE: "off",
     ...over,
   });
 
@@ -165,6 +172,11 @@ describe("runAlerts against D1", () => {
     sent = [];
     deliveryStatus = 200;
     emitted = [];
+    batchQueries = [];
+    batchStatus = 200;
+    batchRowFor = () => basinRows[0];
+    freshnessQueries = 0;
+    spikeRows = null;
     for (const t of ["alerts", "alert_destinations", "alert_evaluations", "alert_firings", "cron_leases"]) {
       await env.KEYS_DB.prepare(`DELETE FROM ${t}`).run();
     }
@@ -172,12 +184,26 @@ describe("runAlerts against D1", () => {
       const url = String(input);
       if (url.startsWith("https://api.sql.cloudflarestorage.com/")) {
         const query = JSON.parse(String(init?.body)).query as string;
+        if (query.startsWith("SELECT t0.")) {
+          batchQueries.push(query);
+          if (batchStatus !== 200) {
+            return new Response(JSON.stringify({ success: false, errors: [{ code: 40003, message: "scan budget exceeded" }] }), { status: batchStatus });
+          }
+          // Member 0 is the freshness check; member i answers with batchRowFor(i), by column position.
+          const row: Record<string, unknown> = {};
+          for (const [, m, c] of query.matchAll(/AS "m(\d+)_(\d+)"/g)) {
+            const own = Number(m) === 0 && query.includes("max(received_at)") ? { newest: basinNewestAt } : batchRowFor(Number(m));
+            row[`m${m}_${c}`] = Object.values(own)[Number(c)];
+          }
+          return new Response(JSON.stringify({ success: true, result: { rows: [row], metrics: { bytes_scanned: 1 } } }));
+        }
         if (query.includes("max(received_at)")) {
+          freshnessQueries++;
           return new Response(JSON.stringify({ success: true, result: { rows: [{ newest: basinNewestAt }], metrics: { bytes_scanned: 1 } } }));
         }
         basinQueries.push(query);
         return basinStatus === 200
-          ? new Response(JSON.stringify({ success: true, result: { rows: basinRows, metrics: { bytes_scanned: 1 } } }))
+          ? new Response(JSON.stringify({ success: true, result: { rows: query.includes("date_trunc") && spikeRows ? spikeRows : basinRows, metrics: { bytes_scanned: 1 } } }))
           : new Response(JSON.stringify({ success: false, errors: [{ code: 40003, message: "Invalid function 'countif'" }] }), { status: basinStatus });
       }
       const body = init?.body instanceof FormData ? String(init.body.get("payload")) : String(init?.body);
@@ -489,6 +515,150 @@ describe("runAlerts against D1", () => {
     const t = await tick(baseEnv({ ALERTS_MODE: "shadow" }));
     expect(t.skipped).toBe("lease-held");
     expect(basinQueries).toHaveLength(0);
+  });
+
+  // --- Batched queries (refs #194) ---
+
+  const SPIKE = "22222222-2222-4222-8222-222222222222";
+  const addSpike = () =>
+    addAlert({
+      id: SPIKE,
+      name: "Spike",
+      query:
+        "SELECT coalesce(sum(c), 0) AS cnt, count(*) AS active_minutes, coalesce(max(c), 0) AS max_1min FROM (SELECT date_trunc('minute', ts) AS m, count(*) AS c FROM logs.events WHERE ts > now() - INTERVAL '5 minutes' GROUP BY 1) t",
+      condition: "active_minutes >= 3 || max_1min >= 250",
+    });
+  // Members after the freshness check follow the due order (insertion order here).
+  const spikeSecond = (member: number) => (member === 2 ? { cnt: 9, active_minutes: 4, max_1min: 7 } : { cnt: 3 });
+  const parsed = (l: string) => JSON.parse(l) as Record<string, unknown>;
+
+  it("on: one batched query carries every due alert and the freshness check", async () => {
+    await addAlert();
+    await addSpike();
+    batchRowFor = spikeSecond;
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "on" }));
+    expect(batchQueries).toHaveLength(1);
+    expect(batchQueries[0]).toContain("TIMESTAMP '2026-10-23T14:57:30Z'");
+    expect(basinQueries).toHaveLength(0);
+    expect(freshnessQueries).toBe(0);
+    const byId = Object.fromEntries(t.evaluated.map((e) => [e.alertId, e]));
+    expect(byId[SPIKE]).toMatchObject({ status: "triggered", value: { cnt: 9, active_minutes: 4, max_1min: 7 } });
+    expect(byId["11111111-1111-4111-8111-111111111111"]).toMatchObject({ status: "triggered", value: { cnt: 3 } });
+    expect(emitted.map(parsed).some((l) => String(l["@m"]).startsWith("Alert batches"))).toBe(false);
+  });
+
+  it("on: a failed batch falls back to one query per alert, and says so", async () => {
+    await addAlert();
+    await addSpike();
+    batchStatus = 400;
+    spikeRows = [{ cnt: 9, active_minutes: 4, max_1min: 7 }];
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "on" }));
+    expect(batchQueries).toHaveLength(1);
+    expect(basinQueries).toHaveLength(2);
+    expect(freshnessQueries).toBe(1);
+    expect(t.evaluated.map((e) => e.status)).toEqual(["triggered", "triggered"]);
+    const summary = emitted.map(parsed).find((l) => String(l["@m"]).startsWith("Alert batches"));
+    expect(summary).toMatchObject({ "@l": "Warning", BatchMode: "on", FailedBatches: 1, FailedAlerts: 2, BatchErrors: ["scan budget exceeded"] });
+  });
+
+  it("on: per-alert errors after a fallback behave as before (first timeout held back, retried next tick)", async () => {
+    const id = await addAlert({ interval_seconds: 300 });
+    batchStatus = 400;
+    basinStatus = 400;
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "on" }));
+    expect(t.evaluated[0]).toMatchObject({ status: "error", error: "Query error: Invalid function 'countif'" });
+    expect(emitted.map(parsed).some((l) => l["@m"] === `[${id}] Query error: Invalid function 'countif'`)).toBe(true);
+  });
+
+  it("on: an alert whose last run was a query error, or whose columns can't be read, runs alone", async () => {
+    await addAlert({ query: "SELECT * FROM logs.events LIMIT 1", condition: "cnt > 0" });
+    await addSpike();
+    await env.KEYS_DB.prepare("UPDATE alerts SET last_status = 'error', last_error = 'Query error: query returned no rows' WHERE id = ?").bind(SPIKE).run();
+    await addAlert({ id: "55555555-5555-4555-8555-555555555555", name: "Zeta" });
+    batchRowFor = () => ({ cnt: 3 });
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "on" }));
+    expect(batchQueries).toHaveLength(1);
+    expect(batchQueries[0]).not.toContain("date_trunc");
+    expect(basinQueries).toHaveLength(2);
+    expect(t.evaluated).toHaveLength(3);
+  });
+
+  it("on: splits more than ALERT_BATCH_SIZE due alerts over several queries", async () => {
+    for (let i = 0; i < ALERT_BATCH_SIZE + 2; i++) await addAlert({ id: `66666666-6666-4666-8666-6666666666${String(i).padStart(2, "0")}` });
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "on" }));
+    expect(batchQueries).toHaveLength(2);
+    expect(basinQueries).toHaveLength(0);
+    expect(t.evaluated.filter((e) => e.status === "triggered")).toHaveLength(ALERT_BATCH_SIZE + 2);
+  });
+
+  it("on: holds the tick on the batch's own freshness answer, recording nothing", async () => {
+    const id = await addAlert();
+    basinNewestAt = "2026-10-23T14:50:00.000";
+    const t = await tick(baseEnv({ ALERTS_MODE: "live", ALERT_BATCH_MODE: "on" }));
+    expect(t).toMatchObject({ skipped: "basin-behind", evaluated: [], basinNewest: "2026-10-23T14:50:00.000Z" });
+    expect(freshnessQueries).toBe(0);
+    expect(sent).toHaveLength(0);
+    expect((await getAlert(env.KEYS_DB, id))?.last_run_at).toBeNull();
+  });
+
+  it("shadow: the per-alert result fires, and each mismatch is reported with both sides", async () => {
+    await addAlert();
+    await addSpike();
+    // Per alert, nothing fires; batched, the plain alert would.
+    basinRows = [{ cnt: 0 }];
+    spikeRows = [{ cnt: 0, active_minutes: 0, max_1min: 0 }];
+    batchRowFor = (m) => (m === 2 ? spikeRows![0] : { cnt: 3 });
+    const t = await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "shadow" }));
+    expect(batchQueries).toHaveLength(1);
+    expect(basinQueries).toHaveLength(2);
+    expect(t.evaluated.map((e) => e.status)).toEqual(["ok", "ok"]);
+    const lines = emitted.map(parsed);
+    const mismatches = lines.filter((l) => l["@mt"] === "Alert batch shadow mismatch: {AlertName}");
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0]).toMatchObject({
+      "@l": "Warning",
+      AlertId: "11111111-1111-4111-8111-111111111111",
+      PerAlert: { cnt: 0 },
+      Batched: { cnt: 3 },
+      PerAlertWouldFire: false,
+      BatchedWouldFire: true,
+    });
+    expect(lines.find((l) => String(l["@m"]).startsWith("Alert batches"))).toMatchObject({
+      "@l": "Warning",
+      BatchMode: "shadow",
+      BatchQueries: 1,
+      Compared: 2,
+      Mismatches: 1,
+    });
+  });
+
+  it("shadow is the default, and a clean tick reports one Information summary", async () => {
+    await addAlert();
+    await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: undefined }));
+    expect(batchQueries).toHaveLength(1);
+    expect(basinQueries).toHaveLength(1);
+    expect(emitted.map(parsed).find((l) => String(l["@m"]).startsWith("Alert batches"))).toMatchObject({
+      "@l": "Information",
+      Compared: 1,
+      Mismatches: 0,
+    });
+  });
+
+  it("off: no batched query, the freshness check runs alone", async () => {
+    await addAlert();
+    await tick(baseEnv({ ALERTS_MODE: "shadow", ALERT_BATCH_MODE: "off" }));
+    expect(batchQueries).toHaveLength(0);
+    expect(freshnessQueries).toBe(1);
+    expect(basinQueries).toHaveLength(1);
+  });
+});
+
+describe("alertBatchMode", () => {
+  it("defaults to shadow", () => {
+    expect(alertBatchMode(undefined)).toBe("shadow");
+    expect(alertBatchMode("bogus")).toBe("shadow");
+    expect(alertBatchMode(" ON ")).toBe("on");
+    expect(alertBatchMode("off")).toBe("off");
   });
 });
 

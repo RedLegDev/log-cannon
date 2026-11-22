@@ -160,6 +160,9 @@ BASIN_SQL_BUCKET = "log-cannon-events"
 # retired the Go alert-worker.
 ALERTS_MODE = "live"
 ALERT_LAG_SECONDS = "180"
+# Batched alert queries (refs #194): "off", "shadow" (run both, the per-alert
+# results fire, differences are reported) or "on".
+ALERT_BATCH_MODE = "shadow"
 ALERTS_SOURCE = "log-cannon-alerts"
 # Alert email (refs #170), the same sender and API v1 used. The
 # SAASMAIL_API_KEY secret is set on the Worker, not here.

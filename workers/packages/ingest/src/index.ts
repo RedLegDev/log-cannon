@@ -96,6 +96,8 @@ interface Env {
   BASIN_CATALOG_TOKEN?: string;
   /** Seconds every alert's `now()` is pinned behind evaluation time. Default 180. */
   ALERT_LAG_SECONDS?: string | number;
+  /** Batched alert queries (refs #194): `off`, `shadow` (default) or `on`. See `src/alerts/evaluate.ts`. */
+  ALERT_BATCH_MODE?: string;
   /** Source the evaluator's events (errors, sends) are written to. */
   ALERTS_SOURCE?: string;
   /** Alert email: SaaSMail key (secret), API origin and default sender. */

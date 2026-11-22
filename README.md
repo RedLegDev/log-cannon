@@ -211,6 +211,7 @@ The cron evaluates the due alerts once a minute. Every `now()` in an alert query
 |-----|---------|-------------|
 | `ALERTS_MODE` | `off` | `off`, `shadow` (evaluate and record, send nothing) or `live` |
 | `ALERT_LAG_SECONDS` | `180` | How far every alert's `now()` is pinned back |
+| `ALERT_BATCH_MODE` | `shadow` | `off` (one Basin query per alert), `shadow` (also run the batched queries and report where they differ; the per-alert results fire) or `on` (up to 10 due alerts per query; a failed batch falls back to one query per alert) |
 | `ALERTS_SOURCE` | `log-cannon-alerts` | Source for the evaluator's own events (errors, sends) |
 | `SAASMAIL_API_URL` / `ALERT_FROM_EMAIL` | — | Email delivery; the key is the `SAASMAIL_API_KEY` secret |
 

@@ -12,6 +12,7 @@
 // v1's alert-worker does and starts the cooldown only on an accepted delivery.
 
 import { BasinQueryError, parseBasinTimestamp, queryBasin, type BasinSqlEnv } from "../basin-sql";
+import { chunk, composeBatch, selectColumns, splitBatch, type BatchMember } from "./batch";
 import { ConditionError, evaluateCondition } from "./condition";
 import { deliverAlert, type DeliveryEnv } from "./deliver";
 import {
@@ -37,6 +38,7 @@ export interface AlertsEnv extends BasinSqlEnv, DeliveryEnv {
   KEYS_DB: D1Database;
   ALERTS_MODE?: string;
   ALERT_LAG_SECONDS?: string | number;
+  ALERT_BATCH_MODE?: string;
 }
 
 export type AlertsMode = "off" | "shadow" | "live";
@@ -45,6 +47,30 @@ export function alertsMode(v: string | undefined): AlertsMode {
   const m = v?.trim().toLowerCase();
   return m === "shadow" || m === "live" ? m : "off";
 }
+
+/**
+ * Batched alert queries (refs #194, `src/alerts/batch.ts`): `off` runs one
+ * query per alert as before; `shadow` (the default) also runs the batched
+ * queries and reports where they disagree, while the per-alert results stay
+ * the ones that fire and are recorded; `on` evaluates from the batched
+ * results, falling back to one query per alert for any batch that fails.
+ */
+export type AlertBatchMode = "off" | "shadow" | "on";
+
+export function alertBatchMode(v: string | undefined): AlertBatchMode {
+  const m = v?.trim().toLowerCase();
+  return m === "off" || m === "on" ? m : "shadow";
+}
+
+/**
+ * Alerts per batched query. Basin refuses a query whose total scan is too
+ * large for a count(DISTINCT) without GROUP BY ("scan budget exceeded"), and
+ * the batched scan is the sum of its members' scans: 49 alerts in one query
+ * (about 200 MB) were refused, 21 (180 MB) were not. Ten keeps the heaviest
+ * possible batch of today's alerts near 140 MB, and a refused batch falls back
+ * to one query per alert anyway.
+ */
+export const ALERT_BATCH_SIZE = 10;
 
 export const DEFAULT_ALERT_LAG_SECONDS = 180;
 
@@ -81,12 +107,15 @@ export function pinNow(sql: string, at: Date): string {
  * pipeline delay instead of a real silence.
  */
 export async function basinNewest(env: BasinSqlEnv, pinned: Date): Promise<Date | null> {
-  const { rows } = await queryBasin<{ newest: string | null }>(
-    env,
-    `SELECT CAST(max(received_at) AS VARCHAR) AS newest FROM logs.events WHERE received_at > ${timestampLiteral(new Date(pinned.getTime() - 3_600_000))}`,
-    ALERT_QUERY_TIMEOUT_MS,
-  );
+  const { rows } = await queryBasin<{ newest: string | null }>(env, freshnessMember(pinned).sql, ALERT_QUERY_TIMEOUT_MS);
   return parseBasinTimestamp(rows[0]?.newest);
+}
+
+function freshnessMember(pinned: Date): BatchMember {
+  return {
+    sql: `SELECT CAST(max(received_at) AS VARCHAR) AS newest FROM logs.events WHERE received_at > ${timestampLiteral(new Date(pinned.getTime() - 3_600_000))}`,
+    columns: ["newest"],
+  };
 }
 
 /**
@@ -131,6 +160,70 @@ export const LEASE_TTL_MS = 5 * 60_000;
  */
 export const TICK_DEADLINE_MS = LEASE_TTL_MS - 90_000;
 
+/** An alert's row from a batched query, and that query's run time. */
+export interface BatchedRow {
+  row: Record<string, unknown>;
+  queryMs: number;
+}
+
+export interface BatchRun {
+  /** Each batched alert's own row, by alert id. Absent: evaluate it alone. */
+  rows: Map<string, BatchedRow>;
+  /** Basin's newest `received_at`, when the batch that carried the check succeeded. */
+  newest?: Date | null;
+  queries: number;
+  /** Due alerts that run alone (see `runsAlone`). */
+  alone: number;
+  failures: { alerts: number; error: string }[];
+}
+
+/**
+ * An alert that runs on its own query instead of in a batch: one whose output
+ * columns can't be read from its SQL, or whose last run failed in the query
+ * itself (bad SQL, no rows), which would fail its whole batch again. A timeout
+ * doesn't count: those are whole-tick and pass on their own.
+ */
+export function runsAlone(alert: AlertRow): boolean {
+  if (alert.last_status === "error" && alert.last_error?.startsWith("Query error:") && !isQueryTimeout(alert.last_error)) return true;
+  return selectColumns(alert.query) === null;
+}
+
+/**
+ * Run the due alerts' queries as batches of ALERT_BATCH_SIZE, the freshness
+ * check riding in the first. A batch that fails for any reason (one member's
+ * bad SQL, a timeout, Basin's scan budget) leaves its alerts out of `rows`, so
+ * each is evaluated on its own query exactly as before.
+ */
+export async function runBatches(env: BasinSqlEnv, due: AlertRow[], pinned: Date): Promise<BatchRun> {
+  const batchable = due
+    .filter((a) => !runsAlone(a))
+    .map((a) => ({ id: a.id, member: { sql: pinNow(a.query, pinned), columns: selectColumns(a.query)! } }));
+  const run: BatchRun = { rows: new Map(), queries: 0, alone: due.length - batchable.length, failures: [] };
+  const groups = chunk(batchable, ALERT_BATCH_SIZE);
+  let next = 0;
+  const worker = async () => {
+    while (next < groups.length) {
+      const i = next++;
+      const group = groups[i];
+      const members = group.map((g) => g.member);
+      if (i === 0) members.unshift(freshnessMember(pinned));
+      const started = Date.now();
+      run.queries++;
+      try {
+        const { rows } = await queryBasin(env, composeBatch(members), ALERT_QUERY_TIMEOUT_MS);
+        const own = splitBatch(rows, members);
+        const queryMs = Date.now() - started;
+        if (i === 0) run.newest = parseBasinTimestamp(own.shift()?.newest as string | null | undefined);
+        group.forEach((g, j) => run.rows.set(g.id, { row: own[j], queryMs }));
+      } catch (e) {
+        run.failures.push({ alerts: group.length, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(ALERT_CONCURRENCY, groups.length) }, worker));
+  return run;
+}
+
 export interface AlertDeps {
   now: () => Date;
   /** Wall clock for the tick deadline; defaults to Date.now. */
@@ -168,15 +261,23 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
       else if (isQueryTimeout(a.last_error) && retriesTimeout(a, await previousEvaluation(env.KEYS_DB, a.id))) due.push(a);
     }
     const lag = alertLagSeconds(env.ALERT_LAG_SECONDS);
+    const batchMode = alertBatchMode(env.ALERT_BATCH_MODE);
+    let batch: BatchRun | null = null;
     if (due.length) {
       // Hold the whole tick while Basin hasn't caught up to the pinned
       // instant. Nothing is recorded, so every alert is still due next tick.
+      // Batched, the check rides in the first batch, whose results are then
+      // discarded along with the rest of a held tick.
       const pinned = new Date(now.getTime() - lag * 1000);
+      if (batchMode !== "off") batch = await runBatches(env, due, pinned);
       let newest: Date | null = null;
-      try {
-        newest = await basinNewest(env, pinned);
-      } catch (e) {
-        console.error(JSON.stringify({ event: "alerts-freshness-check-failed", error: e instanceof Error ? e.message : String(e) }));
+      if (batch?.newest !== undefined) newest = batch.newest;
+      else {
+        try {
+          newest = await basinNewest(env, pinned);
+        } catch (e) {
+          console.error(JSON.stringify({ event: "alerts-freshness-check-failed", error: e instanceof Error ? e.message : String(e) }));
+        }
       }
       if (!newest || newest < pinned) {
         if (now.getUTCMinutes() % 10 === 0 || !newest) {
@@ -188,11 +289,22 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
     const evaluated: Evaluation[] = [];
     const firings: Firing[] = [];
     const lines: string[] = [];
+    let compared = 0;
+    let mismatches = 0;
     let next = 0;
     const worker = async () => {
       while (next < due.length && clock() - started < TICK_DEADLINE_MS) {
         const alert = due[next++];
-        const e = await evaluateAlert(env, alert, mode, now, lag, deps.fetch);
+        const batched = batch?.rows.get(alert.id);
+        const e = await evaluateAlert(env, alert, mode, now, lag, deps.fetch, batchMode === "on" ? batched : undefined);
+        if (batchMode === "shadow" && batched) {
+          compared++;
+          const mismatch = shadowMismatch(alert, e, batched.row, now);
+          if (mismatch) {
+            mismatches++;
+            lines.push(mismatch);
+          }
+        }
         evaluated.push(e);
         const firing = firingOf(e);
         if (firing) firings.push(firing);
@@ -207,6 +319,9 @@ export async function runAlerts(env: AlertsEnv, deps: AlertDeps): Promise<TickSu
       }
     };
     await Promise.all(Array.from({ length: Math.min(ALERT_CONCURRENCY, due.length) }, worker));
+    if (batch && (batchMode === "shadow" || batch.failures.length)) {
+      lines.push(batchSummaryLine(now, batchMode, batch, due.length, compared, mismatches));
+    }
     // Firing history (refs #193): one batch after every delivery is done, so
     // it never delays a send, and a failed write is reported, never thrown.
     try {
@@ -236,8 +351,10 @@ export async function evaluateAlert(
   now: Date,
   lagSeconds: number,
   doFetch?: typeof fetch,
+  batched?: BatchedRow,
 ): Promise<Evaluation> {
-  const started = Date.now();
+  // A batched row's query time counts toward the evaluation, as its own query's would.
+  const started = Date.now() - (batched?.queryMs ?? 0);
   const base = { alertId: alert.id, evaluatedAt: now, mode, wouldSend: false, sent: false, value: null, error: null };
   const done = (e: Partial<Evaluation> & Pick<Evaluation, "status">): Evaluation => ({
     ...base,
@@ -246,14 +363,17 @@ export async function evaluateAlert(
   });
 
   let row: Record<string, unknown>;
-  try {
-    const sql = pinNow(alert.query, new Date(now.getTime() - lagSeconds * 1000));
-    const { rows } = await queryBasin(env, sql, ALERT_QUERY_TIMEOUT_MS);
-    if (!rows.length) return done({ status: "error", error: "Query error: query returned no rows" });
-    row = rows[0];
-  } catch (e) {
-    const msg = e instanceof BasinQueryError ? e.message : e instanceof Error ? e.message : String(e);
-    return done({ status: "error", error: `Query error: ${msg}` });
+  if (batched) row = batched.row;
+  else {
+    try {
+      const sql = pinNow(alert.query, new Date(now.getTime() - lagSeconds * 1000));
+      const { rows } = await queryBasin(env, sql, ALERT_QUERY_TIMEOUT_MS);
+      if (!rows.length) return done({ status: "error", error: "Query error: query returned no rows" });
+      row = rows[0];
+    } catch (e) {
+      const msg = e instanceof BasinQueryError ? e.message : e instanceof Error ? e.message : String(e);
+      return done({ status: "error", error: `Query error: ${msg}` });
+    }
   }
 
   let triggered: boolean;
@@ -321,6 +441,67 @@ function firingsFailedLine(now: Date, count: number, error: string): string {
     "@mt": "Alert firing history not recorded for {Firings} firing(s): {Error}",
     Firings: count,
     Error: error,
+  });
+}
+
+/** The condition on a row: true or false, or null when it can't be evaluated. */
+function wouldFire(condition: string, row: Record<string, unknown> | null): boolean | null {
+  if (!row) return null;
+  try {
+    return evaluateCondition(condition, row);
+  } catch {
+    return null;
+  }
+}
+
+function sameRow(a: Record<string, unknown> | null, b: Record<string, unknown> | null): boolean {
+  const canon = (r: Record<string, unknown> | null) => (r ? JSON.stringify(Object.keys(r).sort().map((k) => [k, r[k]])) : "null");
+  return canon(a) === canon(b);
+}
+
+/**
+ * Shadow batching: one Warning when an alert's batched row differs from the
+ * row its own query returned (the evaluation `e`, which stays authoritative).
+ * Not in the `[id] …` shape, so the "an alert cannot evaluate" alert doesn't
+ * match it.
+ */
+export function shadowMismatch(alert: AlertRow, e: Evaluation, batched: Record<string, unknown>, now: Date): string | null {
+  const own = e.status === "error" && e.error?.startsWith("Query error:") ? null : e.value;
+  if (sameRow(own, batched)) return null;
+  return JSON.stringify({
+    "@t": now.toISOString(),
+    "@l": "Warning",
+    "@m": `Alert batch shadow mismatch: ${alert.name}`,
+    "@mt": "Alert batch shadow mismatch: {AlertName}",
+    AlertId: alert.id,
+    AlertName: alert.name,
+    PerAlert: own,
+    PerAlertError: own ? null : e.error,
+    Batched: batched,
+    PerAlertWouldFire: wouldFire(alert.condition, own),
+    BatchedWouldFire: wouldFire(alert.condition, batched),
+  });
+}
+
+function batchSummaryLine(now: Date, mode: AlertBatchMode, batch: BatchRun, due: number, compared: number, mismatches: number): string {
+  const failed = batch.failures.reduce((n, f) => n + f.alerts, 0);
+  return JSON.stringify({
+    "@t": now.toISOString(),
+    "@l": mismatches || batch.failures.length ? "Warning" : "Information",
+    "@m":
+      `Alert batches (${mode}): ${batch.queries} queries for ${due} due, ${batch.alone} alone, ` +
+      `${batch.failures.length} failed (${failed} alerts), ${mismatches} of ${compared} mismatched`,
+    "@mt": "Alert batches ({BatchMode}): {BatchQueries} queries for {Due} due",
+    BatchMode: mode,
+    Due: due,
+    BatchQueries: batch.queries,
+    BatchedAlerts: batch.rows.size,
+    Alone: batch.alone,
+    FailedBatches: batch.failures.length,
+    FailedAlerts: failed,
+    BatchErrors: batch.failures.map((f) => f.error),
+    Compared: compared,
+    Mismatches: mismatches,
   });
 }
 
