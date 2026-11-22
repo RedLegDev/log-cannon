@@ -844,6 +844,8 @@ export function reportIfSlow(
  * unprefixed routes (refs #168), those paths still go to the v1 dashboard.
  */
 const READ_PREFIX = "/v2";
+// Each of these also needs a production route in wrangler.toml, or the
+// unprefixed path never reaches the Worker (only /v2/* is a wildcard route).
 const READ_PATHS = new Set([
   "/api/v1/query",
   "/api/v1/logs",

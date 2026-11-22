@@ -132,6 +132,11 @@ routes = [
   { pattern = "logs.redleg.dev/api/mcp*", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/api/v1/alerts*", zone_name = "redleg.dev" },
   { pattern = "logs.redleg.dev/api/v1/alert-destinations*", zone_name = "redleg.dev" },
+  # Every unprefixed path in READ_PATHS (src/index.ts) needs a route here;
+  # without one it falls through to the host origin (refs #191, #193).
+  { pattern = "logs.redleg.dev/api/v1/alert-firings*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/api/v1/stats*", zone_name = "redleg.dev" },
+  { pattern = "logs.redleg.dev/api/v1/events/*", zone_name = "redleg.dev" },
 ]
 
 [env.production.observability]
