@@ -148,6 +148,9 @@ enabled = true
 invocation_logs = true
 
 [env.production.vars]
+# The colo key cache's namespace (refs #151): keeps this deployment's cached
+# key records apart from any other deployment of this Worker in the zone.
+KEY_CACHE_NAMESPACE = "production"
 SLOW_REQUEST_MS = "1000"
 SLOW_REQUEST_SOURCE = "log-cannon-ingest"
 # The only write path (refs #171). Off, ingest accepts requests and stores

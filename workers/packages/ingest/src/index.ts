@@ -4,7 +4,9 @@ import {
   resolveKey,
   hasScope,
   KeyLookupTimeoutError,
+  KeyRejectedError,
   KEY_LOOKUP_RETRY_AFTER_S,
+  type KeyCacheOptions,
   type APIKeyRecord,
   type KeySource,
 } from "./keys";
@@ -52,6 +54,11 @@ import {
 
 interface Env {
   KEYS_DB: D1Database;
+  /**
+   * Namespace for this deployment's entries in the colo key cache, so two
+   * deployments in one zone never share them. Optional; unset is "default".
+   */
+  KEY_CACHE_NAMESPACE?: string;
   /**
    * Report any ingest request whose in-Worker time reaches this many
    * milliseconds. `0` disables reporting. Unset falls back to
@@ -519,6 +526,11 @@ function withRetryAfter(res: Response, e: AuthError): Response {
   return res;
 }
 
+/** The key cache's per-deployment namespace and this request's `waitUntil`. */
+function keyCacheOptions(env: Env, ctx: ExecutionContext): KeyCacheOptions {
+  return { namespace: env.KEY_CACHE_NAMESPACE, waitUntil: (p) => ctx.waitUntil(p) };
+}
+
 interface AuthResult {
   record: APIKeyRecord;
   /** Which tier resolved the key: this isolate, the colo cache, or D1. */
@@ -534,6 +546,12 @@ async function authenticate(
   const apiKey = extractAPIKey(request);
   if (!apiKey) throw new AuthError(401, "API key required");
 
+  const report = (source: KeySource) => {
+    if (!trace) return;
+    trace.keyCacheHit = source === "l1";
+    trace.keyL2Hit = source === "l2";
+  };
+
   // Distinguish a known auth rejection (bad/disabled key — genuinely the
   // client's fault, safe as a non-retryable 4xx) from everything else (D1
   // outage, query timeout, schema drift — the client did nothing wrong).
@@ -541,24 +559,21 @@ async function authenticate(
   // 5xx, so collapsing both cases into 403 turns a transient D1 blip into
   // silent, permanent log loss across every client at once.
   try {
-    const result = await resolveKey(apiKey, env.KEYS_DB, Date.now(), {
-      waitUntil: (p) => ctx.waitUntil(p),
-    });
-    if (trace) {
-      trace.keyCacheHit = result.source === "l1";
-      trace.keyL2Hit = result.source === "l2";
-    }
+    const result = await resolveKey(apiKey, env.KEYS_DB, Date.now(), keyCacheOptions(env, ctx));
+    report(result.source);
     return result;
   } catch (e) {
+    if (e instanceof KeyRejectedError) {
+      // Still says which tier answered: a disabled key served from L1 is an
+      // L1 hit.
+      report(e.source);
+      throw new AuthError(403, "Invalid or disabled API key");
+    }
     if (e instanceof KeyLookupTimeoutError) {
       // A slow D1, not a bad key: 503 so the sender retries, by which time
       // the late read has usually filled the cache (refs #151).
       if (trace) trace.authTimedOut = true;
       throw new AuthError(503, "Key store slow, retry shortly", KEY_LOOKUP_RETRY_AFTER_S);
-    }
-    const msg = e instanceof Error ? e.message : "";
-    if (msg === "Invalid API key" || msg === "API key is disabled") {
-      throw new AuthError(403, "Invalid or disabled API key");
     }
     throw new AuthError(500, "Key store unavailable");
   }
@@ -1180,7 +1195,7 @@ export default {
         if (e instanceof AuthError) return withRetryAfter(errorResponse(e.status, e.message), e);
         return errorResponse(500, "Internal error");
       }
-      return await handleAdminKeys(request, env.KEYS_DB, adminKey);
+      return await handleAdminKeys(request, env.KEYS_DB, adminKey, keyCacheOptions(env, ctx));
     }
 
     const read = readPath(path);

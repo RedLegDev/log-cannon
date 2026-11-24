@@ -8,6 +8,8 @@ import {
   deleteKey,
   keyLookup,
   KeyLookupTimeoutError,
+  KeyRejectedError,
+  isKeyCached,
   KEY_CACHE_TTL_MS,
   KEY_LOOKUP_TIMEOUT_MS,
   KEY_L2_TIMEOUT_MS,
@@ -109,10 +111,25 @@ const noD1 = {
 function heldD1() {
   let settle!: { resolve: (row: unknown) => void; reject: (e: Error) => void };
   const first = new Promise((resolve, reject) => void (settle = { resolve, reject }));
+  const calls = { prepare: 0 };
   const db = {
-    prepare: () => ({ bind: () => ({ first: () => first }) }),
+    prepare: () => {
+      calls.prepare++;
+      return { bind: () => ({ first: () => first }) };
+    },
   } as unknown as D1Database;
-  return { db, settle };
+  return { db, settle, calls };
+}
+
+/** An in-memory stand-in for `caches.default` that keeps the stored bodies. */
+function memoryCache(seed: Record<string, string> = {}) {
+  const bodies = new Map<string, string>(Object.entries(seed));
+  const cache = {
+    match: async (u: string) => (bodies.has(u) ? new Response(bodies.get(u)) : undefined),
+    put: async (u: string, r: Response) => void bodies.set(u, await r.text()),
+    delete: async (u: string) => bodies.delete(u),
+  } as unknown as Cache;
+  return { cache, bodies };
 }
 
 const ROW = {
@@ -169,28 +186,99 @@ describe("two-tier key cache and bounded lookup (refs #151)", () => {
 
     expect(source).toBe("l2");
     expect(record.name).toBe("First");
+    // The stored entry has no key; the presented one is put back.
+    expect(record.apiKey).toBe("k-l2");
     // And the L2 hit filled L1.
     expect((await resolveKey("k-l2", noD1)).source).toBe("l1");
   });
 
-  it("keys L2 on a hash, never the raw API key", async () => {
-    const urls: string[] = [];
-    keyLookup.l2 = () =>
-      ({
-        match: async (u: string) => void urls.push(u),
-        put: async (u: string) => void urls.push(u),
-        delete: async () => false,
-      }) as unknown as Cache;
+  it("keys L2 on a hash and never stores the raw API key", async () => {
+    const { cache, bodies } = memoryCache();
+    keyLookup.l2 = () => cache;
     await insert({ apiKey: "k-secret-value", name: "S" });
     const bg = background();
     await validateKey("k-secret-value", env.KEYS_DB, Date.now(), bg);
     await bg.settled();
 
-    expect(urls).toHaveLength(2);
-    for (const u of urls) {
-      expect(u).not.toContain("k-secret-value");
-      expect(u).toMatch(/[0-9a-f]{64}$/);
+    expect(bodies.size).toBe(1);
+    const [[url, body]] = [...bodies];
+    expect(url).not.toContain("k-secret-value");
+    expect(url).toMatch(/[0-9a-f]{64}$/);
+    // keyId is "id-k-secret-value" in these fixtures, so look for the key as a value.
+    expect(body).not.toContain('"k-secret-value"');
+    expect(JSON.parse(body).record).not.toHaveProperty("apiKey");
+    expect(JSON.parse(body).record.name).toBe("S");
+  });
+
+  it("keeps deployments apart by namespace", async () => {
+    const { cache } = memoryCache();
+    keyLookup.l2 = () => cache;
+    await insert({ apiKey: "k-ns", name: "NS" });
+    const bg = background();
+    await validateKey("k-ns", env.KEYS_DB, Date.now(), { ...bg, namespace: "production" });
+    await bg.settled();
+
+    __resetKeyCache({ keepL2: true });
+    expect((await resolveKey("k-ns", noD1, Date.now(), { namespace: "production" })).source).toBe("l2");
+    __resetKeyCache({ keepL2: true });
+    expect((await resolveKey("k-ns", env.KEYS_DB, Date.now(), { namespace: "staging" })).source).toBe("d1");
+  });
+
+  it("treats an L2 entry it wouldn't have written as a miss", async () => {
+    await insert({ apiKey: "k-forged", name: "Real", scopes: "ingest" });
+    const now = Date.now();
+    const good = { keyId: "id-k-forged", name: "Forged", enabled: true, scopes: ["admin"], retentionDays: 0, createdAt: "2026-01-01T00:00:00Z" };
+    const forged = [
+      { record: good, expiresAt: now + KEY_CACHE_TTL_MS * 100 },
+      { record: { ...good, scopes: ["root"] }, expiresAt: now + 60_000 },
+      { record: { ...good, scopes: "admin" }, expiresAt: now + 60_000 },
+      { record: { ...good, enabled: "yes" }, expiresAt: now + 60_000 },
+      { record: { ...good, apiKey: "k-forged" }, expiresAt: now + 60_000 },
+      { record: good, expiresAt: "later" },
+      { nope: true },
+    ];
+
+    // Learn the entry's URL from a real write, then overwrite its body.
+    const { cache, bodies } = memoryCache();
+    keyLookup.l2 = () => cache;
+    const bg = background();
+    await validateKey("k-forged", env.KEYS_DB, now, bg);
+    await bg.settled();
+    const [url] = [...bodies.keys()];
+    // Sanity: the untouched entry is a hit.
+    __resetKeyCache({ keepL2: true });
+    expect((await resolveKey("k-forged", noD1, now)).source).toBe("l2");
+
+    for (const entry of forged) {
+      bodies.set(url, JSON.stringify(entry));
+      __resetKeyCache({ keepL2: true });
+      const { record, source } = await resolveKey("k-forged", env.KEYS_DB, now);
+      expect(source).toBe("d1");
+      expect(record.name).toBe("Real");
     }
+  });
+
+  it("reports the tier that rejected a key", async () => {
+    await insert({ apiKey: "k-off-tier", name: "Off", enabled: 0 });
+    const bg = background();
+    const tierOf = async (db: D1Database) => {
+      try {
+        await resolveKey("k-off-tier", db, Date.now(), bg);
+      } catch (e) {
+        expect(e).toBeInstanceOf(KeyRejectedError);
+        return (e as KeyRejectedError).source;
+      }
+      throw new Error("expected a rejection");
+    };
+
+    expect(await tierOf(env.KEYS_DB)).toBe("d1");
+    await bg.settled();
+    expect(await tierOf(noD1)).toBe("l1");
+    __resetKeyCache({ keepL2: true });
+    expect(await tierOf(noD1)).toBe("l2");
+
+    __resetKeyCache();
+    await expect(resolveKey("k-unknown", env.KEYS_DB)).rejects.toMatchObject({ source: "d1", message: "Invalid API key" });
   });
 
   it("expires an L1 entry filled from L2 at the L2 entry's expiry, not a fresh TTL", async () => {
@@ -300,6 +388,100 @@ describe("two-tier key cache and bounded lookup (refs #151)", () => {
     settle.reject(new Error("D1 overloaded"));
     await bg.settled();
     await scheduler.wait(10);
+  });
+
+  it("doesn't re-cache a late read when the key changed in between", async () => {
+    // The row in D1 that the admin update will change.
+    await insert({ apiKey: "k-held", name: "Held" });
+    keyLookup.timeoutMs = 30;
+    const { db, settle } = heldD1();
+    const bg = background();
+
+    // The read starts, and the request gives up on it.
+    await expect(resolveKey("k-held", db, Date.now(), bg)).rejects.toBeInstanceOf(KeyLookupTimeoutError);
+    // An admin disables the key...
+    expect(await updateKey(env.KEYS_DB, "id-k-held", { enabled: false })).toBe(true);
+    // ...then the stale read lands, saying enabled.
+    settle.resolve(ROW);
+    await bg.settled();
+
+    expect(isKeyCached("k-held")).toBe(false);
+    keyLookup.timeoutMs = KEY_LOOKUP_TIMEOUT_MS;
+    // Nothing in L2 either: the next lookup reaches D1 and sees the disable.
+    await expect(resolveKey("k-held", env.KEYS_DB)).rejects.toMatchObject({ source: "d1", message: "API key is disabled" });
+  });
+
+  it("shares one cold lookup between concurrent requests, each on its own clock", async () => {
+    keyLookup.timeoutMs = 40;
+    const { db, settle, calls } = heldD1();
+    const bg = background();
+
+    const first = resolveKey("k-held", db, Date.now(), bg);
+    const firstOutcome = first.then(() => "resolved", (e) => e);
+    await scheduler.wait(25);
+    const second = resolveKey("k-held", db, Date.now(), bg);
+
+    // The first caller's 40 ms are up; the second's are not.
+    expect(await firstOutcome).toBeInstanceOf(KeyLookupTimeoutError);
+    settle.resolve(ROW);
+    expect((await second).record.name).toBe("Held");
+    expect(calls.prepare).toBe(1);
+    await bg.settled();
+  });
+
+  it("starts a fresh lookup once a mutation drops the one in flight", async () => {
+    keyLookup.timeoutMs = 30;
+    const stale = heldD1();
+    const bg = background();
+    await expect(resolveKey("k-held", stale.db, Date.now(), bg)).rejects.toBeInstanceOf(KeyLookupTimeoutError);
+
+    await updateKey(env.KEYS_DB, "id-nobody", { name: "x" });
+
+    const fresh = heldD1();
+    const next = resolveKey("k-held", fresh.db, Date.now(), bg);
+    fresh.settle.resolve({ ...ROW, name: "Fresh" });
+    expect((await next).record.name).toBe("Fresh");
+    expect(fresh.calls.prepare).toBe(1);
+    stale.settle.resolve(ROW);
+    await bg.settled();
+  });
+
+  it("never lets a stalled or failing L2 delete hold or fail a mutation", async () => {
+    await insert({ apiKey: "k-a", name: "A" });
+    await insert({ apiKey: "k-b", name: "B" });
+    keyLookup.l2TimeoutMs = 20;
+
+    keyLookup.l2 = () =>
+      ({ match: async () => undefined, put: async () => {}, delete: () => new Promise(() => {}) }) as unknown as Cache;
+    expect(await updateKey(env.KEYS_DB, "id-k-a", { name: "A2" })).toBe(true);
+
+    keyLookup.l2 = () =>
+      ({
+        match: async () => undefined,
+        put: async () => {},
+        delete: async () => {
+          throw new Error("cache down");
+        },
+      }) as unknown as Cache;
+    expect(await deleteKey(env.KEYS_DB, "id-k-b")).toBe(true);
+  });
+
+  it("hands the L2 delete to waitUntil when there is one", async () => {
+    await insert({ apiKey: "k-wu", name: "WU" });
+    let released!: () => void;
+    keyLookup.l2 = () =>
+      ({
+        match: async () => undefined,
+        put: async () => {},
+        delete: () => new Promise<boolean>((r) => void (released = () => r(true))),
+      }) as unknown as Cache;
+    const bg = background();
+
+    expect(await updateKey(env.KEYS_DB, "id-k-wu", { name: "WU2" }, bg)).toBe(true);
+    // Answered while the delete is still pending.
+    await scheduler.wait(5);
+    released();
+    await bg.settled();
   });
 
   it("drops a key's L2 entry when it is updated", async () => {

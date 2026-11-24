@@ -39,13 +39,15 @@ const SCOPE_HIERARCHY: Record<Scope, Scope[]> = {
 //
 // L2 is the colo's Cache API (`caches.default`), shared by every isolate in
 // the data center, so a cold isolate usually resolves a key without D1 (refs
-// #151). Entries are keyed on a SHA-256 of the API key, never the key itself,
-// and carry the absolute expiry set when the record was read from D1. An L1
-// entry filled from L2 expires at that same instant, so a record is never
-// served more than KEY_CACHE_TTL_MS after it was read from D1, whichever tier
-// serves it. Only found records (enabled or disabled) are cached; an unknown
-// key always goes to D1. A failing or stalled L2 never fails auth: the lookup
-// falls through to D1.
+// #151). Entries are keyed on a SHA-256 of the API key under a deployment
+// namespace, and their body never holds the key: `apiKey` is stripped before
+// the write and restored from the presented key on read. Each carries the
+// absolute expiry set when the record was read from D1. An L1 entry filled
+// from L2 expires at that same instant, so a record is never served more than
+// KEY_CACHE_TTL_MS after its D1 read began, whichever tier serves it. An entry
+// that claims a later expiry or doesn't look like a record is a miss. Only
+// found records (enabled or disabled) are cached; an unknown key always goes
+// to D1. A failing or stalled L2 never fails auth: the lookup falls through.
 //
 // Trade-off (unchanged from the previous KV implementation): when a key is
 // disabled or deleted, warm isolates and other colos serve the stale entry for
@@ -58,20 +60,43 @@ interface CachedKey {
 const KEY_CACHE = new Map<string, CachedKey>();
 export const KEY_CACHE_TTL_MS = 5 * 60 * 1000;
 
+/** What a cold lookup found, and where. `undefined`: no such key. */
+type ColdResult = { entry: CachedKey; source: "l2" | "d1" } | undefined;
+
+// Cold lookups in flight in this isolate, by API key. A request that misses
+// L1 while one is running joins it rather than starting its own, so a stalled
+// D1 holds one query per key, not one per sender retry.
+const IN_FLIGHT = new Map<string, Promise<ColdResult>>();
+
+// Bumped whenever this isolate mutates a key (and by `__resetKeyCache`). A
+// cold lookup that began under an older generation may have read the row
+// before the change, so its result isn't cached in either tier: without this,
+// a D1 read that timed out, then landed after an admin disabled the key, would
+// re-cache it as enabled for another TTL. Per isolate only: another isolate's
+// in-flight read can still land stale, bounded as ever by KEY_CACHE_TTL_MS.
+let generation = 0;
+
 /**
  * Longest a cold lookup (L2, then D1) may take before auth gives up with
  * `KeyLookupTimeoutError`, which callers answer with a 503 and `Retry-After`.
  * Senders time out at about 5 s (#112), and a slow D1 has held auth for 5 to
  * 30 s, so without a bound the sender aborts and retries a batch the Worker
- * may never have seen (refs #151).
+ * may never have seen (refs #151). Each caller's bound runs from its own
+ * start, including one that joined a lookup already in flight.
  */
 export const KEY_LOOKUP_TIMEOUT_MS = 4_000;
 
-/** Longest the L2 read may take before the lookup skips it and asks D1. */
+/** Longest an L2 read or delete may take before it is abandoned. */
 export const KEY_L2_TIMEOUT_MS = 500;
 
 /** Seconds a 503 from a timed-out lookup tells the sender to wait. */
 export const KEY_LOOKUP_RETRY_AFTER_S = 3;
+
+/** Part of every L2 URL; bump it when the stored entry's shape changes. */
+const L2_VERSION = "v2";
+
+/** L2 namespace when `KEY_CACHE_NAMESPACE` is unset. */
+export const DEFAULT_KEY_CACHE_NAMESPACE = "default";
 
 /** The lookup's time limits and its L2 cache. Mutable so tests can shorten
  * the limits or swap the cache; nothing else should touch it. */
@@ -90,17 +115,32 @@ export class KeyLookupTimeoutError extends Error {
   }
 }
 
-// Part of every L2 URL. Always "" in production, so every isolate shares one
-// namespace; `__resetKeyCache` moves tests to a fresh one, because the Cache
-// API has no "clear everything" and outlives a test's L1.
-let l2Namespace = "";
+/** An unknown or disabled key. `source` is the tier that said so, so a
+ * rejected request still reports where its answer came from. */
+export class KeyRejectedError extends Error {
+  constructor(
+    message: "Invalid API key" | "API key is disabled",
+    public readonly source: KeySource,
+  ) {
+    super(message);
+    this.name = "KeyRejectedError";
+  }
+}
+
+// Test-only addition to every L2 URL: `__resetKeyCache` moves tests to a
+// fresh one, because the Cache API has no "clear everything" and outlives a
+// test's L1. Always "" in production.
+let testNamespace = "";
 
 /** Test-only. Clears the module-level cache between cases, and points L2 at a
  * namespace no earlier case wrote to. `keepL2` clears L1 only, which is what a
- * fresh isolate in the same colo sees. */
+ * fresh isolate in the same colo sees. Either way a lookup still in flight
+ * from an earlier case can't fill the cache. */
 export function __resetKeyCache(opts: { keepL2?: boolean } = {}): void {
   KEY_CACHE.clear();
-  if (!opts.keepL2) l2Namespace = `${crypto.randomUUID()}/`;
+  IN_FLIGHT.clear();
+  generation++;
+  if (!opts.keepL2) testNamespace = `${crypto.randomUUID()}/`;
 }
 
 /**
@@ -121,7 +161,7 @@ function cachedRecord(
   return cached && cached.expiresAt > now ? cached.record : undefined;
 }
 
-async function l2Url(apiKey: string): Promise<string> {
+async function l2Url(apiKey: string, namespace: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(apiKey),
@@ -129,16 +169,20 @@ async function l2Url(apiKey: string): Promise<string> {
   const hex = Array.from(new Uint8Array(digest), (b) =>
     b.toString(16).padStart(2, "0"),
   ).join("");
-  return `https://key-cache.log-cannon.internal/v1/${l2Namespace}${hex}`;
+  return `https://key-cache.log-cannon.internal/${L2_VERSION}/${encodeURIComponent(namespace)}/${testNamespace}${hex}`;
 }
 
 /** Rejects with `onTimeout()` if `work` hasn't settled in `ms`. The race keeps
- * a handler on the abandoned work, so its late rejection isn't unhandled. */
+ * a handler on the abandoned work, so its late rejection isn't unhandled. A
+ * budget already spent loses at once, not a timer tick later. */
 async function race<T>(work: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
   let id: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    id = setTimeout(() => reject(onTimeout()), Math.max(0, ms));
-  });
+  const timeout =
+    ms <= 0
+      ? Promise.reject(onTimeout())
+      : new Promise<never>((_, reject) => {
+          id = setTimeout(() => reject(onTimeout()), ms);
+        });
   try {
     return await Promise.race([work, timeout]);
   } finally {
@@ -146,31 +190,56 @@ async function race<T>(work: Promise<T>, ms: number, onTimeout: () => Error): Pr
   }
 }
 
-/** The L2 entry for `apiKey` if it is still live at `now`. Never throws. */
-async function readL2(apiKey: string, now: number): Promise<CachedKey | undefined> {
+/** The stored L2 body: a record without its API key. */
+type StoredKey = { record: Omit<APIKeyRecord, "apiKey">; expiresAt: number };
+
+/** Whether `v` is an entry this code wrote and still trusts at `now`. */
+function isLiveEntry(v: unknown, now: number): v is StoredKey {
+  if (!v || typeof v !== "object") return false;
+  const { record: r, expiresAt } = v as Record<string, unknown>;
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) return false;
+  // Never trust an entry for longer than one TTL from now.
+  if (expiresAt <= now || expiresAt > now + KEY_CACHE_TTL_MS) return false;
+  if (!r || typeof r !== "object") return false;
+  const rec = r as Record<string, unknown>;
+  return (
+    typeof rec.keyId === "string" &&
+    typeof rec.name === "string" &&
+    typeof rec.enabled === "boolean" &&
+    typeof rec.retentionDays === "number" &&
+    typeof rec.createdAt === "string" &&
+    Array.isArray(rec.scopes) &&
+    rec.scopes.every((sc) => VALID_SCOPES.includes(sc as Scope)) &&
+    !("apiKey" in rec)
+  );
+}
+
+/** The L2 entry for `apiKey` if it is live and well-formed. Never throws. */
+async function readL2(apiKey: string, now: number, namespace: string): Promise<CachedKey | undefined> {
   try {
     const read = (async () => {
-      const res = await keyLookup.l2().match(await l2Url(apiKey));
-      if (!res) return undefined;
-      const entry = (await res.json()) as CachedKey;
-      return entry?.record && typeof entry.expiresAt === "number" ? entry : undefined;
+      const res = await keyLookup.l2().match(await l2Url(apiKey, namespace));
+      return res ? ((await res.json()) as unknown) : undefined;
     })();
-    const entry = await race(read, keyLookup.l2TimeoutMs, () => new Error("L2 read timed out"));
-    return entry && entry.expiresAt > now ? entry : undefined;
+    const body = await race(read, keyLookup.l2TimeoutMs, () => new Error("L2 read timed out"));
+    if (body === undefined || !isLiveEntry(body, now)) return undefined;
+    return { record: { ...body.record, apiKey }, expiresAt: body.expiresAt };
   } catch (e) {
     console.warn(JSON.stringify({ event: "key-cache-l2-read-failed", error: e instanceof Error ? e.message : String(e) }));
     return undefined;
   }
 }
 
-/** Store `entry` in L2 until its own expiry. Never rejects. */
-async function writeL2(apiKey: string, entry: CachedKey, now: number): Promise<void> {
+/** Store `entry` in L2 until its own expiry, without the API key. Never rejects. */
+async function writeL2(apiKey: string, entry: CachedKey, now: number, namespace: string): Promise<void> {
   try {
     const ttlS = Math.ceil((entry.expiresAt - now) / 1000);
     if (ttlS <= 0) return;
+    const { apiKey: _omit, ...record } = entry.record;
+    const stored: StoredKey = { record, expiresAt: entry.expiresAt };
     await keyLookup.l2().put(
-      await l2Url(apiKey),
-      new Response(JSON.stringify(entry), {
+      await l2Url(apiKey, namespace),
+      new Response(JSON.stringify(stored), {
         headers: {
           "Content-Type": "application/json",
           "Cache-Control": `max-age=${ttlS}`,
@@ -183,14 +252,21 @@ async function writeL2(apiKey: string, entry: CachedKey, now: number): Promise<v
 }
 
 /**
- * Drop `apiKey`'s L2 entry after a mutation. The Cache API's delete is
- * colo-local: it clears this data center's copy, and other colos keep theirs
- * until it expires, so a revocation can still take up to KEY_CACHE_TTL_MS to
- * reach everywhere (the same bound as before L2). Never rejects.
+ * Drop `apiKey`'s L2 entry after a mutation, within `keyLookup.l2TimeoutMs`.
+ * The Cache API's delete is colo-local: it clears this data center's copy,
+ * and other colos keep theirs until it expires, so a revocation can still take
+ * up to KEY_CACHE_TTL_MS to reach everywhere (the same bound as before L2).
+ * Never rejects.
  */
-async function deleteL2(apiKey: string): Promise<void> {
+async function deleteL2(apiKey: string, namespace: string): Promise<void> {
   try {
-    await keyLookup.l2().delete(await l2Url(apiKey));
+    // `return await`, not `return`: a delete that rejects at once would
+    // otherwise sit unhandled for a microtask, which workerd reports.
+    const del = (async () => {
+      const url = await l2Url(apiKey, namespace);
+      return await keyLookup.l2().delete(url);
+    })();
+    await race(del, keyLookup.l2TimeoutMs, () => new Error("L2 delete timed out"));
   } catch (e) {
     console.warn(JSON.stringify({ event: "key-cache-l2-delete-failed", error: e instanceof Error ? e.message : String(e) }));
   }
@@ -225,88 +301,110 @@ export function hasScope(record: APIKeyRecord, required: Scope): boolean {
 /** Where a key's record came from: this isolate, the colo cache, or D1. */
 export type KeySource = "l1" | "l2" | "d1";
 
-export interface ResolveOptions {
-  /** Keeps the L2 write (and a timed-out D1 read's cache fill) alive after
-   * the response. Without it they run unawaited, which a short-lived
-   * invocation may cut off; that only costs a later cache miss. */
+export interface KeyCacheOptions {
+  /** L2 namespace for this deployment (`KEY_CACHE_NAMESPACE`), so two
+   * deployments in one zone never share entries. Defaults to
+   * DEFAULT_KEY_CACHE_NAMESPACE. */
+  namespace?: string;
+  /** Keeps L2 writes and deletes (and a timed-out D1 read's cache fill)
+   * alive after the response. Without it a write or a lookup's fill runs
+   * unawaited, which a short-lived invocation may cut off; that only costs a
+   * later cache miss. A mutation without it awaits its bounded L2 delete. */
   waitUntil?: (p: Promise<unknown>) => void;
 }
 
+function namespaceOf(opts: KeyCacheOptions): string {
+  return opts.namespace?.trim() || DEFAULT_KEY_CACHE_NAMESPACE;
+}
+
 /**
- * Resolves an API key to its record and the tier that answered. Throws on
- * unknown or disabled keys, and `KeyLookupTimeoutError` when the cold lookup
- * ran past `keyLookup.timeoutMs`. `now` is injectable so cache-expiry
- * behaviour is testable without fake timers.
+ * The shared part of a cold lookup: L2, then D1, then fill both tiers, unless
+ * a key changed in this isolate while it ran.
+ */
+function coldLookup(
+  apiKey: string,
+  db: D1Database,
+  now: number,
+  opts: KeyCacheOptions,
+): Promise<ColdResult> {
+  const namespace = namespaceOf(opts);
+  const startedGeneration = generation;
+  const started = Date.now();
+  const stillCurrent = () => generation === startedGeneration;
+
+  const lookup = (async (): Promise<ColdResult> => {
+    const fromL2 = await readL2(apiKey, now, namespace);
+    if (fromL2) {
+      if (stillCurrent()) KEY_CACHE.set(apiKey, fromL2);
+      return { entry: fromL2, source: "l2" };
+    }
+    const row = await db
+      .prepare(
+        `SELECT api_key, key_id, name, enabled, scopes, retention_days, created_at
+         FROM api_keys WHERE api_key = ?`,
+      )
+      .bind(apiKey)
+      .first<Row>();
+    if (!row) return undefined;
+    // Timed from the lookup's start, not the row's arrival: the row is no
+    // older than that, so a late read can't stretch the staleness bound.
+    const entry: CachedKey = {
+      record: toRecord(row),
+      expiresAt: now + KEY_CACHE_TTL_MS,
+    };
+    if (stillCurrent()) {
+      KEY_CACHE.set(apiKey, entry);
+      const write = writeL2(apiKey, entry, now + (Date.now() - started), namespace);
+      if (opts.waitUntil) opts.waitUntil(write);
+    }
+    return { entry, source: "d1" };
+  })();
+
+  const shared = lookup.finally(() => {
+    if (IN_FLIGHT.get(apiKey) === shared) IN_FLIGHT.delete(apiKey);
+  });
+  IN_FLIGHT.set(apiKey, shared);
+  return shared;
+}
+
+/**
+ * Resolves an API key to its record and the tier that answered. Throws
+ * `KeyRejectedError` on unknown or disabled keys, and `KeyLookupTimeoutError`
+ * when this caller's cold lookup ran past `keyLookup.timeoutMs`. `now` is
+ * injectable so cache-expiry behaviour is testable without fake timers.
  */
 export async function resolveKey(
   apiKey: string,
   db: D1Database,
   now: number = Date.now(),
-  opts: ResolveOptions = {},
+  opts: KeyCacheOptions = {},
 ): Promise<{ record: APIKeyRecord; source: KeySource }> {
   const cached = cachedRecord(apiKey, now);
-  if (cached) return { record: enabledOrThrow(cached), source: "l1" };
+  if (cached) return { record: enabledOrThrow(cached, "l1"), source: "l1" };
 
   // Date.now() rather than `now`: the deadline is real elapsed I/O time, and
   // `now` may be a test's fixed clock.
   const started = Date.now();
-  const background = (p: Promise<unknown>) => {
-    if (opts.waitUntil) opts.waitUntil(p);
-  };
+  const lookup = IN_FLIGHT.get(apiKey) ?? coldLookup(apiKey, db, now, opts);
 
-  const fromL2 = await readL2(apiKey, now);
-  if (fromL2) {
-    KEY_CACHE.set(apiKey, fromL2);
-    return { record: enabledOrThrow(fromL2.record), source: "l2" };
-  }
-
-  // A budget the L2 read already spent (only possible with a limit shorter
-  // than its own) doesn't start a D1 read nobody will wait for.
-  if (keyLookup.timeoutMs - (Date.now() - started) <= 0) {
-    throw new KeyLookupTimeoutError(keyLookup.timeoutMs);
-  }
-
-  // The D1 read fills both tiers when it lands, even after the lookup timed
-  // out, so the sender's retry finds the key cached.
-  const read = db
-    .prepare(
-      `SELECT api_key, key_id, name, enabled, scopes, retention_days, created_at
-       FROM api_keys WHERE api_key = ?`,
-    )
-    .bind(apiKey)
-    .first<Row>()
-    .then((row) => {
-      if (!row) return undefined;
-      // Timed from the lookup's start, not the row's arrival: the row is no
-      // older than that, so a late read can't stretch the staleness bound.
-      const entry: CachedKey = {
-        record: toRecord(row),
-        expiresAt: now + KEY_CACHE_TTL_MS,
-      };
-      KEY_CACHE.set(apiKey, entry);
-      background(writeL2(apiKey, entry, now + (Date.now() - started)));
-      return entry.record;
-    });
-
-  const left = keyLookup.timeoutMs - (Date.now() - started);
-  let record: APIKeyRecord | undefined;
+  let result: ColdResult;
   try {
-    record = await race(read, left, () => new KeyLookupTimeoutError(keyLookup.timeoutMs));
+    result = await race(lookup, keyLookup.timeoutMs - (Date.now() - started), () => new KeyLookupTimeoutError(keyLookup.timeoutMs));
   } catch (e) {
-    if (e instanceof KeyLookupTimeoutError) {
+    if (e instanceof KeyLookupTimeoutError && opts.waitUntil) {
       // Keep the invocation alive for the late fill; a late failure is
       // already handled by the race and is nothing to report twice.
-      background(read.catch(() => undefined));
+      opts.waitUntil(lookup.catch(() => undefined));
     }
     throw e;
   }
 
-  if (!record) throw new Error("Invalid API key");
-  return { record: enabledOrThrow(record), source: "d1" };
+  if (!result) throw new KeyRejectedError("Invalid API key", "d1");
+  return { record: enabledOrThrow(result.entry.record, result.source), source: result.source };
 }
 
-function enabledOrThrow(record: APIKeyRecord): APIKeyRecord {
-  if (!record.enabled) throw new Error("API key is disabled");
+function enabledOrThrow(record: APIKeyRecord, source: KeySource): APIKeyRecord {
+  if (!record.enabled) throw new KeyRejectedError("API key is disabled", source);
   return record;
 }
 
@@ -315,7 +413,7 @@ export async function validateKey(
   apiKey: string,
   db: D1Database,
   now: number = Date.now(),
-  opts: ResolveOptions = {},
+  opts: KeyCacheOptions = {},
 ): Promise<APIKeyRecord> {
   return (await resolveKey(apiKey, db, now, opts)).record;
 }
@@ -383,6 +481,7 @@ export async function updateKey(
   db: D1Database,
   keyId: string,
   patch: KeyPatch,
+  opts: KeyCacheOptions = {},
 ): Promise<boolean> {
   const sets: string[] = [];
   const binds: unknown[] = [];
@@ -415,28 +514,38 @@ export async function updateKey(
     .bind(...binds)
     .all<{ api_key: string }>();
 
-  await forgetKeys(results);
+  await forgetKeys(results, opts);
   return results.length > 0;
 }
 
 /**
  * Drop mutated keys from both cache tiers. L1 is cleared whole rather than
- * tracking key_id → api_key; other isolates still honour the TTL. L2 loses
- * each mutated key's entry in this colo only (see `deleteL2`).
+ * tracking key_id → api_key; other isolates still honour the TTL. The
+ * generation bump stops a cold lookup already running in this isolate from
+ * re-caching what it read before the change, and the next request starts a
+ * fresh one. L2 loses each mutated key's entry in this colo only (see
+ * `deleteL2`): in `waitUntil` when there is one, else awaited, bounded, and
+ * never failing, since D1 has already committed.
  */
-async function forgetKeys(rows: { api_key: string }[]): Promise<void> {
+async function forgetKeys(rows: { api_key: string }[], opts: KeyCacheOptions): Promise<void> {
+  generation++;
   KEY_CACHE.clear();
-  await Promise.all(rows.map((r) => deleteL2(r.api_key)));
+  IN_FLIGHT.clear();
+  const namespace = namespaceOf(opts);
+  const deletes = Promise.all(rows.map((r) => deleteL2(r.api_key, namespace)));
+  if (opts.waitUntil) opts.waitUntil(deletes);
+  else await deletes;
 }
 
 export async function deleteKey(
   db: D1Database,
   keyId: string,
+  opts: KeyCacheOptions = {},
 ): Promise<boolean> {
   const { results } = await db
     .prepare("DELETE FROM api_keys WHERE key_id = ? RETURNING api_key")
     .bind(keyId)
     .all<{ api_key: string }>();
-  await forgetKeys(results);
+  await forgetKeys(results, opts);
   return results.length > 0;
 }
