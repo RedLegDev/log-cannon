@@ -411,41 +411,6 @@ describe("two-tier key cache and bounded lookup (refs #151)", () => {
     await expect(resolveKey("k-held", env.KEYS_DB)).rejects.toMatchObject({ source: "d1", message: "API key is disabled" });
   });
 
-  it("shares one cold lookup between concurrent requests, each on its own clock", async () => {
-    keyLookup.timeoutMs = 40;
-    const { db, settle, calls } = heldD1();
-    const bg = background();
-
-    const first = resolveKey("k-held", db, Date.now(), bg);
-    const firstOutcome = first.then(() => "resolved", (e) => e);
-    await scheduler.wait(25);
-    const second = resolveKey("k-held", db, Date.now(), bg);
-
-    // The first caller's 40 ms are up; the second's are not.
-    expect(await firstOutcome).toBeInstanceOf(KeyLookupTimeoutError);
-    settle.resolve(ROW);
-    expect((await second).record.name).toBe("Held");
-    expect(calls.prepare).toBe(1);
-    await bg.settled();
-  });
-
-  it("starts a fresh lookup once a mutation drops the one in flight", async () => {
-    keyLookup.timeoutMs = 30;
-    const stale = heldD1();
-    const bg = background();
-    await expect(resolveKey("k-held", stale.db, Date.now(), bg)).rejects.toBeInstanceOf(KeyLookupTimeoutError);
-
-    await updateKey(env.KEYS_DB, "id-nobody", { name: "x" });
-
-    const fresh = heldD1();
-    const next = resolveKey("k-held", fresh.db, Date.now(), bg);
-    fresh.settle.resolve({ ...ROW, name: "Fresh" });
-    expect((await next).record.name).toBe("Fresh");
-    expect(fresh.calls.prepare).toBe(1);
-    stale.settle.resolve(ROW);
-    await bg.settled();
-  });
-
   it("never lets a stalled or failing L2 delete hold or fail a mutation", async () => {
     await insert({ apiKey: "k-a", name: "A" });
     await insert({ apiKey: "k-b", name: "B" });
@@ -466,22 +431,38 @@ describe("two-tier key cache and bounded lookup (refs #151)", () => {
     expect(await deleteKey(env.KEYS_DB, "id-k-b")).toBe(true);
   });
 
-  it("hands the L2 delete to waitUntil when there is one", async () => {
-    await insert({ apiKey: "k-wu", name: "WU" });
-    let released!: () => void;
+  it("waits for the L2 delete before a mutation returns", async () => {
+    await insert({ apiKey: "k-wait", name: "Wait" });
+    let deleted = false;
     keyLookup.l2 = () =>
       ({
         match: async () => undefined,
         put: async () => {},
-        delete: () => new Promise<boolean>((r) => void (released = () => r(true))),
+        delete: async () => {
+          await scheduler.wait(10);
+          deleted = true;
+          return true;
+        },
       }) as unknown as Cache;
-    const bg = background();
 
-    expect(await updateKey(env.KEYS_DB, "id-k-wu", { name: "WU2" }, bg)).toBe(true);
-    // Answered while the delete is still pending.
-    await scheduler.wait(5);
-    released();
-    await bg.settled();
+    expect(await updateKey(env.KEYS_DB, "id-k-wait", { enabled: false })).toBe(true);
+    // This colo's entry is gone before the admin response can go out.
+    expect(deleted).toBe(true);
+  });
+
+  it("runs each request's cold lookup on its own", async () => {
+    keyLookup.timeoutMs = 30;
+    const stalled = heldD1();
+    const bg = background();
+    // A lookup whose read never settles...
+    await expect(resolveKey("k-held", stalled.db, Date.now(), bg)).rejects.toBeInstanceOf(KeyLookupTimeoutError);
+
+    // ...doesn't wedge the key: the next request does its own read.
+    const fresh = heldD1();
+    const next = resolveKey("k-held", fresh.db, Date.now(), bg);
+    fresh.settle.resolve(ROW);
+    expect((await next).record.name).toBe("Held");
+    expect(fresh.calls.prepare).toBe(1);
   });
 
   it("drops a key's L2 entry when it is updated", async () => {

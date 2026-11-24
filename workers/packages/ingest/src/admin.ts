@@ -7,7 +7,6 @@ import {
   parseScopes,
   updateKey,
   type APIKeyRecord,
-  type KeyCacheOptions,
 } from "./keys";
 
 function json(body: unknown, status = 200): Response {
@@ -62,7 +61,8 @@ export async function handleAdminKeys(
   request: Request,
   db: D1Database,
   key: APIKeyRecord,
-  cacheOpts: KeyCacheOptions = {},
+  /** The key cache's `KEY_CACHE_NAMESPACE`, so a mutation drops the right L2 entry. */
+  cacheNamespace?: string,
 ): Promise<Response> {
   if (!hasScope(key, "admin")) {
     return json({ error: "admin scope required" }, 403);
@@ -145,7 +145,7 @@ export async function handleAdminKeys(
       enabled: body.enabled,
       scopes: body.scopes as string | undefined,
       retentionDays: body.retentionDays,
-    }, cacheOpts);
+    }, { namespace: cacheNamespace });
     if (!changed) return json({ error: "Key not found or no fields to update" }, 404);
     return json({ success: true });
   }
@@ -154,7 +154,7 @@ export async function handleAdminKeys(
     if (await wouldRemoveLastAdmin(db, keyId, null)) {
       return json({ error: LAST_ADMIN_ERROR }, 409);
     }
-    const deleted = await deleteKey(db, keyId, cacheOpts);
+    const deleted = await deleteKey(db, keyId, { namespace: cacheNamespace });
     if (!deleted) return json({ error: "Key not found" }, 404);
     return json({ success: true });
   }

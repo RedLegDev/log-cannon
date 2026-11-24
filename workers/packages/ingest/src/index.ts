@@ -1195,7 +1195,7 @@ export default {
         if (e instanceof AuthError) return withRetryAfter(errorResponse(e.status, e.message), e);
         return errorResponse(500, "Internal error");
       }
-      return await handleAdminKeys(request, env.KEYS_DB, adminKey, keyCacheOptions(env, ctx));
+      return await handleAdminKeys(request, env.KEYS_DB, adminKey, env.KEY_CACHE_NAMESPACE);
     }
 
     const read = readPath(path);
