@@ -1,6 +1,11 @@
 import { SELF, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __resetKeyCache } from "../src/keys";
+import {
+  __resetKeyCache,
+  keyLookup,
+  KEY_L2_TIMEOUT_MS,
+  KEY_LOOKUP_TIMEOUT_MS,
+} from "../src/keys";
 import { __resetTelemetryThrottle } from "../src/timing";
 
 /**
@@ -117,5 +122,45 @@ describe("slow-request reporting through the router", () => {
     expect(reports).toHaveLength(2);
     expect(reports[0].keyCacheHit).toBe(false);
     expect(reports[1].keyCacheHit).toBe(true);
+  });
+
+  it("reports a timed-out key lookup as AuthTimedOut with its 503", async () => {
+    // L2 stalls through the whole budget, so the lookup times out before D1
+    // is asked, and the auth span is at least that long.
+    const realL2 = keyLookup.l2;
+    keyLookup.l2 = () =>
+      ({ match: () => new Promise(() => {}), put: async () => {}, delete: async () => false }) as unknown as Cache;
+    keyLookup.l2TimeoutMs = 30;
+    keyLookup.timeoutMs = 30;
+    try {
+      const res = await SELF.fetch("https://logs.example.com/ingest/clef", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Api-Key": "k-good" },
+        body: CLEF_LINE,
+      });
+      expect(res.status).toBe(503);
+    } finally {
+      keyLookup.l2 = realL2;
+      keyLookup.l2TimeoutMs = KEY_L2_TIMEOUT_MS;
+      keyLookup.timeoutMs = KEY_LOOKUP_TIMEOUT_MS;
+    }
+
+    const [report] = slowWarnings(warn);
+    expect(report.status).toBe(503);
+    expect(report.authTimedOut).toBe(true);
+    expect(report.keyCacheHit).toBe(false);
+    expect(report.keyL2Hit).toBe(false);
+    expect(report.authMs).toBeGreaterThanOrEqual(30);
+  });
+
+  it("reports an ordinary auth as not timed out", async () => {
+    await SELF.fetch("https://logs.example.com/ingest/clef", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Api-Key": "k-good" },
+      body: slowBody(new TextEncoder().encode(CLEF_LINE)),
+    });
+    const [report] = slowWarnings(warn);
+    expect(report.authTimedOut).toBe(false);
+    expect(report.keyL2Hit).toBe(false);
   });
 });

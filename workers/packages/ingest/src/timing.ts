@@ -50,8 +50,12 @@ export class RequestTrace {
     read: 0,
   };
 
-  /** Whether this isolate resolved the API key without touching D1. */
+  /** Whether this isolate's own cache (L1) resolved the API key. */
   keyCacheHit = false;
+  /** Whether the colo's shared key cache (L2) resolved it, skipping D1. */
+  keyL2Hit = false;
+  /** Whether the cold key lookup ran out of time and the request got a 503. */
+  authTimedOut = false;
   /** Request body size in bytes, after any gzip decode. */
   bodyBytes = 0;
 
@@ -106,7 +110,10 @@ export interface SlowRequest {
    * `event_type`) and properties for anything that filters on them.
    */
   enqueueMs: 0;
+  /** L1 hit. Stays a boolean, and L1 only, for anything that filters on it. */
   keyCacheHit: boolean;
+  keyL2Hit: boolean;
+  authTimedOut: boolean;
   bodyBytes: number;
   /** Always 0; see `enqueueMs`. */
   queueMessages: 0;
@@ -132,6 +139,8 @@ export function buildSlowRequest(
     readMs: trace.span("read"),
     enqueueMs: 0,
     keyCacheHit: trace.keyCacheHit,
+    keyL2Hit: trace.keyL2Hit,
+    authTimedOut: trace.authTimedOut,
     bodyBytes: trace.bodyBytes,
     queueMessages: 0,
   };
@@ -159,6 +168,8 @@ export function slowRequestCLEF(r: SlowRequest, at: string): string {
     ReadMs: r.readMs,
     EnqueueMs: r.enqueueMs,
     KeyCacheHit: r.keyCacheHit,
+    KeyL2Hit: r.keyL2Hit,
+    AuthTimedOut: r.authTimedOut,
     BodyBytes: r.bodyBytes,
     QueueMessages: r.queueMessages,
   };

@@ -6,7 +6,7 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker, { sendTelemetry } from "../src/index";
 import { SPILL_PREFIX, copyTiming, gunzipRows } from "../src/basin";
-import { __resetKeyCache } from "../src/keys";
+import { __resetKeyCache, validateKey } from "../src/keys";
 import { __resetTelemetryThrottle } from "../src/timing";
 
 function body(n: number, pad = 2000) {
@@ -68,6 +68,9 @@ describe("Basin write through the fetch handler", () => {
     const { rows, LOGS } = rowsStream();
     const pending: Promise<unknown>[] = [];
     const ctx = { waitUntil: (p: Promise<unknown>) => void pending.push(p), passThroughOnException: () => {} };
+    // Warm this isolate's key cache first: a cold lookup registers its own
+    // waitUntil (the shared key cache write, refs #151), which isn't the copy.
+    await validateKey("k-good", env.KEYS_DB);
     const res = await worker.fetch(req(body(3, 0)), { ...env, ...base, LOGS } as never, ctx as never);
     expect(res.status).toBe(201);
     expect(pending).toHaveLength(1);

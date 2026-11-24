@@ -255,15 +255,17 @@ Senders bound their outbound request (Serilog's Seq sink and most hand-rolled cl
 | Property | Meaning |
 |----------|---------|
 | `TotalMs` | Time inside the Worker |
-| `AuthMs` | D1 key lookup |
+| `AuthMs` | API key lookup (cache tiers, then D1) |
 | `ReadMs` | Reading (and gzip-decoding) the request body |
 | `KeyCacheHit` | Whether the key was already in this isolate's cache |
+| `KeyL2Hit` | Whether the colo's shared key cache (Cache API) answered, skipping D1 |
+| `AuthTimedOut` | Whether the key lookup ran past its 4 s bound; the request got a 503 with `Retry-After` |
 | `Route` / `Format` / `Status` | Endpoint, parser, response status |
 | `IngestSource` / `BodyBytes` | The key's source and the payload size |
 | `Colo` / `RayId` | Edge location and Ray ID, for correlating with Workers Logs |
 | `EnqueueMs` / `QueueMessages` | Always `0` since the queue was retired; kept so the event's template and `event_type` don't change |
 
-The Basin write runs after the response, so it is not part of `TotalMs`. A cold isolate pays for a D1 round trip, so `KeyCacheHit: false` with a large `AuthMs` is the expected shape for a source that sends a few events a day. `TotalMs` starts when the Worker is invoked, so connection setup, TLS and cold start sit outside it: a sender that saw 5 s against a small `TotalMs` places the stall before the Worker. Cloudflare freezes `Date.now()` between I/O, so these spans measure I/O; a CPU-bound stall shows in Workers Logs' `cpuTime`. Because the events are throttled per isolate, count them as "isolates that saw this", not slow requests.
+The Basin write runs after the response, so it is not part of `TotalMs`. A cold isolate first asks the colo's Cache API, which every isolate in the data center shares, and pays for a D1 round trip only when that misses too, so `KeyCacheHit: false` and `KeyL2Hit: false` with a large `AuthMs` is the expected shape for a source that sends a few events a day. That lookup is cut at 4 s: rather than run past a sender's ~5 s timeout, the Worker answers 503 with `Retry-After: 3` (`AuthTimedOut: true`), and the late D1 answer fills the cache for the retry. `TotalMs` starts when the Worker is invoked, so connection setup, TLS and cold start sit outside it: a sender that saw 5 s against a small `TotalMs` places the stall before the Worker. Cloudflare freezes `Date.now()` between I/O, so these spans measure I/O; a CPU-bound stall shows in Workers Logs' `cpuTime`. Because the events are throttled per isolate, count them as "isolates that saw this", not slow requests.
 
 ## Supabase platform logs
 

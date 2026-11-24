@@ -89,6 +89,8 @@ describe("slowRequestCLEF", () => {
     readMs: 4,
     enqueueMs: 0 as const,
     keyCacheHit: false,
+    keyL2Hit: true,
+    authTimedOut: false,
     bodyBytes: 812,
     queueMessages: 0 as const,
     colo: "IAD",
@@ -111,6 +113,8 @@ describe("slowRequestCLEF", () => {
     expect(e.EnqueueMs).toBe(0);
     expect(e.QueueMessages).toBe(0);
     expect(e.KeyCacheHit).toBe(false);
+    expect(e.KeyL2Hit).toBe(true);
+    expect(e.AuthTimedOut).toBe(false);
     expect(e.Route).toBe("/ingest/clef");
     expect(e.IngestSource).toBe("example-app");
   });

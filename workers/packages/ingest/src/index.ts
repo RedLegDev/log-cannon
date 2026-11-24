@@ -1,6 +1,13 @@
 // --- Types ---
 
-import { validateKey, isKeyCached, hasScope, type APIKeyRecord } from "./keys";
+import {
+  resolveKey,
+  hasScope,
+  KeyLookupTimeoutError,
+  KEY_LOOKUP_RETRY_AFTER_S,
+  type APIKeyRecord,
+  type KeySource,
+} from "./keys";
 import { handleAdminKeys } from "./admin";
 import {
   RequestTrace,
@@ -499,27 +506,33 @@ class AuthError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Seconds for `Retry-After`; set when the sender should simply retry. */
+    public retryAfterS?: number,
   ) {
     super(message);
   }
 }
 
+/** Adds the `Retry-After` an `AuthError` asks for to its error response. */
+function withRetryAfter(res: Response, e: AuthError): Response {
+  if (e.retryAfterS !== undefined) res.headers.set("Retry-After", String(e.retryAfterS));
+  return res;
+}
+
 interface AuthResult {
   record: APIKeyRecord;
-  /** Whether the key was resolved from this isolate's cache, skipping D1. */
-  cacheHit: boolean;
+  /** Which tier resolved the key: this isolate, the colo cache, or D1. */
+  source: KeySource;
 }
 
 async function authenticate(
   request: Request,
   env: Env,
+  ctx: ExecutionContext,
+  trace?: RequestTrace,
 ): Promise<AuthResult> {
   const apiKey = extractAPIKey(request);
   if (!apiKey) throw new AuthError(401, "API key required");
-
-  // Peek before resolving: validateKey populates the cache, so asking
-  // afterwards would always say "hit".
-  const cacheHit = isKeyCached(apiKey);
 
   // Distinguish a known auth rejection (bad/disabled key — genuinely the
   // client's fault, safe as a non-retryable 4xx) from everything else (D1
@@ -528,8 +541,21 @@ async function authenticate(
   // 5xx, so collapsing both cases into 403 turns a transient D1 blip into
   // silent, permanent log loss across every client at once.
   try {
-    return { record: await validateKey(apiKey, env.KEYS_DB), cacheHit };
+    const result = await resolveKey(apiKey, env.KEYS_DB, Date.now(), {
+      waitUntil: (p) => ctx.waitUntil(p),
+    });
+    if (trace) {
+      trace.keyCacheHit = result.source === "l1";
+      trace.keyL2Hit = result.source === "l2";
+    }
+    return result;
   } catch (e) {
+    if (e instanceof KeyLookupTimeoutError) {
+      // A slow D1, not a bad key: 503 so the sender retries, by which time
+      // the late read has usually filled the cache (refs #151).
+      if (trace) trace.authTimedOut = true;
+      throw new AuthError(503, "Key store slow, retry shortly", KEY_LOOKUP_RETRY_AFTER_S);
+    }
     const msg = e instanceof Error ? e.message : "";
     if (msg === "Invalid API key" || msg === "API key is disabled") {
       throw new AuthError(403, "Invalid or disabled API key");
@@ -943,10 +969,12 @@ async function handleRead(
 ): Promise<Response> {
   let key: APIKeyRecord;
   try {
-    key = (await authenticate(request, env)).record;
+    key = (await authenticate(request, env, ctx)).record;
   } catch (e) {
     if (e instanceof AuthError) {
-      return apiError(e.status === 401 ? "unauthorized" : e.status === 403 ? "forbidden" : "internal_error", e.message, e.status);
+      const code =
+        e.status === 401 ? "unauthorized" : e.status === 403 ? "forbidden" : e.status === 503 ? "unavailable" : "internal_error";
+      return withRetryAfter(apiError(code, e.message, e.status), e);
     }
     return apiError("internal_error", "Authentication failed", 500);
   }
@@ -1147,9 +1175,9 @@ export default {
     if (path === "/v1/keys" || path.startsWith("/v1/keys/")) {
       let adminKey: APIKeyRecord;
       try {
-        adminKey = (await authenticate(request, env)).record;
+        adminKey = (await authenticate(request, env, ctx)).record;
       } catch (e) {
-        if (e instanceof AuthError) return errorResponse(e.status, e.message);
+        if (e instanceof AuthError) return withRetryAfter(errorResponse(e.status, e.message), e);
         return errorResponse(500, "Internal error");
       }
       return await handleAdminKeys(request, env.KEYS_DB, adminKey);
@@ -1171,9 +1199,7 @@ export default {
     // Authenticate
     let key: APIKeyRecord;
     try {
-      const auth = await authenticate(request, env);
-      key = auth.record;
-      trace.keyCacheHit = auth.cacheHit;
+      key = (await authenticate(request, env, ctx, trace)).record;
     } catch (e) {
       trace.mark("auth");
       // A slow *failing* auth is the most diagnostic case there is: a stalled
@@ -1187,10 +1213,11 @@ export default {
         status,
         ingestSource: "",
       });
-      return errorResponse(
+      const res = errorResponse(
         status,
         e instanceof AuthError ? e.message : "Internal error",
       );
+      return e instanceof AuthError ? withRetryAfter(res, e) : res;
     }
     trace.mark("auth");
     const source = key.name;

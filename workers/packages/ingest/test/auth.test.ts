@@ -1,6 +1,11 @@
 import { SELF, env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
-import { __resetKeyCache } from "../src/keys";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  __resetKeyCache,
+  keyLookup,
+  KEY_LOOKUP_RETRY_AFTER_S,
+  KEY_LOOKUP_TIMEOUT_MS,
+} from "../src/keys";
 
 async function insert(row: {
   apiKey: string;
@@ -96,5 +101,69 @@ describe("authenticate", () => {
         "ALTER TABLE api_keys_backup RENAME TO api_keys",
       ).run();
     }
+  });
+});
+
+// refs #151: a key lookup that runs out of time is the key store's fault, not
+// the sender's, so every surface that authenticates answers 503 with
+// Retry-After rather than a terminal 401/403. A zero budget makes the lookup
+// time out deterministically, before D1 can answer.
+describe("authenticate when the key lookup times out", () => {
+  beforeEach(async () => {
+    __resetKeyCache();
+    await env.KEYS_DB.prepare("DELETE FROM api_keys").run();
+    await insert({ apiKey: "k-admin", name: "Admin", scopes: "admin" });
+    keyLookup.timeoutMs = 0;
+  });
+
+  afterEach(() => {
+    keyLookup.timeoutMs = KEY_LOOKUP_TIMEOUT_MS;
+  });
+
+  function expect503(res: Response) {
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBe(String(KEY_LOOKUP_RETRY_AFTER_S));
+  }
+
+  it("answers an ingest request with 503 and Retry-After", async () => {
+    expect503(await postCLEF({ "X-Api-Key": "k-admin" }));
+  });
+
+  it("answers the read API with 503 and Retry-After", async () => {
+    const res = await SELF.fetch("https://logs.example.com/api/v1/logs", {
+      headers: { "X-Api-Key": "k-admin" },
+    });
+    expect503(res);
+    expect(((await res.json()) as { error: string }).error).toBe("unavailable");
+  });
+
+  it("answers MCP with 503 and Retry-After", async () => {
+    expect503(
+      await SELF.fetch("https://logs.example.com/api/mcp", {
+        method: "POST",
+        headers: { "X-Api-Key": "k-admin", "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+  });
+
+  it("answers the admin key API with 503 and Retry-After", async () => {
+    expect503(
+      await SELF.fetch("https://logs.example.com/v1/keys", {
+        headers: { "X-Api-Key": "k-admin" },
+      }),
+    );
+  });
+
+  it("still answers a cached key without waiting on D1", async () => {
+    keyLookup.timeoutMs = KEY_LOOKUP_TIMEOUT_MS;
+    expect((await postCLEF({ "X-Api-Key": "k-admin" })).status).toBe(201);
+
+    keyLookup.timeoutMs = 0;
+    expect((await postCLEF({ "X-Api-Key": "k-admin" })).status).toBe(201);
+  });
+
+  it("leaves a missing key at 401", async () => {
+    expect((await postCLEF()).status).toBe(401);
   });
 });
