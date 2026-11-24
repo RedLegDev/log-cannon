@@ -14,21 +14,22 @@ const KEYS: [string, string][] = [
 
 let basinQueries: string[];
 
-const testEnv = () => ({
+const testEnv = (over: Record<string, string> = {}) => ({
   ...env,
   BASIN_SQL_TOKEN: "t",
   BASIN_SQL_ACCOUNT: "acct",
   BASIN_SQL_BUCKET: "bucket",
   ALERT_LAG_SECONDS: "180",
+  ...over,
 });
 
-async function call(path: string, key: string | null, method = "GET", body?: unknown) {
+async function call(path: string, key: string | null, method = "GET", body?: unknown, envOver?: Record<string, string>) {
   const headers = new Headers({ "Content-Type": "application/json" });
   if (key) headers.set("X-Api-Key", key);
   const ctx = createExecutionContext();
   const res = await worker.fetch(
     new Request(`https://logs.example.com${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }),
-    testEnv() as never,
+    testEnv(envOver) as never,
     ctx,
   );
   await waitOnExecutionContext(ctx);
@@ -98,7 +99,9 @@ describe("/v2/api/v1/alerts", () => {
       ((await (await call("/api/v1/alerts", "k-write", "POST", { ...ALERT, interval_seconds, enabled })).json()) as { id: string }).id;
     const ids = { s30: await mk(30), s60: await mk(60), s90: await mk(90), s300: await mk(300), off: await mk(60, false) };
     const before = basinQueries.length;
-    const list = (await (await call("/api/v1/alerts", "k-read")).json()) as { data: { id: string; queries_per_day: number; est_usd_per_month: number }[] };
+    const list = (await (await call("/api/v1/alerts", "k-read", "GET", undefined, { ALERT_BATCH_MODE: "off" })).json()) as {
+      data: { id: string; queries_per_day: number; est_usd_per_month: number }[];
+    };
     expect(basinQueries.length).toBe(before);
     const cost = (id: string) => {
       const a = list.data.find((x) => x.id === id)!;
@@ -109,6 +112,24 @@ describe("/v2/api/v1/alerts", () => {
     expect(cost(ids.s90)).toEqual([720, 0.54]);
     expect(cost(ids.s300)).toEqual([288, 0.216]);
     expect(cost(ids.off)).toEqual([0, 0]);
+  });
+
+  it("prices a batchable alert at its share of a batch when ALERT_BATCH_MODE is on (refs #196)", async () => {
+    const mk = async (interval_seconds: number, query = ALERT.query) =>
+      ((await (await call("/api/v1/alerts", "k-write", "POST", { ...ALERT, query, interval_seconds })).json()) as { id: string }).id;
+    // No top-level AS name, so batch.ts can't read its columns: it runs alone.
+    const alone = "SELECT count(*) FROM logs.events WHERE source = 'example' AND ts > now() - INTERVAL '5 minutes'";
+    const ids = { s60: await mk(60), s300: await mk(300), alone60: await mk(60, alone) };
+    const cost = async (mode?: string) => {
+      const res = await call("/api/v1/alerts", "k-read", "GET", undefined, mode === undefined ? {} : { ALERT_BATCH_MODE: mode });
+      const { data } = (await res.json()) as { data: { id: string; queries_per_day: number; est_usd_per_month: number }[] };
+      return Object.fromEntries(Object.entries(ids).map(([k, id]) => [k, (({ queries_per_day, est_usd_per_month }) => [queries_per_day, est_usd_per_month])(data.find((x) => x.id === id)!)]));
+    };
+    expect(await cost("on")).toEqual({ s60: [144, 0.108], s300: [28.8, 0.022], alone60: [1440, 1.08] });
+    // off, shadow and unset (shadow) run one query per alert.
+    for (const mode of ["off", "shadow", undefined]) {
+      expect(await cost(mode)).toEqual({ s60: [1440, 1.08], s300: [288, 0.216], alone60: [1440, 1.08] });
+    }
   });
 
   it("validates like v1, field by field", async () => {
@@ -307,8 +328,8 @@ describe("/v2/api/v1/alert-destinations", () => {
 });
 
 describe("MCP alert tools", () => {
-  const rpc = async (key: string, name: string, args: Record<string, unknown>) =>
-    (await (await call("/v2/api/mcp", key, "POST", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } })).json()) as {
+  const rpc = async (key: string, name: string, args: Record<string, unknown>, envOver?: Record<string, string>) =>
+    (await (await call("/v2/api/mcp", key, "POST", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, envOver)).json()) as {
       result?: { content: { text: string }[]; isError?: boolean };
       error?: { code: number; message: string };
     };
@@ -333,6 +354,14 @@ describe("MCP alert tools", () => {
     expect(res.result!.content[0].text).not.toContain("s3cret");
     expect(res.result!.content[0].text).not.toContain("hook.example.com");
     expect((await rpc("k-ingest", "list_alerts", {})).error?.code).toBe(-32602);
+  });
+
+  it("list_alerts prices a batchable alert at its batch share when ALERT_BATCH_MODE is on (refs #196)", async () => {
+    await call("/api/v1/alerts", "k-write", "POST", { ...ALERT, interval_seconds: 60 });
+    const [on] = text(await rpc("k-read", "list_alerts", {}, { ALERT_BATCH_MODE: "on" })).data;
+    expect([on.queries_per_day, on.est_usd_per_month]).toEqual([144, 0.108]);
+    const [off] = text(await rpc("k-read", "list_alerts", {}, { ALERT_BATCH_MODE: "off" })).data;
+    expect([off.queries_per_day, off.est_usd_per_month]).toEqual([1440, 1.08]);
   });
 
   it("update_alert disables and re-enables, validates like PATCH, and needs write scope", async () => {

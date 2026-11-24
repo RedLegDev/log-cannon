@@ -430,7 +430,7 @@ export const TOOLS: Tool[] = [
     name: "list_alerts",
     title: "List Alerts",
     description:
-      "List every alert rule with its query, condition, interval, cooldown, destination ids, enabled flag and latest evaluation (last_status: ok, triggered, cooldown or error), plus queries_per_day and est_usd_per_month, the Basin SQL cost of running it at its interval. Same as GET /api/v1/alerts.",
+      "List every alert rule with its query, condition, interval, cooldown, destination ids, enabled flag and latest evaluation (last_status: ok, triggered, cooldown or error), plus queries_per_day and est_usd_per_month, the Basin SQL cost of running it at its interval. While alert batching is on, a batchable alert's figures are its marginal share of a batch (a tenth of a query per run); an alert that runs alone pays a full query. Same as GET /api/v1/alerts.",
     scope: "read",
     inputSchema: { type: "object", properties: {} },
     run: async (_args, ctx) => restResult(await handleAlerts(alertsRequest("GET"), "", ctx.alertsApi), "Failed to list alerts"),

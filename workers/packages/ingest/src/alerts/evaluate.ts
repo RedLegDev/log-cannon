@@ -12,7 +12,7 @@
 // v1's alert-worker does and starts the cooldown only on an accepted delivery.
 
 import { BasinQueryError, parseBasinTimestamp, queryBasin, type BasinSqlEnv } from "../basin-sql";
-import { chunk, composeBatch, selectColumns, splitBatch, type BatchMember } from "./batch";
+import { batchable, chunk, composeBatch, selectColumns, splitBatch, type BatchMember } from "./batch";
 import { ConditionError, evaluateCondition } from "./condition";
 import { deliverAlert, type DeliveryEnv } from "./deliver";
 import {
@@ -185,7 +185,7 @@ export interface BatchRun {
  */
 export function runsAlone(alert: AlertRow): boolean {
   if (alert.last_status === "error" && alert.last_error?.startsWith("Query error:") && !isQueryTimeout(alert.last_error)) return true;
-  return selectColumns(alert.query) === null;
+  return !batchable(alert.query);
 }
 
 /**

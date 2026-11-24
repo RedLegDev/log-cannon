@@ -5,7 +5,8 @@
 import { BasinQueryError, queryBasin, type BasinSqlEnv } from "../basin-sql";
 import { ConditionError, evaluateCondition } from "./condition";
 import { deliverAlert, type DeliveryEnv } from "./deliver";
-import { DUE_SLACK_MS, alertLagSeconds, pinNow } from "./evaluate";
+import { batchable } from "./batch";
+import { ALERT_BATCH_SIZE, DUE_SLACK_MS, alertBatchMode, alertLagSeconds, pinNow, type AlertBatchMode } from "./evaluate";
 import {
   deleteAlert,
   deleteDestination,
@@ -27,6 +28,7 @@ import {
 export interface AlertsApiEnv extends BasinSqlEnv, DeliveryEnv {
   KEYS_DB: D1Database;
   ALERT_LAG_SECONDS?: string | number;
+  ALERT_BATCH_MODE?: string;
 }
 
 type Respond = (body: unknown, status?: number) => Response;
@@ -54,18 +56,27 @@ export const BASIN_USD_PER_QUERY = 0.01 * 0.0025;
  * tick at least `interval - DUE_SLACK_MS` after its last run (isDue), so a
  * 30 s interval runs every minute and a 90 s one every two. A disabled alert
  * runs none. Arithmetic only, no Basin call (refs #194).
+ *
+ * With ALERT_BATCH_MODE `on`, a batchable alert shares one query with up to
+ * ALERT_BATCH_SIZE - 1 others, so it is priced at its marginal share,
+ * 1 / ALERT_BATCH_SIZE of a query per run; an alert that can't be batched runs
+ * alone and pays a full query (refs #196). This prices the query's shape only:
+ * an alert whose last run was a query error also runs alone until it passes,
+ * but that is transient and not what the alert costs. `off` and `shadow` run
+ * one query per alert, so they price a full query.
  */
-export function alertCost(a: Pick<AlertRow, "interval_seconds" | "enabled">) {
+export function alertCost(a: Pick<AlertRow, "interval_seconds" | "enabled" | "query">, batchMode: AlertBatchMode) {
   if (!a.enabled) return { queries_per_day: 0, est_usd_per_month: 0 };
   const ticks = Math.max(1, Math.ceil((Math.max(a.interval_seconds, 30) * 1000 - DUE_SLACK_MS) / 60_000));
-  const perDay = 1440 / ticks;
+  const perTick = batchMode === "on" && batchable(a.query) ? 1 / ALERT_BATCH_SIZE : 1;
+  const perDay = (1440 / ticks) * perTick;
   return {
     queries_per_day: Math.round(perDay * 10) / 10,
     est_usd_per_month: Math.round(perDay * 30 * BASIN_USD_PER_QUERY * 1000) / 1000,
   };
 }
 
-export function alertOut(a: AlertRow) {
+export function alertOut(a: AlertRow, batchMode: AlertBatchMode) {
   return {
     id: a.id,
     name: a.name,
@@ -85,7 +96,7 @@ export function alertOut(a: AlertRow) {
     last_status: a.last_status,
     last_value: a.last_value ? JSON.parse(a.last_value) : null,
     last_error: a.last_error,
-    ...alertCost(a),
+    ...alertCost(a, batchMode),
   };
 }
 
@@ -175,7 +186,10 @@ export async function handleAlerts(request: Request, sub: string, ctx: ApiContex
   if (firings) return handleFirings(request, firings[1], ctx);
   if (sub !== "") return error("not_found", "Not found", 404);
 
-  if (request.method === "GET") return json({ data: (await listAlerts(db)).map(alertOut) });
+  if (request.method === "GET") {
+    const batchMode = alertBatchMode(env.ALERT_BATCH_MODE);
+    return json({ data: (await listAlerts(db)).map((a) => alertOut(a, batchMode)) });
+  }
   if (!ctx.canWrite) return error("forbidden", "This key lacks the required 'write' scope", 403);
 
   const body = await readJson(request);

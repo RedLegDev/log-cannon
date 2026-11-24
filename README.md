@@ -217,7 +217,7 @@ The cron evaluates the due alerts once a minute. Every `now()` in an alert query
 
 Every live evaluation whose condition was true is kept for 90 days in D1 `alert_firings`, with the evaluated values, the outcome (`delivered`, `cooldown` or `failed`), the destinations tried and any delivery error; shadow mode keeps none. Read it with `GET /api/v1/alerts/{id}/firings` (one alert) or `GET /api/v1/alert-firings` (all), each taking `from` / `to` (ISO 8601 or epoch ms) and `limit` (default 100, max 1000), newest first and read-scoped like `GET /api/v1/alerts`.
 
-`GET /api/v1/alerts` (and MCP `list_alerts`) shows each alert's `queries_per_day` and `est_usd_per_month`: how often the once-a-minute evaluator runs it, priced at Basin SQL's 10 MB per-query minimum (#194). A 60 s alert is about $1.08/mo, a 300 s one about $0.22.
+`GET /api/v1/alerts` (and MCP `list_alerts`) shows each alert's `queries_per_day` and `est_usd_per_month`: the Basin queries the once-a-minute evaluator spends on it, priced at Basin SQL's 10 MB per-query minimum (#194). With `ALERT_BATCH_MODE = "on"` the figures are the alert's marginal share of a batch, a tenth of a query per run (a 60 s alert is about $0.11/mo), and an alert that can't be batched (its columns can't be read from its SQL) is priced at a full query per run (#196). With batching `off` or `shadow`, every alert pays a full query: 60 s is about $1.08/mo, 300 s about $0.22.
 
 MCP has the alert tools too: `list_alerts`, `get_alert_history`, `test_alert` (read; `deliver` needs write), `create_alert` and `update_alert` (write; `enabled: false` disables). They run the REST handlers, so validation and scopes match. Deleting an alert is REST-only.
 

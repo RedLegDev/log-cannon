@@ -126,6 +126,15 @@ export function selectColumns(query: string): string[] | null {
   return columns;
 }
 
+/**
+ * Whether an alert query can share a batched query: its output columns can be
+ * read from its SQL. The evaluator (`runsAlone`) and the cost estimate
+ * (`alertCost`) both decide batching by this one rule.
+ */
+export function batchable(query: string): boolean {
+  return selectColumns(query) !== null;
+}
+
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
